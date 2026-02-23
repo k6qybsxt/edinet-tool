@@ -38,60 +38,353 @@ def trim_value(value, unit='millions'):
     except ValueError:
         return 'データなし'
 
-# XBRLデータのパース
-def parse_xbrl_data(xbrl_file, tags_contexts):
-    with open(xbrl_file, 'r', encoding='utf-8') as file:
-        soup = BeautifulSoup(file, 'lxml-xml')
-        
-        # 特定のタグとコンテキストに対してのみNonConsolidatedMemberの存在をチェック
-        def has_non_consolidated_member_for_tags(tags_contexts):
-            for tag, (context_base, _, _, _) in tags_contexts.items():
-                if tag in ['jppfs_cor:NetSales', 'jppfs_cor:CostOfSales']:
-                    contexts = [context_base, f"{context_base}_NonConsolidatedMember"]
-                    for context in contexts:
-                        element = soup.find(tag, contextRef=context)
-                        if element and "_NonConsolidatedMember" in context:
-                            print(f"Found element with context: {context}, Element: {element}")
-                            return True
-            return False
-        
-        # jppfs_cor:NetSalesとjppfs_cor:CostOfSalesに対してチェック
-        has_non_consolidated_member = has_non_consolidated_member_for_tags(tags_contexts)
+# XBRLデータの解析
+def parse_xbrl_data(xbrl_file):
+    with open(xbrl_file, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "lxml-xml")
 
-        def get_data(tag, context_base, trim=True, unit_or_part='millions'):
-            contexts = [context_base, f"{context_base}_NonConsolidatedMember"]
-            for context in contexts:
-                element = soup.find(tag, contextRef=context)
-                if element:
-                    value = element.text
-                    try:
-                        # 日付形式として解析
-                        date_obj = datetime.strptime(value, '%Y-%m-%d')
-                        # unit_or_partが指定されていないか、デフォルトで日付全体を返す
-                        if unit_or_part == 'date':
-                            return date_obj.strftime('%Y-%m-%d')
-                        elif unit_or_part == 'year':
-                            return date_obj.year
-                        elif unit_or_part == 'month':
-                            return date_obj.month
-                        elif unit_or_part == 'day':
-                            return date_obj.day
-                    except ValueError:
-                        # 日付として解析できない場合の処理
-                        return trim_value(value, unit_or_part) if trim else value
-            return 'データなし'
-        
-        # 証券コードを取得
-        security_code_element = soup.find('jpdei_cor:SecurityCodeDEI', contextRef="FilingDateInstant")
-        security_code = security_code_element.text.strip() if security_code_element else None
+    # -------------------------
+    # 1) context 情報を構造で保持
+    # -------------------------
+    contexts = {}
+    for ctx in soup.find_all("context"):
+        ctx_id = ctx.get("id")
 
-        # 一の位を除外
-        if security_code and security_code.isdigit():
-            security_code = security_code[:-1] 
-        return {
-    key: get_data(tag, context, trim, unit) for key, (tag, context, trim, unit) in tags_contexts.items()
-}, has_non_consolidated_member, security_code
+        period = ctx.find("period")
+        if not period:
+            continue
 
+        start = period.find("startDate")
+        end = period.find("endDate")
+        instant = period.find("instant")
+
+        # dimension（連結/単体）判定：ConsolidatedOrNonConsolidatedAxis を見る
+        # ※明示が無い場合は連結扱い（EDINETでは連結が基本）
+        dim_member_texts = [m.get_text(strip=True) for m in ctx.find_all("xbrldi:explicitMember")]
+        is_noncon = any("NonConsolidatedMember" in t for t in dim_member_texts)
+        dim = "NonConsolidated" if is_noncon else "Consolidated"
+
+        contexts[ctx_id] = {
+            "start": start.get_text(strip=True) if start else None,
+            "end": end.get_text(strip=True) if end else None,
+            "instant": instant.get_text(strip=True) if instant else None,
+            "dim": dim,
+        }
+
+    def months_between(start_ymd: str, end_ymd: str) -> int:
+        s = datetime.strptime(start_ymd, "%Y-%m-%d")
+        e = datetime.strptime(end_ymd, "%Y-%m-%d")
+        return (e.year - s.year) * 12 + (e.month - s.month)
+
+    # -------------------------
+    # 2) 期間（通期=12 / 上期=6）ごとの「対象end日」を決める
+    #    連結優先で endDate が一番新しいものを current とする
+    # -------------------------
+    def pick_end_dates(target_months: int):
+        # candidates: (end_date, dim)
+        cands = []
+        for info in contexts.values():
+            if info["start"] and info["end"]:
+                m = months_between(info["start"], info["end"])
+                if m == target_months:
+                    cands.append((info["end"], info["dim"]))
+
+        # end_date で降順、同日なら 連結優先
+        # dim の優先度: Consolidated(0) < NonConsolidated(1)
+        def dim_rank(d):
+            return 0 if d == "Consolidated" else 1
+
+        cands.sort(key=lambda x: (x[0], -1 if x[1] == "Consolidated" else -2), reverse=True)
+
+        # current_end: 最上位（連結優先）
+        # prior_end: その次（年次比較用）
+        # ※同じ end が複数dimで出るので、end日だけ抽出してユニーク化
+        end_dates = []
+        for end_date, _dim in cands:
+            if end_date not in end_dates:
+                end_dates.append(end_date)
+
+        current_end = end_dates[0] if len(end_dates) >= 1 else None
+        prior_end = end_dates[1] if len(end_dates) >= 2 else None
+        return current_end, prior_end
+
+    fy_end_cur, fy_end_pri = pick_end_dates(12)  # 通期
+    h1_end_cur, h1_end_pri = pick_end_dates(6)   # 上期累計
+
+    # -------------------------
+    # 3) タグ候補（J-GAAP/IFRS）定義
+    #    ※あなたの画像の表をベースに。増やしたいタグはここに足すだけ
+    # -------------------------
+    METRICS = {
+        # ---- 表紙/DEI ----
+        "CompanyNameCoverPage": {
+            "tags": ["jpcrp_cor:CompanyNameCoverPage"],
+            "kind": "instant_text",  # 文字列
+            "unit": None,
+        },
+        "CurrentFiscalYearEndDateDEI": {
+            "tags": ["jpdei_cor:CurrentFiscalYearEndDateDEI"],
+            "kind": "instant_date",  # 日付
+            "unit": "date",
+        },
+        "SecurityCodeDEI": {
+            "tags": ["jpdei_cor:SecurityCodeDEI"],
+            "kind": "instant_text",
+            "unit": None,
+        },
+
+        # ---- PL（通期/上期）----
+        "NetSales": {
+            "tags": [
+                "jppfs_cor:NetSales",
+                "jpigp_cor:RevenueIFRS",
+                "jpigp_cor:NetSalesIFRS",
+                "jpcrp030000-asr_E02144-000:TotalNetRevenuesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "CostOfSales": {
+            "tags": ["jppfs_cor:CostOfSales", "jpigp_cor:CostOfSalesIFRS"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "GrossProfit": {
+            "tags": ["jppfs_cor:GrossProfit", "jpigp_cor:GrossProfitIFRS"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "SellingExpenses": {
+            "tags": [
+                "jppfs_cor:SellingGeneralAndAdministrativeExpenses",
+                "jpigp_cor:SellingGeneralAndAdministrativeExpensesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "OperatingIncome": {
+            "tags": ["jppfs_cor:OperatingIncome", "jpigp_cor:OperatingProfitLossIFRS"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "OrdinaryIncome": {
+            "tags": ["jppfs_cor:OrdinaryIncome", "jpigp_cor:ProfitLossBeforeTaxIFRS"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "ProfitLoss": {
+            "tags": ["jppfs_cor:ProfitLoss", "jpigp_cor:ProfitLossIFRS"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+
+        # ---- BS（期末instant：通期末/上期末）----
+        "TotalAssets": {
+            "tags": [
+                "jpcrp_cor:TotalAssetsSummaryOfBusinessResults",
+                "jpcrp_cor:TotalAssetsIFRSSummaryOfBusinessResults",
+                "jpigp_cor:AssetsIFRS",
+            ],
+            "kind": "instant_num",
+            "unit": "millions",
+        },
+        "NetAssets": {
+            "tags": [
+                "jpcrp_cor:NetAssetsSummaryOfBusinessResults",
+                "jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+                "jpigp_cor:EquityAttributableToOwnersOfParentIFRS",
+            ],
+            "kind": "instant_num",
+            "unit": "millions",
+        },
+
+        # ---- CF（通期/上期）----
+        "OperatingCash": {
+            "tags": [
+                "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
+                "jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "InvestmentCash": {
+            "tags": [
+                "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
+                "jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "FinancingCash": {
+            "tags": [
+                "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
+                "jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "CashAndCashEquivalents": {
+            "tags": [
+                "jppfs_cor:CashAndCashEquivalents",
+                "jpigp_cor:CashAndCashEquivalentsIFRS",
+            ],
+            "kind": "instant_num",
+            "unit": "millions",
+        },
+
+        # ---- そのほか（あなたの表の項目に合わせて追加してOK）----
+        "ShortTermBorrowings": {
+            "tags": ["jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "LongTermBorrowings": {
+            "tags": ["jppfs_cor:ProceedsFromLongTermLoansPayableFinCF"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "Bonds": {
+            "tags": ["jppfs_cor:ProceedsFromIssuanceOfBondsFinCF"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "TreasuryStock": {
+            "tags": ["jppfs_cor:PurchaseOfTreasuryStockFinCF"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "Dividends": {
+            "tags": ["jppfs_cor:CashDividendsPaidFinCF"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "SalariesAndWages": {
+            "tags": ["jppfs_cor:SalariesAndWagesSGA"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "Bonuses": {
+            "tags": ["jppfs_cor:BonusesAndAllowanceSGA"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "ProvisionForBonuses": {
+            "tags": ["jppfs_cor:ProvisionForBonusesSGA"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "RetirementBenefitExpenses": {
+            "tags": ["jppfs_cor:RetirementBenefitExpensesSGA"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        "DepreciationAndAmortization": {
+            "tags": ["jppfs_cor:DepreciationAndAmortizationOpeCF"],
+            "kind": "duration",
+            "unit": "millions",
+        },
+    }
+
+    # -------------------------
+    # 4) fact 探索（連結優先＋endDate一致＋タグ優先）
+    # -------------------------
+    def pick_fact(tags, *, kind, end_date, prefer_dim="Consolidated"):
+        if end_date is None:
+            return None
+
+        # スコア：タグ順 + 連結優先
+        def dim_score(d):
+            # 連結を最優先、無ければ単体
+            return 1 if d == prefer_dim else 0
+
+        best = None
+        best_score = None
+
+        for tag_priority, tag in enumerate(tags):
+            for el in soup.find_all(tag):
+                ctxref = el.get("contextRef")
+                if not ctxref or ctxref not in contexts:
+                    continue
+                info = contexts[ctxref]
+
+                # kind に応じて end_date を合わせる
+                if kind in ("duration",):
+                    if not (info["start"] and info["end"]):
+                        continue
+                    if info["end"] != end_date:
+                        continue
+                elif kind in ("instant_num", "instant_text", "instant_date"):
+                    if not info["instant"]:
+                        continue
+                    if info["instant"] != end_date:
+                        continue
+                else:
+                    continue
+
+                score = (dim_score(info["dim"]), -tag_priority)
+                if (best_score is None) or (score > best_score):
+                    best_score = score
+                    best = el
+
+        return best
+
+    # -------------------------
+    # 5) 返すキーを「あなたのcell_mapに合わせる」
+    #    通期: xxxPrior / xxxCurrent
+    #    上期: xxxYTD（=上期累計 current）/（必要なら Prior も追加可）
+    # -------------------------
+    out = {}
+
+    def put_metric(metric_key, meta, *, end_date, out_key):
+        el = pick_fact(meta["tags"], kind=meta["kind"], end_date=end_date, prefer_dim="Consolidated")
+        if not el:
+            return
+        txt = el.get_text(strip=True)
+
+        if meta["kind"] == "instant_text":
+            out[out_key] = txt
+            return
+
+        if meta["kind"] == "instant_date":
+            # YYYY-MM-DD をそのまま返す（必要なら年/月分解は後段で）
+            out[out_key] = txt
+            return
+
+        # 数値
+        unit = meta["unit"]
+        out[out_key] = trim_value(txt, unit) if unit else txt
+
+    # --- 通期（Current / Prior） ---
+    for k, meta in METRICS.items():
+        if meta["kind"] in ("duration", "instant_num"):
+            put_metric(k, meta, end_date=fy_end_pri, out_key=f"{k}Prior")
+            put_metric(k, meta, end_date=fy_end_cur, out_key=f"{k}Current")
+
+    # --- 上期累計（Current） ---
+    # ※あなたの既存cell_mapは YTD が「上期累計」用途なので、それに合わせる
+    for k, meta in METRICS.items():
+        if meta["kind"] == "duration":
+            put_metric(k, meta, end_date=h1_end_cur, out_key=f"{k}YTD")
+        elif meta["kind"] == "instant_num":
+            put_metric(k, meta, end_date=h1_end_cur, out_key=f"{k}Quarter")
+
+    # --- 表紙系（instant_text/date）は FilingDateInstant が多いので別取り（揺れに強い）
+    # CompanyName / SecurityCode / FY end date はまず最初に見つかったものでOK
+    # （もしここも厳密にするなら、FilingDateInstant context を拾う実装にできます）
+    sc_el = soup.find("jpdei_cor:SecurityCodeDEI")
+    if sc_el:
+        sc = sc_el.get_text(strip=True)
+        if sc.isdigit():
+            out["SecurityCodeDEI"] = sc[:-1]
+    cn_el = soup.find("jpcrp_cor:CompanyNameCoverPage")
+    if cn_el:
+        out["CompanyNameCoverPage"] = cn_el.get_text(strip=True)
+    fy_el = soup.find("jpdei_cor:CurrentFiscalYearEndDateDEI")
+    if fy_el:
+        out["CurrentFiscalYearEndDateDEI"] = fy_el.get_text(strip=True)
+
+    security_code = out.get("SecurityCodeDEI")
+    return out, security_code
 
 # Excelへのデータ書き込み
 def write_data_to_excel(excel_file, data, cell_map):
@@ -153,509 +446,502 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
     return new_file_path
 
 # 条件に応じたマッピングの選択
-def select_mapping(has_non_consolidated_member):
-    if has_non_consolidated_member:
-        return {
-            'tags_contexts': {
-            #個別決算の場合
-                #売上高
-                'NetSalesPrior': ('jppfs_cor:NetSales', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'NetSalesCurrent': ('jppfs_cor:NetSales', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'NetSalesYTD': ('jppfs_cor:NetSales', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #売上原価
-                'CostOfSalesPrior': ('jppfs_cor:CostOfSales', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'CostOfSalesCurrent': ('jppfs_cor:CostOfSales', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #売上総利益
-                'GrossProfitPrior': ('jppfs_cor:GrossProfit', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'GrossProfitCurrent': ('jppfs_cor:GrossProfit', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #販管費
-                'SellingExpensesPrior': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'SellingExpensesCurrent': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #営業利益
-                'OperatingIncomePrior': ('jppfs_cor:OperatingIncome', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'OperatingIncomeCurrent': ('jppfs_cor:OperatingIncome', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #経常利益
-                'OrdinaryIncomePrior': ('jppfs_cor:OrdinaryIncome', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'OrdinaryIncomeCurrent': ('jppfs_cor:OrdinaryIncome', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'OrdinaryIncomeYTD': ('jppfs_cor:OrdinaryIncome', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #純利益
-                'ProfitLossPrior': ('jppfs_cor:ProfitLoss', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'ProfitLossCurrent': ('jppfs_cor:ProfitLoss', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'ProfitLossYTD': ('jppfs_cor:ProfitLoss', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #発行株数
-                'TotalNumberPrior3': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberPrior2': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberPrior1': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberCurrent': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberQuarter': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentQuarterInstant_NonConsolidatedMember", True, 'thousands'),
-                #資産
-                'TotalAssetsPrior3': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'millions'),
-                'TotalAssetsPrior2': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'millions'),
-                'TotalAssetsPrior1': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
-                'TotalAssetsCurrent': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
-                'TotalAssetsQuarter': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentQuarterInstant_NonConsolidatedMember", True, 'millions'),
-                #資本
-                'NetAssetsPrior3': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'millions'),
-                'NetAssetsPrior2': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'millions'),
-                'NetAssetsPrior1': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
-                'NetAssetsCurrent': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
-                'NetAssetsQuarter': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "InterimInstant_NonConsolidatedMember", True, 'millions'),
-                #営業CF
-                'OperatingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'OperatingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'OperatingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #投資CF
-                'InvestmentCashPrior': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'InvestmentCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'InvestmentCashYTD': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #財務CF
-                'FinancingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'FinancingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'FinancingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #期末残
-                'CashAndCashEquivalentsPrior': ('jppfs_cor:CashAndCashEquivalents', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
-                'CashAndCashEquivalentsCurrent': ('jppfs_cor:CashAndCashEquivalents', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
-                'CashAndCashEquivalentsQuarter': ('jppfs_cor:CashAndCashEquivalents', "InterimInstant_NonConsolidatedMember", True, 'millions'),
-                #短期借
-                'ShortTermBorrowingsPrior': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'ShortTermBorrowingsCurrent': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'ShortTermBorrowingsQuarter': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #長期借
-                'LongTermBorrowingsPrior': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'LongTermBorrowingsCurrent': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'LongTermBorrowingsQuarter': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #社債
-                'BondsPrior': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'BondsCurrent': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'BondsQuarter': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #自己株式取得
-                'TreasuryStockPrior': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'TreasuryStockCurrent': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'TreasuryStockQuarter': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #配当金
-                'DividendsPrior': ('jppfs_cor:CashDividendsPaidFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'DividendsCurrent': ('jppfs_cor:CashDividendsPaidFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                'DividendsQuarter': ('jppfs_cor:CashDividendsPaidFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-                #給料及び賃金
-                'SalariesAndWagesPrior': ('jppfs_cor:SalariesAndWagesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'SalariesAndWagesCurrent': ('jppfs_cor:SalariesAndWagesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #賞与
-                'BonusesPrior': ('jppfs_cor:BonusesAndAllowanceSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'BonusesCurrent': ('jppfs_cor:BonusesAndAllowanceSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #賞与引当金
-                'ProvisionForBonusesPrior': ('jppfs_cor:ProvisionForBonusesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'ProvisionForBonusesCurrent': ('jppfs_cor:ProvisionForBonusesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': ('jppfs_cor:RetirementBenefitExpensesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'RetirementBenefitExpensesCurrent': ('jppfs_cor:RetirementBenefitExpensesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-                'DepreciationAndAmortizationCurrent': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-                #証券コード
-                'SecurityCodeDEI': ('jpdei_cor:SecurityCodeDEI', "FilingDateInstant", True, 'ten'),
-                #会社名
-                'CompanyNameCoverPage': ('jpcrp_cor:CompanyNameCoverPage', "FilingDateInstant", False, 'millions'),
-                #当会計期間終了日
-                'CurrentPeriodEndDateDEIdate': ('jpdei_cor:CurrentPeriodEndDateDEI', "FilingDateInstant", False, 'date'),
-                #当事業年度終了日
-                'CurrentFiscalYearEndDateDEIyear': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'year'),
-                'CurrentFiscalYearEndDateDEImonth': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'month')
+tags_contexts = {
+    #売上高
+    'NetSalesPrior': ('jppfs_cor:NetSales', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'NetSalesCurrent': ('jppfs_cor:NetSales', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'NetSalesYTD': ('jppfs_cor:NetSales', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #売上原価
+    'CostOfSalesPrior': ('jppfs_cor:CostOfSales', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'CostOfSalesCurrent': ('jppfs_cor:CostOfSales', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #売上総利益
+    'GrossProfitPrior': ('jppfs_cor:GrossProfit', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'GrossProfitCurrent': ('jppfs_cor:GrossProfit', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #販管費
+    'SellingExpensesPrior': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'SellingExpensesCurrent': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #営業利益
+    'OperatingIncomePrior': ('jppfs_cor:OperatingIncome', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'OperatingIncomeCurrent': ('jppfs_cor:OperatingIncome', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #経常利益
+    'OrdinaryIncomePrior': ('jppfs_cor:OrdinaryIncome', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'OrdinaryIncomeCurrent': ('jppfs_cor:OrdinaryIncome', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'OrdinaryIncomeYTD': ('jppfs_cor:OrdinaryIncome', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #純利益
+    'ProfitLossPrior': ('jppfs_cor:ProfitLoss', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'ProfitLossCurrent': ('jppfs_cor:ProfitLoss', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'ProfitLossYTD': ('jppfs_cor:ProfitLoss', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #発行株数
+    'TotalNumberPrior3': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberPrior2': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberPrior1': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberCurrent': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberQuarter': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentQuarterInstant_NonConsolidatedMember", True, 'thousands'),
+    #資産
+    'TotalAssetsPrior3': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'millions'),
+    'TotalAssetsPrior2': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'millions'),
+    'TotalAssetsPrior1': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
+    'TotalAssetsCurrent': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
+    'TotalAssetsQuarter': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentQuarterInstant_NonConsolidatedMember", True, 'millions'),
+    #資本
+    'NetAssetsPrior3': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'millions'),
+    'NetAssetsPrior2': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'millions'),
+    'NetAssetsPrior1': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
+    'NetAssetsCurrent': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
+    'NetAssetsQuarter': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "InterimInstant_NonConsolidatedMember", True, 'millions'),
+    #営業CF
+    'OperatingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'OperatingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'OperatingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #投資CF
+    'InvestmentCashPrior': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'InvestmentCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'InvestmentCashYTD': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #財務CF
+    'FinancingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'FinancingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'FinancingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #期末残
+    'CashAndCashEquivalentsPrior': ('jppfs_cor:CashAndCashEquivalents', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
+    'CashAndCashEquivalentsCurrent': ('jppfs_cor:CashAndCashEquivalents', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
+    'CashAndCashEquivalentsQuarter': ('jppfs_cor:CashAndCashEquivalents', "InterimInstant_NonConsolidatedMember", True, 'millions'),
+    #短期借
+    'ShortTermBorrowingsPrior': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'ShortTermBorrowingsCurrent': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'ShortTermBorrowingsQuarter': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #長期借
+    'LongTermBorrowingsPrior': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'LongTermBorrowingsCurrent': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'LongTermBorrowingsQuarter': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #社債
+    'BondsPrior': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'BondsCurrent': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'BondsQuarter': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #自己株式取得
+    'TreasuryStockPrior': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'TreasuryStockCurrent': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'TreasuryStockQuarter': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #配当金
+    'DividendsPrior': ('jppfs_cor:CashDividendsPaidFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'DividendsCurrent': ('jppfs_cor:CashDividendsPaidFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    'DividendsQuarter': ('jppfs_cor:CashDividendsPaidFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
+    #給料及び賃金
+    'SalariesAndWagesPrior': ('jppfs_cor:SalariesAndWagesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'SalariesAndWagesCurrent': ('jppfs_cor:SalariesAndWagesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #賞与
+    'BonusesPrior': ('jppfs_cor:BonusesAndAllowanceSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'BonusesCurrent': ('jppfs_cor:BonusesAndAllowanceSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #賞与引当金
+    'ProvisionForBonusesPrior': ('jppfs_cor:ProvisionForBonusesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'ProvisionForBonusesCurrent': ('jppfs_cor:ProvisionForBonusesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': ('jppfs_cor:RetirementBenefitExpensesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'RetirementBenefitExpensesCurrent': ('jppfs_cor:RetirementBenefitExpensesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
+    'DepreciationAndAmortizationCurrent': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
+    #証券コード
+    'SecurityCodeDEI': ('jpdei_cor:SecurityCodeDEI', "FilingDateInstant", True, 'ten'),
+    #会社名
+    'CompanyNameCoverPage': ('jpcrp_cor:CompanyNameCoverPage', "FilingDateInstant", False, 'millions'),
+    #当会計期間終了日
+    'CurrentPeriodEndDateDEIdate': ('jpdei_cor:CurrentPeriodEndDateDEI', "FilingDateInstant", False, 'date'),
+    #当事業年度終了日
+    'CurrentFiscalYearEndDateDEIyear': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'year'),
+    'CurrentFiscalYearEndDateDEImonth': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'month')
             },
-            'cell_map_file1': {
-                #売上高
-                'NetSalesPrior': 'D5', 'NetSalesCurrent': 'G5',
-                #売上原価
-                'CostOfSalesPrior': 'D6', 'CostOfSalesCurrent': 'G6',
-                #売上総利益
-                'GrossProfitPrior': 'D7', 'GrossProfitCurrent': 'G7',
-                #販管費
-                'SellingExpensesPrior': 'D8', 'SellingExpensesCurrent': 'G8',
-                #営業利益
-                'OperatingIncomePrior': 'D9', 'OperatingIncomeCurrent': 'G9',
-                #経常利益
-                'OrdinaryIncomePrior': 'D10', 'OrdinaryIncomeCurrent': 'G10',
-                #純利益
-                'NetIncomePrior': 'D11', 'NetIncomeCurrent': 'G11',
-                #営業CF
-                'OperatingCashPrior': 'C21', 'OperatingCashCurrent': 'F21',
-                #投資CF
-                'InvestmentCashPrior': 'D21', 'InvestmentCashCurrent': 'G21',
-                #財務CF
-                'FinancingCashPrior': 'E21', 'FinancingCashCurrent': 'H21',
-                #期末残
-                'CashAndCashEquivalentsPrior': 'D22', 'CashAndCashEquivalentsCurrent': 'G22',
-                #短期借
-                'ShortTermBorrowingsPrior': 'C57', 'ShortTermBorrowingsCurrent': 'F57',
-                #長期借
-                'LongTermBorrowingsPrior': 'D57', 'LongTermBorrowingsCurrent': 'G57',
-                #社債
-                'BondsPrior': 'E57', 'BondsCurrent': 'H57',
-                #自己株式取得
-                'TreasuryStockPrior': 'D60', 'TreasuryStockCurrent': 'G60',
-                #配当金
-                'DividendsPrior': 'D61', 'DividendsCurrent': 'G61',
-                #給料及び賃金
-                'SalariesAndWagesPrior': 'D63', 'SalariesAndWagesCurrent': 'G63',
-                #賞与
-                'BonusesPrior': 'D64', 'BonusesCurrent': 'G64',
-                #賞与引当金
-                'ProvisionForBonusesPrior': 'D65', 'ProvisionForBonusesCurrent': 'G65',
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': 'D66', 'RetirementBenefitExpensesCurrent': 'G66',
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': 'D67', 'DepreciationAndAmortizationCurrent': 'G67'
+cell_map_file1 = {
+    #売上高
+    'NetSalesPrior': 'D5', 'NetSalesCurrent': 'G5',
+    #売上原価
+    'CostOfSalesPrior': 'D6', 'CostOfSalesCurrent': 'G6',
+    #売上総利益
+    'GrossProfitPrior': 'D7', 'GrossProfitCurrent': 'G7',
+    #販管費
+    'SellingExpensesPrior': 'D8', 'SellingExpensesCurrent': 'G8',
+    #営業利益
+    'OperatingIncomePrior': 'D9', 'OperatingIncomeCurrent': 'G9',
+    #経常利益
+    'OrdinaryIncomePrior': 'D10', 'OrdinaryIncomeCurrent': 'G10',
+    #純利益
+    'ProfitLossPrior': 'D11', 'ProfitLossCurrent': 'G11',
+    #営業CF
+    'OperatingCashPrior': 'C21', 'OperatingCashCurrent': 'F21',
+    #投資CF
+    'InvestmentCashPrior': 'D21', 'InvestmentCashCurrent': 'G21',
+    #財務CF
+    'FinancingCashPrior': 'E21', 'FinancingCashCurrent': 'H21',
+    #期末残
+    'CashAndCashEquivalentsPrior': 'D22', 'CashAndCashEquivalentsCurrent': 'G22',
+    #短期借
+    'ShortTermBorrowingsPrior': 'C57', 'ShortTermBorrowingsCurrent': 'F57',
+    #長期借
+    'LongTermBorrowingsPrior': 'D57', 'LongTermBorrowingsCurrent': 'G57',
+    #社債
+    'BondsPrior': 'E57', 'BondsCurrent': 'H57',
+    #自己株式取得
+    'TreasuryStockPrior': 'D60', 'TreasuryStockCurrent': 'G60',
+    #配当金
+    'DividendsPrior': 'D61', 'DividendsCurrent': 'G61',
+    #給料及び賃金
+    'SalariesAndWagesPrior': 'D63', 'SalariesAndWagesCurrent': 'G63',
+    #賞与
+    'BonusesPrior': 'D64', 'BonusesCurrent': 'G64',
+    #賞与引当金
+    'ProvisionForBonusesPrior': 'D65', 'ProvisionForBonusesCurrent': 'G65',
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': 'D66', 'RetirementBenefitExpensesCurrent': 'G66',
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': 'D67', 'DepreciationAndAmortizationCurrent': 'G67'
 
             },
-            'cell_map_file2': {
-                #売上高
-                'NetSalesPrior': 'J5', 'NetSalesCurrent': 'M5',
-                #売上原価
-                'CostOfSalesPrior': 'J6', 'CostOfSalesCurrent': 'M6',
-                #売上総利益
-                'GrossProfitPrior': 'J7', 'GrossProfitCurrent': 'M7',
-                #販管費
-                'SellingExpensesPrior': 'J8', 'SellingExpensesCurrent': 'M8',
-                #営業利益
-                'OperatingIncomePrior': 'J9', 'OperatingIncomeCurrent': 'M9',
-                #経常利益
-                'OrdinaryIncomePrior': 'J10', 'OrdinaryIncomeCurrent': 'M10',
-                #純利益
-                'ProfitLossPrior': 'J11', 'ProfitLossCurrent': 'M11',
-                #発行株数
-                'TotalNumberPrior3': 'D13', 'TotalNumberPrior2': 'G13', 
-                'TotalNumberPrior1': 'J13', 'TotalNumberCurrent': 'M13',
-                #資産
-                'TotalAssetsPrior3': 'C17', 'TotalAssetsPrior2': 'F17',
-                'TotalAssetsPrior1': 'I17', 'TotalAssetsCurrent': 'L17', 
-                #資本
-                'NetAssetsPrior3': 'D17', 'NetAssetsPrior2': 'G17',
-                'NetAssetsPrior1': 'J17', 'NetAssetsCurrent': 'M17',
-                #営業CF
-                'OperatingCashPrior': 'I21', 'OperatingCashCurrent': 'L21',
-                #投資CF
-                'InvestmentCashPrior': 'J21', 'InvestmentCashCurrent': 'M21',
-                #財務CF
-                'FinancingCashPrior': 'K21', 'FinancingCashCurrent': 'N21',
-                #期末残
-                'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
-                #短期借
-                'ShortTermBorrowingsPrior': 'I57', 'ShortTermBorrowingsCurrent': 'L57',
-                #長期借
-                'LongTermBorrowingsPrior': 'J57', 'LongTermBorrowingsCurrent': 'M57',
-                #社債
-                'BondsPrior': 'K57', 'BondsCurrent': 'N57',
-                #自己株式取得
-                'TreasuryStockPrior': 'J60', 'TreasuryStockCurrent': 'M60',
-                #配当金
-                'DividendsPrior': 'J61', 'DividendsCurrent': 'M61',
-                #給料及び賃金
-                'SalariesAndWagesPrior': 'J63', 'SalariesAndWagesCurrent': 'M63',
-                #賞与
-                'BonusesPrior': 'J64', 'BonusesCurrent': 'M64',
-                #賞与引当金
-                'ProvisionForBonusesPrior': 'J65', 'ProvisionForBonusesCurrent': 'M65',
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': 'J66', 'RetirementBenefitExpensesCurrent': 'M66',
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': 'J67', 'DepreciationAndAmortizationCurrent': 'M67'
-            },
-            #半期
-            'cell_map_file3': {
-                #売上高
-                'NetSalesYTD': 'J36',
-                #経常利益
-                'OrdinaryIncomeYTD': 'J37',
-                #純利益
-                'ProfitLossYTD': 'J38',
-                #発行株数
-                'TotalNumberQuarter': 'J40',
-                #資産
-                'TotalAssetsQuarter': 'I44',
-                #資本
-                'NetAssetsQuarter': 'J44',
-                #営業CF
-                'OperatingCashYTD': 'I48',
-                #投資CF
-                'InvestmentCashYTD': 'J48',
-                #財務CF
-                'FinancingCashYTD': 'K48',
-                #期末残
-                'CashAndCashEquivalentsQuarter': 'J49', 
-                #短期借
-                'ShortTermBorrowingsPrior': 'O57',
-                #長期借
-                'LongTermBorrowingsPrior': 'P57',
-                #社債
-                'BondsPrior': 'P57',
-                #自己株式取得
-                'TreasuryStockPrior': 'P60',
-                #配当金
-                'DividendsPrior': 'P61',
-                #給料及び賃金
-                'SalariesAndWagesPrior': 'P63',
-                #賞与
-                'BonusesPrior': 'P64',
-                #賞与引当金
-                'ProvisionForBonusesPrior': 'P65',
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': 'P66',
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': 'P67',   
-                #証券コード
-                'SecurityCodeDEI': 'K2',
-                #会社名
-                'CompanyNameCoverPage': 'L2',
-                #当会計期間終了日
-                'CurrentFiscalYearEndDateDEIyear': 'N2',
-                'CurrentFiscalYearEndDateDEImonth': 'O2'
+cell_map_file2 = {
+    #売上高
+    'NetSalesPrior': 'J5', 'NetSalesCurrent': 'M5',
+    #売上原価
+    'CostOfSalesPrior': 'J6', 'CostOfSalesCurrent': 'M6',
+    #売上総利益
+    'GrossProfitPrior': 'J7', 'GrossProfitCurrent': 'M7',
+    #販管費
+    'SellingExpensesPrior': 'J8', 'SellingExpensesCurrent': 'M8',
+    #営業利益
+    'OperatingIncomePrior': 'J9', 'OperatingIncomeCurrent': 'M9',
+    #経常利益
+    'OrdinaryIncomePrior': 'J10', 'OrdinaryIncomeCurrent': 'M10',
+    #純利益
+    'ProfitLossPrior': 'J11', 'ProfitLossCurrent': 'M11',
+    #発行株数
+    'TotalNumberPrior3': 'D13', 'TotalNumberPrior2': 'G13', 
+    'TotalNumberPrior1': 'J13', 'TotalNumberCurrent': 'M13',
+    #資産
+    'TotalAssetsPrior3': 'C17', 'TotalAssetsPrior2': 'F17',
+    'TotalAssetsPrior1': 'I17', 'TotalAssetsCurrent': 'L17', 
+    #資本
+    'NetAssetsPrior3': 'D17', 'NetAssetsPrior2': 'G17',
+    'NetAssetsPrior1': 'J17', 'NetAssetsCurrent': 'M17',
+    #営業CF
+    'OperatingCashPrior': 'I21', 'OperatingCashCurrent': 'L21',
+    #投資CF
+    'InvestmentCashPrior': 'J21', 'InvestmentCashCurrent': 'M21',
+    #財務CF
+    'FinancingCashPrior': 'K21', 'FinancingCashCurrent': 'N21',
+    #期末残
+    'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
+    #短期借
+    'ShortTermBorrowingsPrior': 'I57', 'ShortTermBorrowingsCurrent': 'L57',
+    #長期借
+    'LongTermBorrowingsPrior': 'J57', 'LongTermBorrowingsCurrent': 'M57',
+    #社債
+    'BondsPrior': 'K57', 'BondsCurrent': 'N57',
+    #自己株式取得
+    'TreasuryStockPrior': 'J60', 'TreasuryStockCurrent': 'M60',
+    #配当金
+    'DividendsPrior': 'J61', 'DividendsCurrent': 'M61',
+    #給料及び賃金
+    'SalariesAndWagesPrior': 'J63', 'SalariesAndWagesCurrent': 'M63',
+    #賞与
+    'BonusesPrior': 'J64', 'BonusesCurrent': 'M64',
+    #賞与引当金
+    'ProvisionForBonusesPrior': 'J65', 'ProvisionForBonusesCurrent': 'M65',
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': 'J66', 'RetirementBenefitExpensesCurrent': 'M66',
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': 'J67', 'DepreciationAndAmortizationCurrent': 'M67'
+    },
+
+#半期
+cell_map_file3 = {
+    #売上高
+    'NetSalesYTD': 'J36',
+    #経常利益
+    'OrdinaryIncomeYTD': 'J37',
+    #純利益
+    'ProfitLossYTD': 'J38',
+    #発行株数
+    'TotalNumberQuarter': 'J40',
+    #資産
+    'TotalAssetsQuarter': 'I44',
+    #資本
+    'NetAssetsQuarter': 'J44',
+    #営業CF
+    'OperatingCashYTD': 'I48',
+    #投資CF
+    'InvestmentCashYTD': 'J48',
+    #財務CF
+    'FinancingCashYTD': 'K48',
+    #期末残
+    'CashAndCashEquivalentsQuarter': 'J49', 
+    #短期借
+    'ShortTermBorrowingsQuarter': 'O57',
+    #長期借
+    'LongTermBorrowingsQuarter': 'P57',
+    #社債
+    'BondsQuarter': 'Q57',
+    #自己株式取得
+    'TreasuryStockQuarter': 'P60',
+    #配当金
+    'DividendsQuarter': 'P61',
+    #給料及び賃金
+    'SalariesAndWagesPrior': 'P63',
+    #賞与
+    'BonusesPrior': 'P64',
+    #賞与引当金
+    'ProvisionForBonusesPrior': 'P65',
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': 'P66',
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': 'P67',   
+    #証券コード
+    'SecurityCodeDEI': 'K2',
+    #会社名
+    'CompanyNameCoverPage': 'L2',
+    #当会計期間終了日
+    'CurrentFiscalYearEndDateDEIyear': 'N2',
+    'CurrentFiscalYearEndDateDEImonth': 'O2'
             }
-        }
-    else:
-        return {
-            'tags_contexts': {
-            #連結決算の場合
-                #売上高
-                'NetSalesPrior': ('jppfs_cor:NetSales', "Prior1YearDuration", True, 'millions'),
-                'NetSalesCurrent': ('jppfs_cor:NetSales', "CurrentYearDuration", True, 'millions'),
-                'NetSalesYTD': ('jppfs_cor:NetSales', "InterimDuration", True, 'millions'),
-                #売上原価
-                'CostOfSalesPrior': ('jppfs_cor:CostOfSales', "Prior1YearDuration", True, 'millions'),
-                'CostOfSalesCurrent': ('jppfs_cor:CostOfSales', "CurrentYearDuration", True, 'millions'),
-                #売上総利益
-                'GrossProfitPrior': ('jppfs_cor:GrossProfit', "Prior1YearDuration", True, 'millions'),
-                'GrossProfitCurrent': ('jppfs_cor:GrossProfit', "CurrentYearDuration", True, 'millions'),
-                #販管費
-                'SellingExpensesPrior': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "Prior1YearDuration", True, 'millions'),
-                'SellingExpensesCurrent': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "CurrentYearDuration", True, 'millions'),
-                #営業利益
-                'OperatingIncomePrior': ('jppfs_cor:OperatingIncome', "Prior1YearDuration", True, 'millions'),
-                'OperatingIncomeCurrent': ('jppfs_cor:OperatingIncome', "CurrentYearDuration", True, 'millions'),
-                #経常利益
-                'OrdinaryIncomePrior': ('jppfs_cor:OrdinaryIncome', "Prior1YearDuration", True, 'millions'),
-                'OrdinaryIncomeCurrent': ('jppfs_cor:OrdinaryIncome', "CurrentYearDuration", True, 'millions'),
-                'OrdinaryIncomeYTD': ('jppfs_cor:OrdinaryIncome', "InterimDuration", True, 'millions'),
-                #純利益
-                'ProfitLossPrior': ('jppfs_cor:ProfitLoss', "Prior1YearDuration", True, 'millions'),
-                'ProfitLossCurrent': ('jppfs_cor:ProfitLoss', "CurrentYearDuration", True, 'millions'),
-                'ProfitLossYTD': ('jppfs_cor:ProfitLoss', "InterimDuration", True, 'millions'),
-                #発行株数
-                'TotalNumberPrior3': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberPrior2': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberPrior1': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberCurrent': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'thousands'),
-                'TotalNumberFiling': ('jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc', "FilingDateInstant_OrdinaryShareMember", True, 'thousands'),
-                #資産
-                'TotalAssetsPrior3': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior3YearInstant", True, 'millions'),
-                'TotalAssetsPrior2': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior2YearInstant", True, 'millions'),
-                'TotalAssetsPrior1': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
-                'TotalAssetsCurrent': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
-                'TotalAssetsQuarter': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "InterimInstant", True, 'millions'),
-                #資本
-                'NetAssetsPrior3': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior3YearInstant", True, 'millions'),
-                'NetAssetsPrior2': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior2YearInstant", True, 'millions'),
-                'NetAssetsPrior1': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
-                'NetAssetsCurrent': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
-                'NetAssetsQuarter': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "InterimInstant", True, 'millions'),
-                #営業CF
-                'OperatingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "Prior1YearDuration", True, 'millions'),
-                'OperatingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "CurrentYearDuration", True, 'millions'),
-                'OperatingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "InterimDuration", True, 'millions'),
-                #投資CF
-                'InvestmentCashPrior': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "Prior1YearDuration", True, 'millions'),
-                'InvestmentCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "CurrentYearDuration", True, 'millions'),
-                'InvestmentCashYTD': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "InterimDuration", True, 'millions'),
-                #財務CF
-                'FinancingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "Prior1YearDuration", True, 'millions'),
-                'FinancingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "CurrentYearDuration", True, 'millions'),
-                'FinancingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "InterimDuration", True, 'millions'),
-                #期末残
-                'CashAndCashEquivalentsPrior': ('jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
-                'CashAndCashEquivalentsCurrent': ('jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
-                'CashAndCashEquivalentsQuarter': ('jppfs_cor:CashAndCashEquivalents', "InterimInstant", True, 'millions'),
-                #短期借
-                'ShortTermBorrowingsPrior': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "Prior1YearDuration", True, 'millions'),
-                'ShortTermBorrowingsCurrent': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "CurrentYearDuration", True, 'millions'),
-                'ShortTermBorrowingsQuarter': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "InterimDuration", True, 'millions'),
-                #長期借
-                'LongTermBorrowingsPrior': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "Prior1YearDuration", True, 'millions'),
-                'LongTermBorrowingsCurrent': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "CurrentYearDuration", True, 'millions'),
-                'LongTermBorrowingsQuarter': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "InterimDuration", True, 'millions'),
-                #社債
-                'BondsPrior': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "Prior1YearDuration", True, 'millions'),
-                'BondsCurrent': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "CurrentYearDuration", True, 'millions'),
-                'BondsQuarter': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "InterimDuration", True, 'millions'),
-                #自己株式取得
-                'TreasuryStockPrior': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "Prior1YearDuration", True, 'millions'),
-                'TreasuryStockCurrent': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "CurrentYearDuration", True, 'millions'),
-                'TreasuryStockQuarter': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "InterimDuration", True, 'millions'),
-                #配当金
-                'DividendsPrior': ('jppfs_cor:CashDividendsPaidFinCF', "Prior1YearDuration", True, 'millions'),
-                'DividendsCurrent': ('jppfs_cor:CashDividendsPaidFinCF', "CurrentYearDuration", True, 'millions'),
-                'DividendsQuarter': ('jppfs_cor:CashDividendsPaidFinCF', "InterimDuration", True, 'millions'),
-                #給料及び賃金
-                'SalariesAndWagesPrior': ('jppfs_cor:SalariesAndWagesSGA', "Prior1YearDuration", True, 'millions'),
-                'SalariesAndWagesCurrent': ('jppfs_cor:SalariesAndWagesSGA', "CurrentYearDuration", True, 'millions'),
-                #賞与
-                'BonusesPrior': ('jppfs_cor:BonusesAndAllowanceSGA', "Prior1YearDuration", True, 'millions'),
-                'BonusesCurrent': ('jppfs_cor:BonusesAndAllowanceSGA', "CurrentYearDuration", True, 'millions'),
-                #賞与引当金
-                'ProvisionForBonusesPrior': ('jppfs_cor:ProvisionForBonusesSGA', "Prior1YearDuration", True, 'millions'),
-                'ProvisionForBonusesCurrent': ('jppfs_cor:ProvisionForBonusesSGA', "CurrentYearDuration", True, 'millions'),
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': ('jppfs_cor:RetirementBenefitExpensesSGA', "Prior1YearDuration", True, 'millions'),
-                'RetirementBenefitExpensesCurrent': ('jppfs_cor:RetirementBenefitExpensesSGA', "CurrentYearDuration", True, 'millions'),
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "Prior1YearDuration", True, 'millions'),
-                'DepreciationAndAmortizationCurrent': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "CurrentYearDuration", True, 'millions'),
-                #証券コード
-                'SecurityCodeDEI': ('jpdei_cor:SecurityCodeDEI', "FilingDateInstant", True, 'ten'),
-                #会社名
-                'CompanyNameCoverPage': ('jpcrp_cor:CompanyNameCoverPage', "FilingDateInstant", False, 'millions'),
-                #当会計期間終了日
-                'CurrentPeriodEndDateDEIdate': ('jpdei_cor:CurrentPeriodEndDateDEI', "FilingDateInstant", False, 'date'),
-                #当事業年度終了日
-                'CurrentFiscalYearEndDateDEIyear': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'year'),
-                'CurrentFiscalYearEndDateDEImonth': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'month')
+tags_contexts={
+#連結決算の場合
+    #売上高
+    'NetSalesPrior': ('jppfs_cor:NetSales', "Prior1YearDuration", True, 'millions'),
+    'NetSalesCurrent': ('jppfs_cor:NetSales', "CurrentYearDuration", True, 'millions'),
+    'NetSalesYTD': ('jppfs_cor:NetSales', "InterimDuration", True, 'millions'),
+    #売上原価
+    'CostOfSalesPrior': ('jppfs_cor:CostOfSales', "Prior1YearDuration", True, 'millions'),
+    'CostOfSalesCurrent': ('jppfs_cor:CostOfSales', "CurrentYearDuration", True, 'millions'),
+    #売上総利益
+    'GrossProfitPrior': ('jppfs_cor:GrossProfit', "Prior1YearDuration", True, 'millions'),
+    'GrossProfitCurrent': ('jppfs_cor:GrossProfit', "CurrentYearDuration", True, 'millions'),
+    #販管費
+    'SellingExpensesPrior': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "Prior1YearDuration", True, 'millions'),
+    'SellingExpensesCurrent': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "CurrentYearDuration", True, 'millions'),
+    #営業利益
+    'OperatingIncomePrior': ('jppfs_cor:OperatingIncome', "Prior1YearDuration", True, 'millions'),
+    'OperatingIncomeCurrent': ('jppfs_cor:OperatingIncome', "CurrentYearDuration", True, 'millions'),
+    #経常利益
+    'OrdinaryIncomePrior': ('jppfs_cor:OrdinaryIncome', "Prior1YearDuration", True, 'millions'),
+    'OrdinaryIncomeCurrent': ('jppfs_cor:OrdinaryIncome', "CurrentYearDuration", True, 'millions'),
+    'OrdinaryIncomeYTD': ('jppfs_cor:OrdinaryIncome', "InterimDuration", True, 'millions'),
+    #純利益
+    'ProfitLossPrior': ('jppfs_cor:ProfitLoss', "Prior1YearDuration", True, 'millions'),
+    'ProfitLossCurrent': ('jppfs_cor:ProfitLoss', "CurrentYearDuration", True, 'millions'),
+    'ProfitLossYTD': ('jppfs_cor:ProfitLoss', "InterimDuration", True, 'millions'),
+    #発行株数
+    'TotalNumberPrior3': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberPrior2': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberPrior1': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberCurrent': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'thousands'),
+    'TotalNumberFiling': ('jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc', "FilingDateInstant_OrdinaryShareMember", True, 'thousands'),
+    #資産
+    'TotalAssetsPrior3': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior3YearInstant", True, 'millions'),
+    'TotalAssetsPrior2': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior2YearInstant", True, 'millions'),
+    'TotalAssetsPrior1': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
+    'TotalAssetsCurrent': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
+    'TotalAssetsQuarter': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "InterimInstant", True, 'millions'),
+    #資本
+    'NetAssetsPrior3': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior3YearInstant", True, 'millions'),
+    'NetAssetsPrior2': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior2YearInstant", True, 'millions'),
+    'NetAssetsPrior1': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
+    'NetAssetsCurrent': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
+    'NetAssetsQuarter': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "InterimInstant", True, 'millions'),
+    #営業CF
+    'OperatingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "Prior1YearDuration", True, 'millions'),
+    'OperatingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "CurrentYearDuration", True, 'millions'),
+    'OperatingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "InterimDuration", True, 'millions'),
+    #投資CF
+    'InvestmentCashPrior': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "Prior1YearDuration", True, 'millions'),
+    'InvestmentCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "CurrentYearDuration", True, 'millions'),
+    'InvestmentCashYTD': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "InterimDuration", True, 'millions'),
+    #財務CF
+    'FinancingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "Prior1YearDuration", True, 'millions'),
+    'FinancingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "CurrentYearDuration", True, 'millions'),
+    'FinancingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "InterimDuration", True, 'millions'),
+    #期末残
+    'CashAndCashEquivalentsPrior': ('jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
+    'CashAndCashEquivalentsCurrent': ('jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
+    'CashAndCashEquivalentsQuarter': ('jppfs_cor:CashAndCashEquivalents', "InterimInstant", True, 'millions'),
+    #短期借
+    'ShortTermBorrowingsPrior': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "Prior1YearDuration", True, 'millions'),
+    'ShortTermBorrowingsCurrent': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "CurrentYearDuration", True, 'millions'),
+    'ShortTermBorrowingsQuarter': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "InterimDuration", True, 'millions'),
+    #長期借
+    'LongTermBorrowingsPrior': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "Prior1YearDuration", True, 'millions'),
+    'LongTermBorrowingsCurrent': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "CurrentYearDuration", True, 'millions'),
+    'LongTermBorrowingsQuarter': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "InterimDuration", True, 'millions'),
+    #社債
+    'BondsPrior': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "Prior1YearDuration", True, 'millions'),
+    'BondsCurrent': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "CurrentYearDuration", True, 'millions'),
+    'BondsQuarter': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "InterimDuration", True, 'millions'),
+    #自己株式取得
+    'TreasuryStockPrior': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "Prior1YearDuration", True, 'millions'),
+    'TreasuryStockCurrent': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "CurrentYearDuration", True, 'millions'),
+    'TreasuryStockQuarter': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "InterimDuration", True, 'millions'),
+    #配当金
+    'DividendsPrior': ('jppfs_cor:CashDividendsPaidFinCF', "Prior1YearDuration", True, 'millions'),
+    'DividendsCurrent': ('jppfs_cor:CashDividendsPaidFinCF', "CurrentYearDuration", True, 'millions'),
+    'DividendsQuarter': ('jppfs_cor:CashDividendsPaidFinCF', "InterimDuration", True, 'millions'),
+    #給料及び賃金
+    'SalariesAndWagesPrior': ('jppfs_cor:SalariesAndWagesSGA', "Prior1YearDuration", True, 'millions'),
+    'SalariesAndWagesCurrent': ('jppfs_cor:SalariesAndWagesSGA', "CurrentYearDuration", True, 'millions'),
+    #賞与
+    'BonusesPrior': ('jppfs_cor:BonusesAndAllowanceSGA', "Prior1YearDuration", True, 'millions'),
+    'BonusesCurrent': ('jppfs_cor:BonusesAndAllowanceSGA', "CurrentYearDuration", True, 'millions'),
+    #賞与引当金
+    'ProvisionForBonusesPrior': ('jppfs_cor:ProvisionForBonusesSGA', "Prior1YearDuration", True, 'millions'),
+    'ProvisionForBonusesCurrent': ('jppfs_cor:ProvisionForBonusesSGA', "CurrentYearDuration", True, 'millions'),
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': ('jppfs_cor:RetirementBenefitExpensesSGA', "Prior1YearDuration", True, 'millions'),
+    'RetirementBenefitExpensesCurrent': ('jppfs_cor:RetirementBenefitExpensesSGA', "CurrentYearDuration", True, 'millions'),
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "Prior1YearDuration", True, 'millions'),
+    'DepreciationAndAmortizationCurrent': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "CurrentYearDuration", True, 'millions'),
+    #証券コード
+    'SecurityCodeDEI': ('jpdei_cor:SecurityCodeDEI', "FilingDateInstant", True, 'ten'),
+    #会社名
+    'CompanyNameCoverPage': ('jpcrp_cor:CompanyNameCoverPage', "FilingDateInstant", False, 'millions'),
+    #当会計期間終了日
+    'CurrentPeriodEndDateDEIdate': ('jpdei_cor:CurrentPeriodEndDateDEI', "FilingDateInstant", False, 'date'),
+    #当事業年度終了日
+    'CurrentFiscalYearEndDateDEIyear': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'year'),
+    'CurrentFiscalYearEndDateDEImonth': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'month')
             },
-            'cell_map_file1': {
-                #売上高
-                'NetSalesPrior': 'D5', 'NetSalesCurrent': 'G5',
-                #売上原価
-                'CostOfSalesPrior': 'D6', 'CostOfSalesCurrent': 'G6',
-                #売上総利益
-                'GrossProfitPrior': 'D7', 'GrossProfitCurrent': 'G7',
-                #販管費
-                'SellingExpensesPrior': 'D8', 'SellingExpensesCurrent': 'G8',
-                #営業利益
-                'OperatingIncomePrior': 'D9', 'OperatingIncomeCurrent': 'G9',
-                #経常利益
-                'OrdinaryIncomePrior': 'D10', 'OrdinaryIncomeCurrent': 'G10',
-                #経常利益
-                'ProfitLossPrior': 'D11', 'ProfitLossCurrent': 'G11',
-                #営業CF
-                'OperatingCashPrior': 'C21', 'OperatingCashCurrent': 'F21',
-                #投資CF
-                'InvestmentCashPrior': 'D21', 'InvestmentCashCurrent': 'G21',
-                #財務CF
-                'FinancingCashPrior': 'E21', 'FinancingCashCurrent': 'H21',
-                #期末残
-                'CashAndCashEquivalentsPrior': 'D22', 'CashAndCashEquivalentsCurrent': 'G22',
-                #短期借
-                'ShortTermBorrowingsPrior': 'C57', 'ShortTermBorrowingsCurrent': 'F57',
-                #長期借
-                'LongTermBorrowingsPrior': 'D57', 'LongTermBorrowingsCurrent': 'G57',
-                #社債
-                'BondsPrior': 'E57', 'BondsCurrent': 'H57',
-                #自己株式取得
-                'TreasuryStockPrior': 'D60', 'TreasuryStockCurrent': 'G60',
-                #配当金
-                'DividendsPrior': 'D61', 'DividendsCurrent': 'G61',
-                #給料及び賃金
-                'SalariesAndWagesPrior': 'D63', 'SalariesAndWagesCurrent': 'G63',
-                #賞与
-                'BonusesPrior': 'D64', 'BonusesCurrent': 'G64',
-                #賞与引当金
-                'ProvisionForBonusesPrior': 'D65', 'ProvisionForBonusesCurrent': 'G65',
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': 'D66', 'RetirementBenefitExpensesCurrent': 'G66',
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': 'D67', 'DepreciationAndAmortizationCurrent': 'G67'
+cell_map_file1 ={
+    #売上高
+    'NetSalesPrior': 'D5', 'NetSalesCurrent': 'G5',
+    #売上原価
+    'CostOfSalesPrior': 'D6', 'CostOfSalesCurrent': 'G6',
+    #売上総利益
+    'GrossProfitPrior': 'D7', 'GrossProfitCurrent': 'G7',
+    #販管費
+    'SellingExpensesPrior': 'D8', 'SellingExpensesCurrent': 'G8',
+    #営業利益
+    'OperatingIncomePrior': 'D9', 'OperatingIncomeCurrent': 'G9',
+    #経常利益
+    'OrdinaryIncomePrior': 'D10', 'OrdinaryIncomeCurrent': 'G10',
+    #経常利益
+    'ProfitLossPrior': 'D11', 'ProfitLossCurrent': 'G11',
+    #営業CF
+    'OperatingCashPrior': 'C21', 'OperatingCashCurrent': 'F21',
+    #投資CF
+    'InvestmentCashPrior': 'D21', 'InvestmentCashCurrent': 'G21',
+    #財務CF
+    'FinancingCashPrior': 'E21', 'FinancingCashCurrent': 'H21',
+    #期末残
+    'CashAndCashEquivalentsPrior': 'D22', 'CashAndCashEquivalentsCurrent': 'G22',
+    #短期借
+    'ShortTermBorrowingsPrior': 'C57', 'ShortTermBorrowingsCurrent': 'F57',
+    #長期借
+    'LongTermBorrowingsPrior': 'D57', 'LongTermBorrowingsCurrent': 'G57',
+    #社債
+    'BondsPrior': 'E57', 'BondsCurrent': 'H57',
+    #自己株式取得
+    'TreasuryStockPrior': 'D60', 'TreasuryStockCurrent': 'G60',
+    #配当金
+    'DividendsPrior': 'D61', 'DividendsCurrent': 'G61',
+    #給料及び賃金
+    'SalariesAndWagesPrior': 'D63', 'SalariesAndWagesCurrent': 'G63',
+    #賞与
+    'BonusesPrior': 'D64', 'BonusesCurrent': 'G64',
+    #賞与引当金
+    'ProvisionForBonusesPrior': 'D65', 'ProvisionForBonusesCurrent': 'G65',
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': 'D66', 'RetirementBenefitExpensesCurrent': 'G66',
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': 'D67', 'DepreciationAndAmortizationCurrent': 'G67'
             },
-            'cell_map_file2': {
-                #売上高
-                'NetSalesPrior': 'J5', 'NetSalesCurrent': 'M5',
-                #売上原価
-                'CostOfSalesPrior': 'J6', 'CostOfSalesCurrent': 'M6',
-                #売上総利益
-                'GrossProfitPrior': 'J7', 'GrossProfitCurrent': 'M7',
-                #販管費
-                'SellingExpensesPrior': 'J8', 'SellingExpensesCurrent': 'M8',
-                #営業利益
-                'OperatingIncomePrior': 'J9', 'OperatingIncomeCurrent': 'M9',
-                #経常利益
-                'OrdinaryIncomePrior': 'J10', 'OrdinaryIncomeCurrent': 'M10',
-                #純利益
-                'ProfitLossPrior': 'J11', 'ProfitLossCurrent': 'M11',
-                #発行株数
-                'TotalNumberPrior3': 'D13', 'TotalNumberPrior2': 'G13', 
-                'TotalNumberPrior1': 'J13', 'TotalNumberCurrent': 'M13',
-                #資産
-                'TotalAssetsPrior3': 'C17', 'TotalAssetsPrior2': 'F17',
-                'TotalAssetsPrior1': 'I17', 'TotalAssetsCurrent': 'L17', 
-                #資本
-                'NetAssetsPrior3': 'D17', 'NetAssetsPrior2': 'G17',
-                'NetAssetsPrior1': 'J17', 'NetAssetsCurrent': 'M17',
-                #営業CF
-                'OperatingCashPrior': 'I21', 'OperatingCashCurrent': 'L21',
-                #投資CF
-                'InvestmentCashPrior': 'J21', 'InvestmentCashCurrent': 'M21',
-                #財務CF
-                'FinancingCashPrior': 'K21', 'FinancingCashCurrent': 'N21',
-                #期末残
-                'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
-                #期末残
-                'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
-                #短期借
-                'ShortTermBorrowingsPrior': 'I57', 'ShortTermBorrowingsCurrent': 'L57',
-                #長期借
-                'LongTermBorrowingsPrior': 'J57', 'LongTermBorrowingsCurrent': 'M57',
-                #社債
-                'BondsPrior': 'K57', 'BondsCurrent': 'N57',
-                #自己株式取得
-                'TreasuryStockPrior': 'J60', 'TreasuryStockCurrent': 'M60',
-                #配当金
-                'DividendsPrior': 'J61', 'DividendsCurrent': 'M61',
-                #給料及び賃金
-                'SalariesAndWagesPrior': 'J63', 'SalariesAndWagesCurrent': 'M63',
-                #賞与
-                'BonusesPrior': 'J64', 'BonusesCurrent': 'M64',
-                #賞与引当金
-                'ProvisionForBonusesPrior': 'J65', 'ProvisionForBonusesCurrent': 'M65',
-                #退職給付費用
-                'RetirementBenefitExpensesPrior': 'J66', 'RetirementBenefitExpensesCurrent': 'M66',
-                #CF減価償却費
-                'DepreciationAndAmortizationPrior': 'J67', 'DepreciationAndAmortizationCurrent': 'M67'
+cell_map_file2 ={
+    #売上高
+    'NetSalesPrior': 'J5', 'NetSalesCurrent': 'M5',
+    #売上原価
+    'CostOfSalesPrior': 'J6', 'CostOfSalesCurrent': 'M6',
+    #売上総利益
+    'GrossProfitPrior': 'J7', 'GrossProfitCurrent': 'M7',
+    #販管費
+    'SellingExpensesPrior': 'J8', 'SellingExpensesCurrent': 'M8',
+    #営業利益
+    'OperatingIncomePrior': 'J9', 'OperatingIncomeCurrent': 'M9',
+    #経常利益
+    'OrdinaryIncomePrior': 'J10', 'OrdinaryIncomeCurrent': 'M10',
+    #純利益
+    'ProfitLossPrior': 'J11', 'ProfitLossCurrent': 'M11',
+    #発行株数
+    'TotalNumberPrior3': 'D13', 'TotalNumberPrior2': 'G13', 
+    'TotalNumberPrior1': 'J13', 'TotalNumberCurrent': 'M13',
+    #資産
+    'TotalAssetsPrior3': 'C17', 'TotalAssetsPrior2': 'F17',
+    'TotalAssetsPrior1': 'I17', 'TotalAssetsCurrent': 'L17', 
+    #資本
+    'NetAssetsPrior3': 'D17', 'NetAssetsPrior2': 'G17',
+    'NetAssetsPrior1': 'J17', 'NetAssetsCurrent': 'M17',
+    #営業CF
+    'OperatingCashPrior': 'I21', 'OperatingCashCurrent': 'L21',
+    #投資CF
+    'InvestmentCashPrior': 'J21', 'InvestmentCashCurrent': 'M21',
+    #財務CF
+    'FinancingCashPrior': 'K21', 'FinancingCashCurrent': 'N21',
+    #期末残
+    'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
+    #期末残
+    'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
+    #短期借
+    'ShortTermBorrowingsPrior': 'I57', 'ShortTermBorrowingsCurrent': 'L57',
+    #長期借
+    'LongTermBorrowingsPrior': 'J57', 'LongTermBorrowingsCurrent': 'M57',
+    #社債
+    'BondsPrior': 'K57', 'BondsCurrent': 'N57',
+    #自己株式取得
+    'TreasuryStockPrior': 'J60', 'TreasuryStockCurrent': 'M60',
+    #配当金
+    'DividendsPrior': 'J61', 'DividendsCurrent': 'M61',
+    #給料及び賃金
+    'SalariesAndWagesPrior': 'J63', 'SalariesAndWagesCurrent': 'M63',
+    #賞与
+    'BonusesPrior': 'J64', 'BonusesCurrent': 'M64',
+    #賞与引当金
+    'ProvisionForBonusesPrior': 'J65', 'ProvisionForBonusesCurrent': 'M65',
+    #退職給付費用
+    'RetirementBenefitExpensesPrior': 'J66', 'RetirementBenefitExpensesCurrent': 'M66',
+    #CF減価償却費
+    'DepreciationAndAmortizationPrior': 'J67', 'DepreciationAndAmortizationCurrent': 'M67'
             },
-            'cell_map_file3': {
-                #売上高
-                'NetSalesYTD': 'J36',
-                #経常利益
-                'OrdinaryIncomeYTD': 'J37',
-                #純利益
-                'ProfitLossYTD': 'J38',
-                #発行株数
-                'TotalNumberFiling': 'J40',
-                #資産
-                'TotalAssetsQuarter': 'I44',
-                #資本
-                'NetAssetsQuarter': 'J44',
-                #営業CF
-                'OperatingCashYTD': 'I48',
-                #投資CF
-                'InvestmentCashYTD': 'J48',
-                #財務CF
-                'FinancingCashYTD': 'K48',
-                #期末残
-                'CashAndCashEquivalentsQuarter': 'J49',
-                #短期借
-                'ShortTermBorrowingsQuarter': 'O57',
-                #長期借
-                'LongTermBorrowingsQuarter': 'P57',
-                #社債
-                'BondsQuarter': 'Q57',
-                #自己株式取得
-                'TreasuryStockQuarter': 'P60',
-                #配当金
-                'DividendsQuarter': 'P61', 
-                #証券コード
-                'SecurityCodeDEI': 'K2',
-                #会社名
-                'CompanyNameCoverPage': 'L2',
-                #当事業年度終了日
-                'CurrentFiscalYearEndDateDEIyear': 'N2',
-                'CurrentFiscalYearEndDateDEImonth': 'O2'
+cell_map_file3 ={
+    #売上高
+    'NetSalesYTD': 'J36',
+    #経常利益
+    'OrdinaryIncomeYTD': 'J37',
+    #純利益
+    'ProfitLossYTD': 'J38',
+    #発行株数
+    'TotalNumberFiling': 'J40',
+    #資産
+    'TotalAssetsQuarter': 'I44',
+    #資本
+    'NetAssetsQuarter': 'J44',
+    #営業CF
+    'OperatingCashYTD': 'I48',
+    #投資CF
+    'InvestmentCashYTD': 'J48',
+    #財務CF
+    'FinancingCashYTD': 'K48',
+    #期末残
+    'CashAndCashEquivalentsQuarter': 'J49',
+    #短期借
+    'ShortTermBorrowingsQuarter': 'O57',
+    #長期借
+    'LongTermBorrowingsQuarter': 'P57',
+    #社債
+    'BondsQuarter': 'Q57',
+    #自己株式取得
+    'TreasuryStockQuarter': 'P60',
+    #配当金
+    'DividendsQuarter': 'P61', 
+    #証券コード
+    'SecurityCodeDEI': 'K2',
+    #会社名
+    'CompanyNameCoverPage': 'L2',
+    #当事業年度終了日
+    'CurrentFiscalYearEndDateDEIyear': 'N2',
+    'CurrentFiscalYearEndDateDEImonth': 'O2'
             }
-        }
 
 # ファイルパスを順番に確認する関数
 def find_available_excel_file(base_path, file_name, max_copies=10):
@@ -1150,13 +1436,10 @@ for i in range(file_count):
 
         path = paths[0]
         
-        # マッピングを選択
-        mappings = select_mapping(False)  
-        tags_contexts = mappings['tags_contexts']
-        # XBRLファイルからデータを解析
+        # XBRL解析
         try:
-            xbrl_data, has_non_consolidated_member, security_code = parse_xbrl_data(path, tags_contexts)
-        except Exception as e:
+            xbrl_data, security_code = parse_xbrl_data(path)
+        except Exception as e:  
             skipped_files.append({
                 'reason': f"XBRLデータの解析中にエラー: {e}",
                 'file': path
@@ -1164,12 +1447,13 @@ for i in range(file_count):
             print(f"{key} のファイル {path} を解析中にエラーが発生しました。スキップします。")
             continue
 
-        mappings = select_mapping(has_non_consolidated_member)
-        cell_map_file1 = mappings['cell_map_file1']
-        cell_map_file2 = mappings['cell_map_file2']
-        cell_map_file3 = mappings['cell_map_file3']
-
         cell_map = cell_map_file1 if key == 'file1' else cell_map_file2 if key == 'file2' else cell_map_file3
+
+        if 'CurrentFiscalYearEndDateDEI' in xbrl_data:
+            date_str = xbrl_data['CurrentFiscalYearEndDateDEI']
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            xbrl_data['CurrentFiscalYearEndDateDEIyear'] = dt.year
+            xbrl_data['CurrentFiscalYearEndDateDEImonth'] = dt.month
 
         try:
             write_data_to_excel(excel_file_path, xbrl_data, cell_map)
@@ -1181,8 +1465,15 @@ for i in range(file_count):
             print(f"Excelデータの書き込み中にエラーが発生しました。スキップします。")
 
         # リネーム情報を取得
-        if key == 'file3' and 'SecurityCodeDEI' in xbrl_data and 'CompanyNameCoverPage' in xbrl_data and 'CurrentPeriodEndDateDEIdate' in xbrl_data:
-            rename_info = (xbrl_data['SecurityCodeDEI'], xbrl_data['CompanyNameCoverPage'], xbrl_data['CurrentPeriodEndDateDEIdate'])
+        if key == 'file3' and \
+            'SecurityCodeDEI' in xbrl_data and \
+            'CompanyNameCoverPage' in xbrl_data and \
+            'CurrentFiscalYearEndDateDEI' in xbrl_data:
+            rename_info = (
+                xbrl_data['SecurityCodeDEI'],
+                xbrl_data['CompanyNameCoverPage'],
+                xbrl_data['CurrentFiscalYearEndDateDEI']
+            )
 
     # Excelファイルのリネーム
     if rename_info:
