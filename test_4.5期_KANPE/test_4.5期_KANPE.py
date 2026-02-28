@@ -2,6 +2,7 @@ import os
 import openpyxl
 from bs4 import BeautifulSoup
 import yfinance as yf
+import re
 from datetime import datetime, timedelta
 import glob
 from tkinter import Tk, filedialog
@@ -18,37 +19,52 @@ print("作業ディレクトリ:", os.getcwd())
 # フォルダを選択する関数
 def choose_directory():
     root = Tk()
-    root.withdraw()  # Tkinterのウィンドウを非表示にする
+    root.withdraw()              # メインウィンドウ非表示
+    root.update()                # これが効く環境が多い
     folder_path = filedialog.askdirectory(title="XBRLフォルダを選択してください")
+    root.destroy()               # ★これ重要：Tkを閉じる
     return folder_path
 
 # メイン処理
-print("XBRLフォルダを選択してください。")
-base_dir = choose_directory()
+base_dir = r"C:\Users\silve\OneDrive\PC\開発\test\Python\XBRL"
+print("XBRLフォルダ（固定）:", base_dir)
 
-if not base_dir:
-    print("XBRLフォルダが選択されませんでした。プログラムを終了します。")
+if not os.path.isdir(base_dir):
+    print("base_dir が存在しません。パスを確認してください:", base_dir)
     exit()
 
-# 数値を指定された単位で切り捨て
 def trim_value(value, unit='millions'):
+    """
+    EDINETのfactは文字列で来ることが多いので、まず int 化。
+    株数(unit='ones')は割らずにそのまま返す。
+    """
     try:
+        s = str(value).replace(",", "").strip()
+        v = int(s)
+
+        if unit == "ones":
+            return v
+
         factor = {'millions': 1_000_000, 'thousands': 1_000, 'ten': 10}[unit]
-        return int(value) // factor
-    except ValueError:
+        return v // factor
+    except Exception:
         return 'データなし'
 
-# XBRLデータの解析
-def parse_xbrl_data(xbrl_file):
+
+# XBRLデータの解析（完成版）
+def parse_xbrl_data(xbrl_file, mode="full"):
+    # mode:
+    #   "full" : YTD + Current/Prior + Quarter + DEI（有報向け）
+    #   "half" : YTD + Quarter + DEI だけ（半期向け：Current/Prior作らない）
     with open(xbrl_file, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml-xml")
 
-    # -------------------------
-    # 1) context 情報を構造で保持
-    # -------------------------
+    # ========= 1) context 読み取り =========
     contexts = {}
     for ctx in soup.find_all("context"):
         ctx_id = ctx.get("id")
+        if not ctx_id:
+            continue
 
         period = ctx.find("period")
         if not period:
@@ -58,88 +74,66 @@ def parse_xbrl_data(xbrl_file):
         end = period.find("endDate")
         instant = period.find("instant")
 
-        # dimension（連結/単体）判定：ConsolidatedOrNonConsolidatedAxis を見る
-        # ※明示が無い場合は連結扱い（EDINETでは連結が基本）
-        dim_member_texts = [m.get_text(strip=True) for m in ctx.find_all("xbrldi:explicitMember")]
-        is_noncon = any("NonConsolidatedMember" in t for t in dim_member_texts)
+        start_s = start.get_text(strip=True) if start else None
+        end_s = end.get_text(strip=True) if end else None
+        inst_s = instant.get_text(strip=True) if instant else None
+
+        members = [m.get_text(strip=True) for m in ctx.find_all("xbrldi:explicitMember")]
+        is_noncon = any("NonConsolidatedMember" in t for t in members)
         dim = "NonConsolidated" if is_noncon else "Consolidated"
 
-        contexts[ctx_id] = {
-            "start": start.get_text(strip=True) if start else None,
-            "end": end.get_text(strip=True) if end else None,
-            "instant": instant.get_text(strip=True) if instant else None,
-            "dim": dim,
-        }
+        contexts[ctx_id] = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
 
-    def months_between(start_ymd: str, end_ymd: str) -> int:
-        s = datetime.strptime(start_ymd, "%Y-%m-%d")
-        e = datetime.strptime(end_ymd, "%Y-%m-%d")
-        return (e.year - s.year) * 12 + (e.month - s.month)
+    def parse_ymd(s):
+        """日付っぽい文字列だけYYYY-MM-DDで処理。失敗したら None。"""
+        try:
+            return datetime.strptime(s, "%Y-%m-%d")
+        except Exception:
+            return None
 
-    # -------------------------
-    # 2) 期間（通期=12 / 上期=6）ごとの「対象end日」を決める
-    #    連結優先で endDate が一番新しいものを current とする
-    # -------------------------
-    def pick_end_dates(target_months: int):
-        # candidates: (end_date, dim)
-        cands = []
-        for info in contexts.values():
-            if info["start"] and info["end"]:
-                m = months_between(info["start"], info["end"])
-                if m == target_months:
-                    cands.append((info["end"], info["dim"]))
+    def months_diff(s, e):
+        """日付 s->e のだいたいの月差。日が足りない分は1か月減らす。"""
+        if not s or not e:
+            return None
+        m = (e.year - s.year) * 12 + (e.month - s.month)
+        # 例：4/1→9/30 は 5か月差に見えるが、上期として拾いたい
+        # なので「日が小さくても減らしすぎない」ように調整は緩めにする
+        if e.day < s.day:
+            m -= 1
+        return m
 
-        # end_date で降順、同日なら 連結優先
-        # dim の優先度: Consolidated(0) < NonConsolidated(1)
-        def dim_rank(d):
-            return 0 if d == "Consolidated" else 1
+    def duration_bucket_months(start_ymd, end_ymd):
+        """duration期間を「上期(6)」「通期(12)」に分類（6/12以外は無視）"""
+        s = parse_ymd(start_ymd)
+        e = parse_ymd(end_ymd)
+        md = months_diff(s, e)
+        if md is None:
+            return None
 
-        cands.sort(key=lambda x: (x[0], -1 if x[1] == "Consolidated" else -2), reverse=True)
+        # 上期：5〜7か月程度を6扱い（会社・暦のズレ吸収）
+        if 5 <= md <= 7:
+            return 6
 
-        # current_end: 最上位（連結優先）
-        # prior_end: その次（年次比較用）
-        # ※同じ end が複数dimで出るので、end日だけ抽出してユニーク化
-        end_dates = []
-        for end_date, _dim in cands:
-            if end_date not in end_dates:
-                end_dates.append(end_date)
+        # 通期：11〜13か月程度を12扱い
+        if 11 <= md <= 13:
+            return 12
 
-        current_end = end_dates[0] if len(end_dates) >= 1 else None
-        prior_end = end_dates[1] if len(end_dates) >= 2 else None
-        return current_end, prior_end
+        return None
 
-    fy_end_cur, fy_end_pri = pick_end_dates(12)  # 通期
-    h1_end_cur, h1_end_pri = pick_end_dates(6)   # 上期累計
-
-    # -------------------------
-    # 3) タグ候補（J-GAAP/IFRS）定義
-    #    ※あなたの画像の表をベースに。増やしたいタグはここに足すだけ
-    # -------------------------
+    # ========= 2) メトリクス定義（ここに増やす） =========
     METRICS = {
-        # ---- 表紙/DEI ----
-        "CompanyNameCoverPage": {
-            "tags": ["jpcrp_cor:CompanyNameCoverPage"],
-            "kind": "instant_text",  # 文字列
-            "unit": None,
-        },
-        "CurrentFiscalYearEndDateDEI": {
-            "tags": ["jpdei_cor:CurrentFiscalYearEndDateDEI"],
-            "kind": "instant_date",  # 日付
-            "unit": "date",
-        },
-        "SecurityCodeDEI": {
-            "tags": ["jpdei_cor:SecurityCodeDEI"],
-            "kind": "instant_text",
-            "unit": None,
-        },
-
-        # ---- PL（通期/上期）----
+        # ---------- PL / CF（duration） ----------
         "NetSales": {
             "tags": [
+                # ★半期サマリー（最優先）
+                "jpcrp_cor:NetSalesSummaryOfBusinessResults",
+                # 通常PL
                 "jppfs_cor:NetSales",
+                # 保険（売上相当）
+                "jpcrp_cor:RevenuesFromExternalCustomers",
+                # IFRS
                 "jpigp_cor:RevenueIFRS",
                 "jpigp_cor:NetSalesIFRS",
-                "jpcrp030000-asr_E02144-000:TotalNetRevenuesIFRS",
             ],
             "kind": "duration",
             "unit": "millions",
@@ -168,17 +162,75 @@ def parse_xbrl_data(xbrl_file):
             "unit": "millions",
         },
         "OrdinaryIncome": {
-            "tags": ["jppfs_cor:OrdinaryIncome", "jpigp_cor:ProfitLossBeforeTaxIFRS"],
+            "tags": [
+                # ★半期サマリー（最優先）
+                "jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults",
+                # J-GAAP
+                "jppfs_cor:OrdinaryIncome",
+                # IFRS（経常相当）
+                "jpigp_cor:ProfitLossBeforeTaxIFRS",
+                "jpigp_cor:ProfitLossBeforeIncomeTaxesIFRS",
+            ],
             "kind": "duration",
             "unit": "millions",
         },
         "ProfitLoss": {
-            "tags": ["jppfs_cor:ProfitLoss", "jpigp_cor:ProfitLossIFRS"],
+            "tags": [
+                # ★半期サマリー（最優先）
+                "jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
+                # 日本基準（半期）
+                "jppfs_cor:ProfitLossAttributableToOwnersOfParent",
+                # 日本基準（通期）
+                "jppfs_cor:ProfitLoss",
+                # IFRS
+                "jpigp_cor:ProfitLossAttributableToOwnersOfParentIFRS",
+                "jpigp_cor:ProfitLossIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        #営業CF
+        "OperatingCash": {
+            "tags": [
+                # ★半期サマリー（最優先）
+                "jpcrp_cor:NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults",
+                # 通常CF
+                "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
+                # IFRS
+                "jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        #投資CF
+        "InvestmentCash": {
+            "tags": [
+                # ★半期サマリー（最優先）
+                "jpcrp_cor:NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults",
+                # 通常CF（表記ゆれ対策で2つ）
+                "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
+                "jppfs_cor:NetCashProvidedByUsedInInvestingActivities",
+                # IFRS
+                "jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS",
+            ],
+            "kind": "duration",
+            "unit": "millions",
+        },
+        #財務CF
+        "FinancingCash": {
+            "tags": [
+                # ★半期サマリー（最優先）
+                "jpcrp_cor:NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults",
+                # 通常CF
+                "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
+                # IFRS
+                "jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS",
+            ],
             "kind": "duration",
             "unit": "millions",
         },
 
-        # ---- BS（期末instant：通期末/上期末）----
+        # ---------- BS（instant） ----------
         "TotalAssets": {
             "tags": [
                 "jpcrp_cor:TotalAssetsSummaryOfBusinessResults",
@@ -197,222 +249,399 @@ def parse_xbrl_data(xbrl_file):
             "kind": "instant_num",
             "unit": "millions",
         },
-
-        # ---- CF（通期/上期）----
-        "OperatingCash": {
-            "tags": [
-                "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
-                "jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "InvestmentCash": {
-            "tags": [
-                "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
-                "jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "FinancingCash": {
-            "tags": [
-                "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
-                "jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
         "CashAndCashEquivalents": {
             "tags": [
                 "jppfs_cor:CashAndCashEquivalents",
                 "jpigp_cor:CashAndCashEquivalentsIFRS",
+                "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
             ],
             "kind": "instant_num",
             "unit": "millions",
         },
 
-        # ---- そのほか（あなたの表の項目に合わせて追加してOK）----
-        "ShortTermBorrowings": {
-            "tags": ["jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF"],
-            "kind": "duration",
-            "unit": "millions",
+        # ---------- 株数（instant）：「材料」を拾って差分でTotalNumberに統一 ----------
+        # 発行済株式総数（タグ候補増やした）
+        "IssuedShares": {
+            "tags": [
+                # 代表的（株式等の状況）
+                "jpcrp_cor:TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
+                # サマリー系（会社により出る）
+                "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+                # 普通株/普通株式名義系（会社により出る）
+                "jpcrp_cor:TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
+                "jpcrp_cor:TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",
+                "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+                "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+  ],
+            "kind": "instant_num",
+            "unit": "ones",
         },
-        "LongTermBorrowings": {
-            "tags": ["jppfs_cor:ProceedsFromLongTermLoansPayableFinCF"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "Bonds": {
-            "tags": ["jppfs_cor:ProceedsFromIssuanceOfBondsFinCF"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "TreasuryStock": {
-            "tags": ["jppfs_cor:PurchaseOfTreasuryStockFinCF"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "Dividends": {
-            "tags": ["jppfs_cor:CashDividendsPaidFinCF"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "SalariesAndWages": {
-            "tags": ["jppfs_cor:SalariesAndWagesSGA"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "Bonuses": {
-            "tags": ["jppfs_cor:BonusesAndAllowanceSGA"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "ProvisionForBonuses": {
-            "tags": ["jppfs_cor:ProvisionForBonusesSGA"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "RetirementBenefitExpenses": {
-            "tags": ["jppfs_cor:RetirementBenefitExpensesSGA"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "DepreciationAndAmortization": {
-            "tags": ["jppfs_cor:DepreciationAndAmortizationOpeCF"],
-            "kind": "duration",
-            "unit": "millions",
+        # 自己株式数（タグ候補増やした）
+        "TreasuryShares": {
+            "tags": [
+                "jpcrp_cor:TotalNumberOfSharesHeldTreasurySharesEtc",
+                "jpcrp_cor:TotalNumberOfSharesHeldInOwnNameTreasurySharesEtc",
+                "jpcrp_cor:TotalNumberOfSharesHeldInTheNameOfOthersTreasurySharesEtc",
+                # サマリー系（会社により出る）
+                "jpcrp_cor:TotalNumberOfTreasurySharesSummaryOfBusinessResults",
+                "jpcrp_cor:NumberOfTreasurySharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+                "jpcrp_cor:TreasurySharesAtTheEndOfFiscalYearIssuedSharesTotalNumberOfSharesEtc",
+            ],
+            "kind": "instant_num",
+            "unit": "ones",
         },
     }
 
-    # -------------------------
-    # 4) fact 探索（連結優先＋endDate一致＋タグ優先）
-    # -------------------------
-    def pick_fact(tags, *, kind, end_date, prefer_dim="Consolidated"):
-        if end_date is None:
-            return None
+    # ========= 2.1) 出力箱を先に用意（DEIを早めに格納するため） =========
+    out = {}
 
-        # スコア：タグ順 + 連結優先
-        def dim_score(d):
-            # 連結を最優先、無ければ単体
-            return 1 if d == prefer_dim else 0
+    # ========= 2.2) DEI（PeriodEnd / FY start）を先に取得（file1/2/3 共通） =========
+    period_end = None
+    fy_start_dei = None
 
-        best = None
-        best_score = None
+    fy_start_el = soup.find("jpdei_cor:CurrentFiscalYearStartDateDEI")
+    if fy_start_el:
+        fy_start_dei = fy_start_el.get_text(strip=True)
+        out["CurrentFiscalYearStartDateDEI"] = fy_start_dei
 
-        for tag_priority, tag in enumerate(tags):
+    period_end_el = soup.find("jpdei_cor:CurrentPeriodEndDateDEI")
+    if period_end_el:
+        period_end = period_end_el.get_text(strip=True)
+        out["CurrentPeriodEndDateDEI"] = period_end
+
+
+    # ========= 3) fact収集 =========
+    facts = []  # {metric, value, end, months, dim, tag_priority, kind, unit}
+    for metric, meta in METRICS.items():
+        for tag_priority, tag in enumerate(meta["tags"]):
             for el in soup.find_all(tag):
                 ctxref = el.get("contextRef")
                 if not ctxref or ctxref not in contexts:
                     continue
                 info = contexts[ctxref]
 
-                # kind に応じて end_date を合わせる
-                if kind in ("duration",):
-                    if not (info["start"] and info["end"]):
+                if meta["kind"] == "duration":
+                    if not info["start"] or not info["end"]:
                         continue
-                    if info["end"] != end_date:
+                    months = duration_bucket_months(info["start"], info["end"])
+                    if months not in (6, 12):
                         continue
-                elif kind in ("instant_num", "instant_text", "instant_date"):
+                    end_date = info["end"]
+                else:
                     if not info["instant"]:
                         continue
-                    if info["instant"] != end_date:
-                        continue
-                else:
+                    months = None
+                    end_date = info["instant"]
+
+                facts.append({
+                    "metric": metric,
+                    "value": el.get_text(strip=True),
+                    "start": info["start"],        # ★追加
+                    "end": end_date,
+                    "months": months,
+                    "dim": info["dim"],
+                    "tag_priority": tag_priority,
+                    "kind": meta["kind"],
+                    "unit": meta["unit"],
+                })
+
+    # ========= 4) 「基準年」を決める（最新の通期duration end） =========
+    fy_ends = sorted(
+        {f["end"] for f in facts if f["kind"] == "duration" and f["months"] == 12 and parse_ymd(f["end"])},
+        reverse=True
+    )
+    base_fy_end = fy_ends[0] if fy_ends else None
+    base_dt = parse_ymd(base_fy_end) if base_fy_end else None
+    base_year = base_dt.year if base_dt else None
+
+    # ========= 4.2) 当期の期首日（FY start）を推定 =========
+    fy_start = None
+
+    # (A) DEIの CurrentFiscalYearStartDateDEI があれば最優先
+    if fy_start_dei and parse_ymd(fy_start_dei):
+        fy_start = fy_start_dei
+
+    # (B) 無ければ CurrentFiscalYearEndDateDEI から逆算（保険）
+    if fy_start is None:
+        fy_el = soup.find("jpdei_cor:CurrentFiscalYearEndDateDEI")
+        if fy_el:
+            try:
+                fy_end_dei = parse_ymd(fy_el.get_text(strip=True))
+                if fy_end_dei:
+                    prev_fy_end = fy_end_dei.replace(year=fy_end_dei.year - 1)
+                    fy_start = (prev_fy_end + timedelta(days=1)).strftime("%Y-%m-%d")
+            except Exception:
+                fy_start = None
+
+    # (C) それでも取れなければ従来ロジック（最終保険）
+    if fy_start is None and base_fy_end:
+        starts = sorted(
+            {f["start"] for f in facts
+            if f["kind"] == "duration"
+            and f["months"] == 12
+            and f["end"] == base_fy_end
+            and f.get("start")
+            and parse_ymd(f["start"])},
+            key=lambda s: parse_ymd(s)
+        )
+        if starts:
+            fy_start = starts[0]
+    # ========= 5) 連結優先 + タグ優先で 1つ選ぶ =========
+    def pick_best(metric, *, end_date, months=None):
+        cands = [f for f in facts if f["metric"] == metric and f["end"] == end_date]
+        if months is not None:
+            cands = [f for f in cands if f["months"] == months]
+        if not cands:
+            return None
+
+        def dim_rank(d):
+            return 0 if d == "Consolidated" else 1
+
+        cands.sort(key=lambda f: (dim_rank(f["dim"]), f["tag_priority"]))
+        return cands[0]
+
+    # ========= 6) 出力（自動割り当て） =========
+    # (A) duration：上期YTD（当期だけ） + 通期5年（Current/Prior1..4）
+    for metric, meta in METRICS.items():
+        if meta["kind"] != "duration":
+            continue
+
+        ## 上期（当期だけ） -> xxxYTD
+        # 0) (halfなら) DEIの period_end があれば「end==period_end & months==6」を最優先
+        # 1) 期首(fy_start)が推定できるなら「start==fy_start & months==6」で次に優先
+        # 2) ダメなら「months==6 の中で最も新しいend」を拾う（保険）
+        best = None
+
+        # (0) half：period_end一致を最優先（※ここでbestを確定させる）
+        if mode == "half" and period_end and parse_ymd(period_end):
+            cand = pick_best(metric, end_date=period_end, months=6)
+            if cand:
+                # fy_start が取れているなら start も一致しているものだけ採用（前年YTD誤採用の防止）
+                if (fy_start is None) or (cand.get("start") == fy_start):
+                    best = cand
+
+        # (1) 期首一致で探す（次に優先）
+        if best is None and fy_start:
+            h1_ends = sorted(
+                {f["end"] for f in facts
+                 if f["metric"] == metric
+                 and f["months"] == 6
+                 and f.get("start") == fy_start
+                 and parse_ymd(f["end"])},
+                reverse=True
+            )
+            if h1_ends:
+                best = pick_best(metric, end_date=h1_ends[0], months=6)
+
+        # (2) フォールバック：months==6の最新を拾う（上期YTDを必ず作るため）
+        if best is None:
+            h1_ends_fb = sorted(
+                {f["end"] for f in facts
+                 if f["metric"] == metric
+                 and f["months"] == 6
+                 and parse_ymd(f["end"])},
+                reverse=True
+            )
+            if h1_ends_fb:
+                best = pick_best(metric, end_date=h1_ends_fb[0], months=6)
+
+        if best:
+            out[f"{metric}YTD"] = trim_value(best["value"], meta["unit"])
+        else:
+            # ★上期YTDは絶対欲しい要望なので、見つからない場合は明示的に埋める
+            out[f"{metric}YTD"] = "データなし"
+
+        # ★通期 5年 -> Current/Prior1..4（halfモードでは作らない）
+        if mode != "half":
+            fy_ends_metric = sorted(
+                {f["end"] for f in facts
+                 if f["metric"] == metric and f["months"] == 12 and parse_ymd(f["end"])},
+                reverse=True
+            )
+            for end_date in fy_ends_metric:
+                if base_year is None:
+                    break
+                dt = parse_ymd(end_date)
+                if not dt:
+                    continue
+                diff = base_year - dt.year
+                if diff < 0 or diff > 4:
                     continue
 
-                score = (dim_score(info["dim"]), -tag_priority)
-                if (best_score is None) or (score > best_score):
-                    best_score = score
-                    best = el
+                suffix = "Current" if diff == 0 else f"Prior{diff}"
+                best = pick_best(metric, end_date=end_date, months=12)
+                if best:
+                    out[f"{metric}{suffix}"] = trim_value(best["value"], meta["unit"])
 
-        return best
-
-    # -------------------------
-    # 5) 返すキーを「あなたのcell_mapに合わせる」
-    #    通期: xxxPrior / xxxCurrent
-    #    上期: xxxYTD（=上期累計 current）/（必要なら Prior も追加可）
-    # -------------------------
-    out = {}
-
-    def put_metric(metric_key, meta, *, end_date, out_key):
-        el = pick_fact(meta["tags"], kind=meta["kind"], end_date=end_date, prefer_dim="Consolidated")
-        if not el:
-            return
-        txt = el.get_text(strip=True)
-
-        if meta["kind"] == "instant_text":
-            out[out_key] = txt
-            return
-
-        if meta["kind"] == "instant_date":
-            # YYYY-MM-DD をそのまま返す（必要なら年/月分解は後段で）
-            out[out_key] = txt
-            return
-
-        # 数値
-        unit = meta["unit"]
-        out[out_key] = trim_value(txt, unit) if unit else txt
-
-    # --- 通期（Current / Prior） ---
-    for k, meta in METRICS.items():
-        if meta["kind"] in ("duration", "instant_num"):
-            put_metric(k, meta, end_date=fy_end_pri, out_key=f"{k}Prior")
-            put_metric(k, meta, end_date=fy_end_cur, out_key=f"{k}Current")
-
-    # --- 上期累計（Current） ---
-    # ※あなたの既存cell_mapは YTD が「上期累計」用途なので、それに合わせる
-    for k, meta in METRICS.items():
+    # (B) instant：通期5年（Current/Prior1..4） + 上期末（Quarter）
+    # ルール：
+    # - Quarterは「最新のinstant」を採用（＝上期末が最新になりやすい）
+    # - 通期5年は「年」で割り当て（base_yearとの差分）だが halfモードでは作らない
+    for metric, meta in METRICS.items():
         if meta["kind"] == "duration":
-            put_metric(k, meta, end_date=h1_end_cur, out_key=f"{k}YTD")
-        elif meta["kind"] == "instant_num":
-            put_metric(k, meta, end_date=h1_end_cur, out_key=f"{k}Quarter")
+            continue
 
-    # --- 表紙系（instant_text/date）は FilingDateInstant が多いので別取り（揺れに強い）
-    # CompanyName / SecurityCode / FY end date はまず最初に見つかったものでOK
-    # （もしここも厳密にするなら、FilingDateInstant context を拾う実装にできます）
+        inst_ends = sorted(
+            {f["end"] for f in facts if f["metric"] == metric and parse_ymd(f["end"])},
+            reverse=True
+        )
+
+        # Quarter：DEIのCurrentPeriodEndDateDEIを最優先（無ければ最も近いinstant、最後に最新）
+        if inst_ends:
+            chosen_end = inst_ends[0]  # 従来フォールバック（最新）
+
+            target_dt = parse_ymd(period_end) if period_end else None
+            if target_dt:
+                # 1) 完全一致があればそれ
+                if period_end in inst_ends:
+                    chosen_end = period_end
+                else:
+                    # 2) 最も近い日付を選ぶ（ただしFY startより前は除外して飛びを防止）
+                    fy_start_dt = parse_ymd(fy_start) if fy_start else None
+
+                    inst_dts = []
+                    for e in inst_ends:
+                        dt = parse_ymd(e)
+                        if not dt:
+                            continue
+                        # FY start が取れている場合は、それ以前を候補から除外
+                        if fy_start_dt and dt < fy_start_dt:
+                            continue
+                        inst_dts.append(dt)
+
+                    # FY start 制限で候補が空なら、制限なしで再収集（保険）
+                    if not inst_dts:
+                        for e in inst_ends:
+                            dt = parse_ymd(e)
+                            if dt:
+                                inst_dts.append(dt)
+
+                    if inst_dts:
+                        inst_dts.sort(key=lambda dt: abs((dt - target_dt).days))
+                        chosen_end = inst_dts[0].strftime("%Y-%m-%d")
+
+            best_q = pick_best(metric, end_date=chosen_end)
+            if best_q:
+                out[f"{metric}Quarter"] = trim_value(best_q["value"], meta["unit"])
+        # ★通期5年：年で Current/Prior1..4 を作る（halfモードでは作らない）
+        if mode != "half":
+            for end_date in inst_ends:
+                if base_year is None:
+                    break
+                dt = parse_ymd(end_date)
+                if not dt:
+                    continue
+                diff = base_year - dt.year
+                if diff < 0 or diff > 4:
+                    continue
+
+                suffix = "Current" if diff == 0 else f"Prior{diff}"
+                best = pick_best(metric, end_date=end_date)
+                if best:
+                    out[f"{metric}{suffix}"] = trim_value(best["value"], meta["unit"])
+
+    # ========= 6.5) TotalNumber を「自己株式控除後」に統一して生成 =========
+    # TotalNumber = IssuedShares - TreasuryShares
+    # halfモードでは Quarter だけ作る（Current/Prior は作らない）
+    if mode == "half":
+        suffixes = ["Quarter"]
+    else:
+        suffixes = ["Current", "Prior1", "Prior2", "Prior3", "Prior4", "Quarter"]
+
+    for suffix in suffixes:
+        issued = out.get(f"IssuedShares{suffix}")
+        treasury = out.get(f"TreasuryShares{suffix}")
+
+        if isinstance(issued, int) and isinstance(treasury, int):
+            out[f"TotalNumber{suffix}"] = issued - treasury
+
+    # ========= 7) 証券コード等 =========
+    security_code = None
     sc_el = soup.find("jpdei_cor:SecurityCodeDEI")
     if sc_el:
         sc = sc_el.get_text(strip=True)
-        if sc.isdigit():
-            out["SecurityCodeDEI"] = sc[:-1]
-    cn_el = soup.find("jpcrp_cor:CompanyNameCoverPage")
-    if cn_el:
-        out["CompanyNameCoverPage"] = cn_el.get_text(strip=True)
+        if sc.isdigit() and len(sc) >= 2:
+            security_code = sc[:-1]
+            out["SecurityCodeDEI"] = security_code
+
+    # ========= 会社名（DEI） =========
+    name_tags = [
+        "jpdei_cor:FilerNameInJapaneseDEI",     # 通常これ
+        "jpdei_cor:FilerNameDEI",               # 会社によってはこれ
+    ]
+
+    for tag in name_tags:
+        name_el = soup.find(tag)
+        if name_el:
+            out["CompanyNameCoverPage"] = name_el.get_text(strip=True)
+            break
+
+    # FY end date（年/月分解用に保持）
     fy_el = soup.find("jpdei_cor:CurrentFiscalYearEndDateDEI")
     if fy_el:
         out["CurrentFiscalYearEndDateDEI"] = fy_el.get_text(strip=True)
 
-    security_code = out.get("SecurityCodeDEI")
+    # デバッグ（必要なければ消してOK）
+    print("\n=== OUT KEYS ===")
+    for k in sorted(out.keys()):
+        print(k)
+
     return out, security_code
 
 # Excelへのデータ書き込み
 def write_data_to_excel(excel_file, data, cell_map):
     workbook = openpyxl.load_workbook(excel_file)
     sheet = workbook['決算入力']
-    
+
     for key, cell in cell_map.items():
-        if key in data:
-            if isinstance(cell, list):
-                for c in cell:
-                    sheet[c] = data[key]
-            else:
-                sheet[cell] = data[key]
-    
+        if key not in data:
+            continue
+
+        value = data[key]
+
+        # None や 「データなし」は書かない
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() in ("", "データなし"):
+            continue
+
+        targets = cell if isinstance(cell, list) else [cell]
+
+        for c in targets:
+            current_value = sheet[c].value
+
+            # ==========================
+            # ★ 数式セルは上書きしない
+            # ==========================
+            if isinstance(current_value, str) and current_value.startswith("="):
+                print(f"数式セル {c} はスキップしました。")
+                continue
+
+            sheet[c] = value
+
     workbook.save(excel_file)       
 
 # 株価データの取得　調整前株価：auto_adjust=False　調整後株価：auto_adjust=True　←株価同じ。今後変わるかも(2025.02.22現在)
 def get_stock_price(stock_code, target_date, backup_date, buffer_days=3):
     start_date = (datetime.strptime(backup_date, '%Y-%m-%d') - timedelta(days=buffer_days)).strftime('%Y-%m-%d')
-    end_date = (datetime.strptime(target_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+    end_date   = (datetime.strptime(target_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+
     hist = yf.download(tickers=stock_code, start=start_date, end=end_date, auto_adjust=False)
-    hist.index = hist.index.tz_localize(None)
-    
+
+    # tz-aware の時だけ外す（naiveなら何もしない）
+    if getattr(hist.index, "tz", None) is not None:
+        hist.index = hist.index.tz_localize(None)
+
     check_date = datetime.strptime(target_date, '%Y-%m-%d')
-    while check_date >= datetime.strptime(start_date, '%Y-%m-%d'):
-        if check_date.strftime('%Y-%m-%d') in hist.index:
-            return hist.loc[check_date.strftime('%Y-%m-%d'), 'Close']
+    start_dt   = datetime.strptime(start_date, '%Y-%m-%d')
+
+    while check_date >= start_dt:
+        ts = pd.Timestamp(check_date.date())
+        if ts in hist.index:
+            close = hist.loc[ts, 'Close']
+            return float(close)  # scalar想定
         check_date -= timedelta(days=1)
+
     return None
 
 # 株価データをExcelに書き込む
@@ -445,503 +674,100 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
     print(f"Excelファイルがリネームされました: {new_file_path}")
     return new_file_path
 
-# 条件に応じたマッピングの選択
-tags_contexts = {
-    #売上高
-    'NetSalesPrior': ('jppfs_cor:NetSales', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'NetSalesCurrent': ('jppfs_cor:NetSales', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'NetSalesYTD': ('jppfs_cor:NetSales', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #売上原価
-    'CostOfSalesPrior': ('jppfs_cor:CostOfSales', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'CostOfSalesCurrent': ('jppfs_cor:CostOfSales', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #売上総利益
-    'GrossProfitPrior': ('jppfs_cor:GrossProfit', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'GrossProfitCurrent': ('jppfs_cor:GrossProfit', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #販管費
-    'SellingExpensesPrior': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'SellingExpensesCurrent': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #営業利益
-    'OperatingIncomePrior': ('jppfs_cor:OperatingIncome', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'OperatingIncomeCurrent': ('jppfs_cor:OperatingIncome', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #経常利益
-    'OrdinaryIncomePrior': ('jppfs_cor:OrdinaryIncome', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'OrdinaryIncomeCurrent': ('jppfs_cor:OrdinaryIncome', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'OrdinaryIncomeYTD': ('jppfs_cor:OrdinaryIncome', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #純利益
-    'ProfitLossPrior': ('jppfs_cor:ProfitLoss', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'ProfitLossCurrent': ('jppfs_cor:ProfitLoss', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'ProfitLossYTD': ('jppfs_cor:ProfitLoss', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #発行株数
-    'TotalNumberPrior3': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberPrior2': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberPrior1': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberCurrent': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberQuarter': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentQuarterInstant_NonConsolidatedMember", True, 'thousands'),
-    #資産
-    'TotalAssetsPrior3': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'millions'),
-    'TotalAssetsPrior2': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'millions'),
-    'TotalAssetsPrior1': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
-    'TotalAssetsCurrent': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
-    'TotalAssetsQuarter': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentQuarterInstant_NonConsolidatedMember", True, 'millions'),
-    #資本
-    'NetAssetsPrior3': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'millions'),
-    'NetAssetsPrior2': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'millions'),
-    'NetAssetsPrior1': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
-    'NetAssetsCurrent': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
-    'NetAssetsQuarter': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "InterimInstant_NonConsolidatedMember", True, 'millions'),
-    #営業CF
-    'OperatingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'OperatingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'OperatingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #投資CF
-    'InvestmentCashPrior': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'InvestmentCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'InvestmentCashYTD': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #財務CF
-    'FinancingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'FinancingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'FinancingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #期末残
-    'CashAndCashEquivalentsPrior': ('jppfs_cor:CashAndCashEquivalents', "Prior1YearInstant_NonConsolidatedMember", True, 'millions'),
-    'CashAndCashEquivalentsCurrent': ('jppfs_cor:CashAndCashEquivalents', "CurrentYearInstant_NonConsolidatedMember", True, 'millions'),
-    'CashAndCashEquivalentsQuarter': ('jppfs_cor:CashAndCashEquivalents', "InterimInstant_NonConsolidatedMember", True, 'millions'),
-    #短期借
-    'ShortTermBorrowingsPrior': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'ShortTermBorrowingsCurrent': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'ShortTermBorrowingsQuarter': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #長期借
-    'LongTermBorrowingsPrior': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'LongTermBorrowingsCurrent': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'LongTermBorrowingsQuarter': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #社債
-    'BondsPrior': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'BondsCurrent': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'BondsQuarter': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #自己株式取得
-    'TreasuryStockPrior': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'TreasuryStockCurrent': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'TreasuryStockQuarter': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #配当金
-    'DividendsPrior': ('jppfs_cor:CashDividendsPaidFinCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'DividendsCurrent': ('jppfs_cor:CashDividendsPaidFinCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    'DividendsQuarter': ('jppfs_cor:CashDividendsPaidFinCF', "InterimDuration_NonConsolidatedMember", True, 'millions'),
-    #給料及び賃金
-    'SalariesAndWagesPrior': ('jppfs_cor:SalariesAndWagesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'SalariesAndWagesCurrent': ('jppfs_cor:SalariesAndWagesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #賞与
-    'BonusesPrior': ('jppfs_cor:BonusesAndAllowanceSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'BonusesCurrent': ('jppfs_cor:BonusesAndAllowanceSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #賞与引当金
-    'ProvisionForBonusesPrior': ('jppfs_cor:ProvisionForBonusesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'ProvisionForBonusesCurrent': ('jppfs_cor:ProvisionForBonusesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': ('jppfs_cor:RetirementBenefitExpensesSGA', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'RetirementBenefitExpensesCurrent': ('jppfs_cor:RetirementBenefitExpensesSGA', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "Prior1YearDuration_NonConsolidatedMember", True, 'millions'),
-    'DepreciationAndAmortizationCurrent': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "CurrentYearDuration_NonConsolidatedMember", True, 'millions'),
-    #証券コード
-    'SecurityCodeDEI': ('jpdei_cor:SecurityCodeDEI', "FilingDateInstant", True, 'ten'),
-    #会社名
-    'CompanyNameCoverPage': ('jpcrp_cor:CompanyNameCoverPage', "FilingDateInstant", False, 'millions'),
-    #当会計期間終了日
-    'CurrentPeriodEndDateDEIdate': ('jpdei_cor:CurrentPeriodEndDateDEI', "FilingDateInstant", False, 'date'),
-    #当事業年度終了日
-    'CurrentFiscalYearEndDateDEIyear': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'year'),
-    'CurrentFiscalYearEndDateDEImonth': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'month')
-            },
-cell_map_file1 = {
-    #売上高
-    'NetSalesPrior': 'D5', 'NetSalesCurrent': 'G5',
-    #売上原価
-    'CostOfSalesPrior': 'D6', 'CostOfSalesCurrent': 'G6',
-    #売上総利益
-    'GrossProfitPrior': 'D7', 'GrossProfitCurrent': 'G7',
-    #販管費
-    'SellingExpensesPrior': 'D8', 'SellingExpensesCurrent': 'G8',
-    #営業利益
-    'OperatingIncomePrior': 'D9', 'OperatingIncomeCurrent': 'G9',
-    #経常利益
-    'OrdinaryIncomePrior': 'D10', 'OrdinaryIncomeCurrent': 'G10',
-    #純利益
-    'ProfitLossPrior': 'D11', 'ProfitLossCurrent': 'G11',
-    #営業CF
-    'OperatingCashPrior': 'C21', 'OperatingCashCurrent': 'F21',
-    #投資CF
-    'InvestmentCashPrior': 'D21', 'InvestmentCashCurrent': 'G21',
-    #財務CF
-    'FinancingCashPrior': 'E21', 'FinancingCashCurrent': 'H21',
-    #期末残
-    'CashAndCashEquivalentsPrior': 'D22', 'CashAndCashEquivalentsCurrent': 'G22',
-    #短期借
-    'ShortTermBorrowingsPrior': 'C57', 'ShortTermBorrowingsCurrent': 'F57',
-    #長期借
-    'LongTermBorrowingsPrior': 'D57', 'LongTermBorrowingsCurrent': 'G57',
-    #社債
-    'BondsPrior': 'E57', 'BondsCurrent': 'H57',
-    #自己株式取得
-    'TreasuryStockPrior': 'D60', 'TreasuryStockCurrent': 'G60',
-    #配当金
-    'DividendsPrior': 'D61', 'DividendsCurrent': 'G61',
-    #給料及び賃金
-    'SalariesAndWagesPrior': 'D63', 'SalariesAndWagesCurrent': 'G63',
-    #賞与
-    'BonusesPrior': 'D64', 'BonusesCurrent': 'G64',
-    #賞与引当金
-    'ProvisionForBonusesPrior': 'D65', 'ProvisionForBonusesCurrent': 'G65',
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': 'D66', 'RetirementBenefitExpensesCurrent': 'G66',
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': 'D67', 'DepreciationAndAmortizationCurrent': 'G67'
+cell_map_annual = {
+    # 売上
+    'NetSalesPrior4': 'D5',
+    'NetSalesPrior3': 'G5',
+    'NetSalesPrior2': 'J5',
+    'NetSalesPrior1': 'M5',
+    'NetSalesCurrent': 'P36',   # 半期なしのときだけ使う
 
-            },
-cell_map_file2 = {
-    #売上高
-    'NetSalesPrior': 'J5', 'NetSalesCurrent': 'M5',
-    #売上原価
-    'CostOfSalesPrior': 'J6', 'CostOfSalesCurrent': 'M6',
-    #売上総利益
-    'GrossProfitPrior': 'J7', 'GrossProfitCurrent': 'M7',
-    #販管費
-    'SellingExpensesPrior': 'J8', 'SellingExpensesCurrent': 'M8',
-    #営業利益
-    'OperatingIncomePrior': 'J9', 'OperatingIncomeCurrent': 'M9',
-    #経常利益
-    'OrdinaryIncomePrior': 'J10', 'OrdinaryIncomeCurrent': 'M10',
-    #純利益
-    'ProfitLossPrior': 'J11', 'ProfitLossCurrent': 'M11',
-    #発行株数
-    'TotalNumberPrior3': 'D13', 'TotalNumberPrior2': 'G13', 
-    'TotalNumberPrior1': 'J13', 'TotalNumberCurrent': 'M13',
-    #資産
-    'TotalAssetsPrior3': 'C17', 'TotalAssetsPrior2': 'F17',
-    'TotalAssetsPrior1': 'I17', 'TotalAssetsCurrent': 'L17', 
-    #資本
-    'NetAssetsPrior3': 'D17', 'NetAssetsPrior2': 'G17',
-    'NetAssetsPrior1': 'J17', 'NetAssetsCurrent': 'M17',
-    #営業CF
-    'OperatingCashPrior': 'I21', 'OperatingCashCurrent': 'L21',
-    #投資CF
-    'InvestmentCashPrior': 'J21', 'InvestmentCashCurrent': 'M21',
-    #財務CF
-    'FinancingCashPrior': 'K21', 'FinancingCashCurrent': 'N21',
-    #期末残
-    'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
-    #短期借
-    'ShortTermBorrowingsPrior': 'I57', 'ShortTermBorrowingsCurrent': 'L57',
-    #長期借
-    'LongTermBorrowingsPrior': 'J57', 'LongTermBorrowingsCurrent': 'M57',
-    #社債
-    'BondsPrior': 'K57', 'BondsCurrent': 'N57',
-    #自己株式取得
-    'TreasuryStockPrior': 'J60', 'TreasuryStockCurrent': 'M60',
-    #配当金
-    'DividendsPrior': 'J61', 'DividendsCurrent': 'M61',
-    #給料及び賃金
-    'SalariesAndWagesPrior': 'J63', 'SalariesAndWagesCurrent': 'M63',
-    #賞与
-    'BonusesPrior': 'J64', 'BonusesCurrent': 'M64',
-    #賞与引当金
-    'ProvisionForBonusesPrior': 'J65', 'ProvisionForBonusesCurrent': 'M65',
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': 'J66', 'RetirementBenefitExpensesCurrent': 'M66',
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': 'J67', 'DepreciationAndAmortizationCurrent': 'M67'
-    },
+    # 売上原価〜営業利益（当期P6〜P9 は半期なしのときだけ）
+    'CostOfSalesPrior4': 'D6', 'CostOfSalesPrior3': 'G6', 'CostOfSalesPrior2': 'J6', 'CostOfSalesPrior1': 'M6', 'CostOfSalesCurrent': 'P6',
+    'GrossProfitPrior4': 'D7', 'GrossProfitPrior3': 'G7', 'GrossProfitPrior2': 'J7', 'GrossProfitPrior1': 'M7', 'GrossProfitCurrent': 'P7',
+    'SellingExpensesPrior4': 'D8','SellingExpensesPrior3': 'G8','SellingExpensesPrior2': 'J8','SellingExpensesPrior1': 'M8','SellingExpensesCurrent': 'P8',
+    'OperatingIncomePrior4': 'D9','OperatingIncomePrior3': 'G9','OperatingIncomePrior2': 'J9','OperatingIncomePrior1': 'M9','OperatingIncomeCurrent': 'P9',
 
-#半期
-cell_map_file3 = {
-    #売上高
+    # 経常・純利益
+    'OrdinaryIncomePrior4': 'D10',
+    'OrdinaryIncomePrior3': 'G10',
+    'OrdinaryIncomePrior2': 'J10',
+    'OrdinaryIncomePrior1': 'M10',
+    'OrdinaryIncomeCurrent': 'P37',  # 半期なしのみ
+
+    'ProfitLossPrior4': 'D11',
+    'ProfitLossPrior3': 'G11',
+    'ProfitLossPrior2': 'J11',
+    'ProfitLossPrior1': 'M11',
+    'ProfitLossCurrent': 'P38',      # 半期なしのみ
+
+    # 発行株式数（自己株控除後）
+    'TotalNumberPrior4': 'D13',
+    'TotalNumberPrior3': 'G13',
+    'TotalNumberPrior2': 'J13',
+    'TotalNumberPrior1': 'M13',
+    'TotalNumberCurrent': 'P40',     # 半期なしのみ
+
+    # BS
+    'TotalAssetsPrior4': 'C17',
+    'TotalAssetsPrior3': 'F17',
+    'TotalAssetsPrior2': 'I17',
+    'TotalAssetsPrior1': 'L17',
+    'TotalAssetsCurrent': 'O44',     # 半期なしのみ（あなたの運用に合わせたセル）
+
+    'NetAssetsPrior4': 'D17',
+    'NetAssetsPrior3': 'G17',
+    'NetAssetsPrior2': 'J17',
+    'NetAssetsPrior1': 'M17',
+    'NetAssetsCurrent': 'P44',       # 半期なしのみ
+
+    # CF
+    'OperatingCashPrior4': 'C21',
+    'OperatingCashPrior3': 'F21',
+    'OperatingCashPrior2': 'I21',
+    'OperatingCashPrior1': 'L21',
+    'OperatingCashCurrent': 'O48',   # 半期なしのみ
+
+    'InvestmentCashPrior4': 'D21',
+    'InvestmentCashPrior3': 'G21',
+    'InvestmentCashPrior2': 'J21',
+    'InvestmentCashPrior1': 'M21',
+    'InvestmentCashCurrent': 'P48',  # 半期なしのみ
+
+    'FinancingCashPrior4': 'E21',
+    'FinancingCashPrior3': 'H21',
+    'FinancingCashPrior2': 'K21',
+    'FinancingCashPrior1': 'N21',
+    'FinancingCashCurrent': 'Q48',   # 半期なしのみ
+
+    'CashAndCashEquivalentsPrior4': 'D22',
+    'CashAndCashEquivalentsPrior3': 'G22',
+    'CashAndCashEquivalentsPrior2': 'J22',
+    'CashAndCashEquivalentsPrior1': 'M22',
+    'CashAndCashEquivalentsCurrent': 'P49',  # 半期なしのみ
+
+    # 表紙
+    'SecurityCodeDEI': 'K2',
+    'CompanyNameCoverPage': 'L2',
+    'CurrentFiscalYearEndDateDEIyear': 'N2',
+    'CurrentFiscalYearEndDateDEImonth': 'O2',
+}
+
+cell_map_half = {
     'NetSalesYTD': 'J36',
-    #経常利益
     'OrdinaryIncomeYTD': 'J37',
-    #純利益
     'ProfitLossYTD': 'J38',
-    #発行株数
+
     'TotalNumberQuarter': 'J40',
-    #資産
     'TotalAssetsQuarter': 'I44',
-    #資本
     'NetAssetsQuarter': 'J44',
-    #営業CF
+
     'OperatingCashYTD': 'I48',
-    #投資CF
     'InvestmentCashYTD': 'J48',
-    #財務CF
     'FinancingCashYTD': 'K48',
-    #期末残
-    'CashAndCashEquivalentsQuarter': 'J49', 
-    #短期借
-    'ShortTermBorrowingsQuarter': 'O57',
-    #長期借
-    'LongTermBorrowingsQuarter': 'P57',
-    #社債
-    'BondsQuarter': 'Q57',
-    #自己株式取得
-    'TreasuryStockQuarter': 'P60',
-    #配当金
-    'DividendsQuarter': 'P61',
-    #給料及び賃金
-    'SalariesAndWagesPrior': 'P63',
-    #賞与
-    'BonusesPrior': 'P64',
-    #賞与引当金
-    'ProvisionForBonusesPrior': 'P65',
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': 'P66',
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': 'P67',   
-    #証券コード
-    'SecurityCodeDEI': 'K2',
-    #会社名
-    'CompanyNameCoverPage': 'L2',
-    #当会計期間終了日
-    'CurrentFiscalYearEndDateDEIyear': 'N2',
-    'CurrentFiscalYearEndDateDEImonth': 'O2'
-            }
-tags_contexts={
-#連結決算の場合
-    #売上高
-    'NetSalesPrior': ('jppfs_cor:NetSales', "Prior1YearDuration", True, 'millions'),
-    'NetSalesCurrent': ('jppfs_cor:NetSales', "CurrentYearDuration", True, 'millions'),
-    'NetSalesYTD': ('jppfs_cor:NetSales', "InterimDuration", True, 'millions'),
-    #売上原価
-    'CostOfSalesPrior': ('jppfs_cor:CostOfSales', "Prior1YearDuration", True, 'millions'),
-    'CostOfSalesCurrent': ('jppfs_cor:CostOfSales', "CurrentYearDuration", True, 'millions'),
-    #売上総利益
-    'GrossProfitPrior': ('jppfs_cor:GrossProfit', "Prior1YearDuration", True, 'millions'),
-    'GrossProfitCurrent': ('jppfs_cor:GrossProfit', "CurrentYearDuration", True, 'millions'),
-    #販管費
-    'SellingExpensesPrior': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "Prior1YearDuration", True, 'millions'),
-    'SellingExpensesCurrent': ('jppfs_cor:SellingGeneralAndAdministrativeExpenses', "CurrentYearDuration", True, 'millions'),
-    #営業利益
-    'OperatingIncomePrior': ('jppfs_cor:OperatingIncome', "Prior1YearDuration", True, 'millions'),
-    'OperatingIncomeCurrent': ('jppfs_cor:OperatingIncome', "CurrentYearDuration", True, 'millions'),
-    #経常利益
-    'OrdinaryIncomePrior': ('jppfs_cor:OrdinaryIncome', "Prior1YearDuration", True, 'millions'),
-    'OrdinaryIncomeCurrent': ('jppfs_cor:OrdinaryIncome', "CurrentYearDuration", True, 'millions'),
-    'OrdinaryIncomeYTD': ('jppfs_cor:OrdinaryIncome', "InterimDuration", True, 'millions'),
-    #純利益
-    'ProfitLossPrior': ('jppfs_cor:ProfitLoss', "Prior1YearDuration", True, 'millions'),
-    'ProfitLossCurrent': ('jppfs_cor:ProfitLoss', "CurrentYearDuration", True, 'millions'),
-    'ProfitLossYTD': ('jppfs_cor:ProfitLoss', "InterimDuration", True, 'millions'),
-    #発行株数
-    'TotalNumberPrior3': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior3YearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberPrior2': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior2YearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberPrior1': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "Prior1YearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberCurrent': ('jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults', "CurrentYearInstant_NonConsolidatedMember", True, 'thousands'),
-    'TotalNumberFiling': ('jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc', "FilingDateInstant_OrdinaryShareMember", True, 'thousands'),
-    #資産
-    'TotalAssetsPrior3': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior3YearInstant", True, 'millions'),
-    'TotalAssetsPrior2': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior2YearInstant", True, 'millions'),
-    'TotalAssetsPrior1': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
-    'TotalAssetsCurrent': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
-    'TotalAssetsQuarter': ('jpcrp_cor:TotalAssetsSummaryOfBusinessResults', "InterimInstant", True, 'millions'),
-    #資本
-    'NetAssetsPrior3': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior3YearInstant", True, 'millions'),
-    'NetAssetsPrior2': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior2YearInstant", True, 'millions'),
-    'NetAssetsPrior1': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
-    'NetAssetsCurrent': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
-    'NetAssetsQuarter': ('jpcrp_cor:NetAssetsSummaryOfBusinessResults', "InterimInstant", True, 'millions'),
-    #営業CF
-    'OperatingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "Prior1YearDuration", True, 'millions'),
-    'OperatingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "CurrentYearDuration", True, 'millions'),
-    'OperatingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInOperatingActivities', "InterimDuration", True, 'millions'),
-    #投資CF
-    'InvestmentCashPrior': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "Prior1YearDuration", True, 'millions'),
-    'InvestmentCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "CurrentYearDuration", True, 'millions'),
-    'InvestmentCashYTD': ('jppfs_cor:NetCashProvidedByUsedInInvestmentActivities', "InterimDuration", True, 'millions'),
-    #財務CF
-    'FinancingCashPrior': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "Prior1YearDuration", True, 'millions'),
-    'FinancingCashCurrent': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "CurrentYearDuration", True, 'millions'),
-    'FinancingCashYTD': ('jppfs_cor:NetCashProvidedByUsedInFinancingActivities', "InterimDuration", True, 'millions'),
-    #期末残
-    'CashAndCashEquivalentsPrior': ('jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults', "Prior1YearInstant", True, 'millions'),
-    'CashAndCashEquivalentsCurrent': ('jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults', "CurrentYearInstant", True, 'millions'),
-    'CashAndCashEquivalentsQuarter': ('jppfs_cor:CashAndCashEquivalents', "InterimInstant", True, 'millions'),
-    #短期借
-    'ShortTermBorrowingsPrior': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "Prior1YearDuration", True, 'millions'),
-    'ShortTermBorrowingsCurrent': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "CurrentYearDuration", True, 'millions'),
-    'ShortTermBorrowingsQuarter': ('jppfs_cor:NetIncreaseDecreaseInShortTermLoansPayableFinCF', "InterimDuration", True, 'millions'),
-    #長期借
-    'LongTermBorrowingsPrior': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "Prior1YearDuration", True, 'millions'),
-    'LongTermBorrowingsCurrent': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "CurrentYearDuration", True, 'millions'),
-    'LongTermBorrowingsQuarter': ('jppfs_cor:ProceedsFromLongTermLoansPayableFinCF', "InterimDuration", True, 'millions'),
-    #社債
-    'BondsPrior': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "Prior1YearDuration", True, 'millions'),
-    'BondsCurrent': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "CurrentYearDuration", True, 'millions'),
-    'BondsQuarter': ('jppfs_cor:ProceedsFromIssuanceOfBondsFinCF', "InterimDuration", True, 'millions'),
-    #自己株式取得
-    'TreasuryStockPrior': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "Prior1YearDuration", True, 'millions'),
-    'TreasuryStockCurrent': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "CurrentYearDuration", True, 'millions'),
-    'TreasuryStockQuarter': ('jppfs_cor:PurchaseOfTreasuryStockFinCF', "InterimDuration", True, 'millions'),
-    #配当金
-    'DividendsPrior': ('jppfs_cor:CashDividendsPaidFinCF', "Prior1YearDuration", True, 'millions'),
-    'DividendsCurrent': ('jppfs_cor:CashDividendsPaidFinCF', "CurrentYearDuration", True, 'millions'),
-    'DividendsQuarter': ('jppfs_cor:CashDividendsPaidFinCF', "InterimDuration", True, 'millions'),
-    #給料及び賃金
-    'SalariesAndWagesPrior': ('jppfs_cor:SalariesAndWagesSGA', "Prior1YearDuration", True, 'millions'),
-    'SalariesAndWagesCurrent': ('jppfs_cor:SalariesAndWagesSGA', "CurrentYearDuration", True, 'millions'),
-    #賞与
-    'BonusesPrior': ('jppfs_cor:BonusesAndAllowanceSGA', "Prior1YearDuration", True, 'millions'),
-    'BonusesCurrent': ('jppfs_cor:BonusesAndAllowanceSGA', "CurrentYearDuration", True, 'millions'),
-    #賞与引当金
-    'ProvisionForBonusesPrior': ('jppfs_cor:ProvisionForBonusesSGA', "Prior1YearDuration", True, 'millions'),
-    'ProvisionForBonusesCurrent': ('jppfs_cor:ProvisionForBonusesSGA', "CurrentYearDuration", True, 'millions'),
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': ('jppfs_cor:RetirementBenefitExpensesSGA', "Prior1YearDuration", True, 'millions'),
-    'RetirementBenefitExpensesCurrent': ('jppfs_cor:RetirementBenefitExpensesSGA', "CurrentYearDuration", True, 'millions'),
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "Prior1YearDuration", True, 'millions'),
-    'DepreciationAndAmortizationCurrent': ('jppfs_cor:DepreciationAndAmortizationOpeCF', "CurrentYearDuration", True, 'millions'),
-    #証券コード
-    'SecurityCodeDEI': ('jpdei_cor:SecurityCodeDEI', "FilingDateInstant", True, 'ten'),
-    #会社名
-    'CompanyNameCoverPage': ('jpcrp_cor:CompanyNameCoverPage', "FilingDateInstant", False, 'millions'),
-    #当会計期間終了日
-    'CurrentPeriodEndDateDEIdate': ('jpdei_cor:CurrentPeriodEndDateDEI', "FilingDateInstant", False, 'date'),
-    #当事業年度終了日
-    'CurrentFiscalYearEndDateDEIyear': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'year'),
-    'CurrentFiscalYearEndDateDEImonth': ('jpdei_cor:CurrentFiscalYearEndDateDEI', "FilingDateInstant", False, 'month')
-            },
-cell_map_file1 ={
-    #売上高
-    'NetSalesPrior': 'D5', 'NetSalesCurrent': 'G5',
-    #売上原価
-    'CostOfSalesPrior': 'D6', 'CostOfSalesCurrent': 'G6',
-    #売上総利益
-    'GrossProfitPrior': 'D7', 'GrossProfitCurrent': 'G7',
-    #販管費
-    'SellingExpensesPrior': 'D8', 'SellingExpensesCurrent': 'G8',
-    #営業利益
-    'OperatingIncomePrior': 'D9', 'OperatingIncomeCurrent': 'G9',
-    #経常利益
-    'OrdinaryIncomePrior': 'D10', 'OrdinaryIncomeCurrent': 'G10',
-    #経常利益
-    'ProfitLossPrior': 'D11', 'ProfitLossCurrent': 'G11',
-    #営業CF
-    'OperatingCashPrior': 'C21', 'OperatingCashCurrent': 'F21',
-    #投資CF
-    'InvestmentCashPrior': 'D21', 'InvestmentCashCurrent': 'G21',
-    #財務CF
-    'FinancingCashPrior': 'E21', 'FinancingCashCurrent': 'H21',
-    #期末残
-    'CashAndCashEquivalentsPrior': 'D22', 'CashAndCashEquivalentsCurrent': 'G22',
-    #短期借
-    'ShortTermBorrowingsPrior': 'C57', 'ShortTermBorrowingsCurrent': 'F57',
-    #長期借
-    'LongTermBorrowingsPrior': 'D57', 'LongTermBorrowingsCurrent': 'G57',
-    #社債
-    'BondsPrior': 'E57', 'BondsCurrent': 'H57',
-    #自己株式取得
-    'TreasuryStockPrior': 'D60', 'TreasuryStockCurrent': 'G60',
-    #配当金
-    'DividendsPrior': 'D61', 'DividendsCurrent': 'G61',
-    #給料及び賃金
-    'SalariesAndWagesPrior': 'D63', 'SalariesAndWagesCurrent': 'G63',
-    #賞与
-    'BonusesPrior': 'D64', 'BonusesCurrent': 'G64',
-    #賞与引当金
-    'ProvisionForBonusesPrior': 'D65', 'ProvisionForBonusesCurrent': 'G65',
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': 'D66', 'RetirementBenefitExpensesCurrent': 'G66',
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': 'D67', 'DepreciationAndAmortizationCurrent': 'G67'
-            },
-cell_map_file2 ={
-    #売上高
-    'NetSalesPrior': 'J5', 'NetSalesCurrent': 'M5',
-    #売上原価
-    'CostOfSalesPrior': 'J6', 'CostOfSalesCurrent': 'M6',
-    #売上総利益
-    'GrossProfitPrior': 'J7', 'GrossProfitCurrent': 'M7',
-    #販管費
-    'SellingExpensesPrior': 'J8', 'SellingExpensesCurrent': 'M8',
-    #営業利益
-    'OperatingIncomePrior': 'J9', 'OperatingIncomeCurrent': 'M9',
-    #経常利益
-    'OrdinaryIncomePrior': 'J10', 'OrdinaryIncomeCurrent': 'M10',
-    #純利益
-    'ProfitLossPrior': 'J11', 'ProfitLossCurrent': 'M11',
-    #発行株数
-    'TotalNumberPrior3': 'D13', 'TotalNumberPrior2': 'G13', 
-    'TotalNumberPrior1': 'J13', 'TotalNumberCurrent': 'M13',
-    #資産
-    'TotalAssetsPrior3': 'C17', 'TotalAssetsPrior2': 'F17',
-    'TotalAssetsPrior1': 'I17', 'TotalAssetsCurrent': 'L17', 
-    #資本
-    'NetAssetsPrior3': 'D17', 'NetAssetsPrior2': 'G17',
-    'NetAssetsPrior1': 'J17', 'NetAssetsCurrent': 'M17',
-    #営業CF
-    'OperatingCashPrior': 'I21', 'OperatingCashCurrent': 'L21',
-    #投資CF
-    'InvestmentCashPrior': 'J21', 'InvestmentCashCurrent': 'M21',
-    #財務CF
-    'FinancingCashPrior': 'K21', 'FinancingCashCurrent': 'N21',
-    #期末残
-    'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
-    #期末残
-    'CashAndCashEquivalentsPrior': 'J22', 'CashAndCashEquivalentsCurrent': 'M22',
-    #短期借
-    'ShortTermBorrowingsPrior': 'I57', 'ShortTermBorrowingsCurrent': 'L57',
-    #長期借
-    'LongTermBorrowingsPrior': 'J57', 'LongTermBorrowingsCurrent': 'M57',
-    #社債
-    'BondsPrior': 'K57', 'BondsCurrent': 'N57',
-    #自己株式取得
-    'TreasuryStockPrior': 'J60', 'TreasuryStockCurrent': 'M60',
-    #配当金
-    'DividendsPrior': 'J61', 'DividendsCurrent': 'M61',
-    #給料及び賃金
-    'SalariesAndWagesPrior': 'J63', 'SalariesAndWagesCurrent': 'M63',
-    #賞与
-    'BonusesPrior': 'J64', 'BonusesCurrent': 'M64',
-    #賞与引当金
-    'ProvisionForBonusesPrior': 'J65', 'ProvisionForBonusesCurrent': 'M65',
-    #退職給付費用
-    'RetirementBenefitExpensesPrior': 'J66', 'RetirementBenefitExpensesCurrent': 'M66',
-    #CF減価償却費
-    'DepreciationAndAmortizationPrior': 'J67', 'DepreciationAndAmortizationCurrent': 'M67'
-            },
-cell_map_file3 ={
-    #売上高
-    'NetSalesYTD': 'J36',
-    #経常利益
-    'OrdinaryIncomeYTD': 'J37',
-    #純利益
-    'ProfitLossYTD': 'J38',
-    #発行株数
-    'TotalNumberFiling': 'J40',
-    #資産
-    'TotalAssetsQuarter': 'I44',
-    #資本
-    'NetAssetsQuarter': 'J44',
-    #営業CF
-    'OperatingCashYTD': 'I48',
-    #投資CF
-    'InvestmentCashYTD': 'J48',
-    #財務CF
-    'FinancingCashYTD': 'K48',
-    #期末残
+
     'CashAndCashEquivalentsQuarter': 'J49',
-    #短期借
-    'ShortTermBorrowingsQuarter': 'O57',
-    #長期借
-    'LongTermBorrowingsQuarter': 'P57',
-    #社債
-    'BondsQuarter': 'Q57',
-    #自己株式取得
-    'TreasuryStockQuarter': 'P60',
-    #配当金
-    'DividendsQuarter': 'P61', 
-    #証券コード
-    'SecurityCodeDEI': 'K2',
-    #会社名
-    'CompanyNameCoverPage': 'L2',
-    #当事業年度終了日
-    'CurrentFiscalYearEndDateDEIyear': 'N2',
-    'CurrentFiscalYearEndDateDEImonth': 'O2'
-            }
+}
 
 # ファイルパスを順番に確認する関数
 def find_available_excel_file(base_path, file_name, max_copies=10):
@@ -1361,6 +1187,154 @@ loops = [
     }
 ]
 
+print("DEBUG file1:", glob.glob(os.path.join(base_dir, '1-2*.xbrl')))
+print("DEBUG file2:", glob.glob(os.path.join(base_dir, '1-4*.xbrl')))
+print("DEBUG file3:", glob.glob(os.path.join(base_dir, '1-5*.xbrl')))
+print("DEBUG all files:", os.listdir(base_dir))
+
+#「どのキーをどの書類が書くか」を分けるフィルタ
+def filter_keys_for_file(data: dict, file_kind: str) -> dict:
+    """
+    file_kind:
+      - "half"  : file1（半期最新）→ YTD と Quarter と DEIだけ
+      - "annual": file2（最新有報）→ Current/Prior* と DEIだけ（YTD/Quarterは触らない）
+      - "annual_old": file3（過去有報）→ Prior* だけ（Currentは触らない）
+    """
+    out = {}
+
+    for k, v in data.items():
+        if file_kind == "half":
+            if k.endswith("YTD") or k.endswith("Quarter") or k in ("SecurityCodeDEI", "CurrentFiscalYearEndDateDEI"):
+                out[k] = v
+
+        elif file_kind == "annual":
+            if (k.endswith("Current") or k.endswith(("Prior1","Prior2","Prior3","Prior4"))
+                or k in ("SecurityCodeDEI", "CurrentFiscalYearEndDateDEI")):
+                # YTD/Quarterは annual 側では書かない
+                if not (k.endswith("YTD") or k.endswith("Quarter")):
+                    out[k] = v
+
+        elif file_kind == "annual_old":
+            # 古い有報はPriorだけ埋めたい
+            if k.endswith(("Prior1", "Prior2", "Prior3", "Prior4")):
+                out[k] = v
+            # DEIは触らなくてOK（必要なら入れても良いが基本不要）
+
+    return out
+
+# ===============================
+# 有報（XBRL）の期末日から「期末年（西暦）」を取得する関数
+# 例：
+#   "2025-03-31" → 2025
+# file2（最新有報）の基準年を決めるために使用する
+# ===============================
+def get_fy_end_year(xbrl_data: dict) -> int | None:
+    """
+    CurrentFiscalYearEndDateDEI (YYYY-MM-DD) から期末年(西暦)を取り出す
+    """
+    s = xbrl_data.get("CurrentFiscalYearEndDateDEI")
+    if isinstance(s, str):
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").year
+        except Exception:
+            return None
+    return None
+
+def shift_suffixes_by_yeargap(data: dict, year_gap: int) -> dict:
+    """
+    file2の期末年を基準に、古い有報(file3)の Current/Prior を Prior側へずらす。
+
+    year_gap = base_year(file2) - year(file3)
+    例：file2=2025, file3=2023 → year_gap=2
+        file3の NetSalesCurrent → NetSalesPrior2
+        file3の NetSalesPrior1 → NetSalesPrior3
+    """
+    if year_gap <= 0:
+        return data
+
+    out = {}
+    for k, v in data.items():
+        m = re.match(r"^(.*?)(Current|Prior(\d+))$", k)
+        if not m:
+            out[k] = v
+            continue
+
+        prefix = m.group(1)
+        suf = m.group(2)
+
+        if suf == "Current":
+            n = year_gap
+        else:
+            n = year_gap + int(m.group(3))
+
+        # Prior1..4 の範囲だけ採用（あなたのExcelが5年枠の想定のため）
+        if 1 <= n <= 4:
+            out[f"{prefix}Prior{n}"] = v
+
+    return out
+
+def shift_with_keep(data: dict, year_gap: int,
+                    keep_keys=("SecurityCodeDEI","CurrentFiscalYearEndDateDEI","CompanyNameCoverPage")) -> dict:
+    """
+    shift_suffixes_by_yeargap は Current/Prior 系しか返さないため、
+    DEIなど「残したいキー」を shift後に戻すラッパー
+    """
+    shifted = shift_suffixes_by_yeargap(data, year_gap)
+    for k in keep_keys:
+        if k in data:
+            shifted[k] = data[k]
+    return shifted
+
+
+def filter_for_annual(data: dict) -> dict:
+    """通期比較（Current/Prior* + DEI）。YTD/Quarterは除外。"""
+    out = {}
+    for k, v in data.items():
+        if k.endswith("YTD") or k.endswith("Quarter"):
+            continue
+        if k.endswith("Current") or k.endswith(("Prior1","Prior2","Prior3","Prior4")):
+            out[k] = v
+        if k in ("SecurityCodeDEI", "CurrentFiscalYearEndDateDEI", "CompanyNameCoverPage",
+                 "CurrentFiscalYearEndDateDEIyear","CurrentFiscalYearEndDateDEImonth"):
+            out[k] = v
+    return out
+
+
+def filter_for_annual_old(data: dict) -> dict:
+    """古い有報はPrior側だけ（Currentは触らない）"""
+    out = {}
+    for k, v in data.items():
+        if k.endswith(("Prior1","Prior2","Prior3","Prior4")):
+            out[k] = v
+    return out
+
+
+def filter_for_half(data: dict) -> dict:
+    """半期はYTD/Quarterだけ + DEI必要分"""
+    out = {}
+    for k, v in data.items():
+        if k.endswith("YTD") or k.endswith("Quarter"):
+            out[k] = v
+        if k in ("SecurityCodeDEI", "CurrentFiscalYearEndDateDEI",
+                 "CurrentFiscalYearEndDateDEIyear","CurrentFiscalYearEndDateDEImonth"):
+            out[k] = v
+    return out
+
+
+def make_annual_map_for_use_half(use_half: bool, base_map: dict) -> dict:
+    """
+    半期ありの場合：
+      - 通期Current（P列やO44/P44/O48…）はテンプレ仕様上「書かない」
+      - Prior側（D/G/J/M）は埋める
+    """
+    m = dict(base_map)
+    if use_half:
+        for k in list(m.keys()):
+            if k.endswith("Current") and k not in ("SecurityCodeDEI","CompanyNameCoverPage",
+                                                  "CurrentFiscalYearEndDateDEIyear","CurrentFiscalYearEndDateDEImonth"):
+                m.pop(k, None)
+    return m
+
 # 処理するファイル数を選択
 def choose_file_count():
     while True:
@@ -1385,7 +1359,7 @@ try:
         with open(file_path, 'r') as f:
             return json.load(f)
 
-    config = load_config('決算期.json')
+    config = load_config('決算期_KANPE.json')
     chosen_period = input("決算期を選択してください（例 25-1）: ")
 
     if chosen_period in config:
@@ -1402,95 +1376,114 @@ except Exception as e:
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
 for i in range(file_count):
     loop = loops[i]
-    # Excelファイル名を解析
     excel_base_name = os.path.basename(loop['excel_file_path']).replace('.xlsx', '')
     excel_directory = os.path.dirname(loop['excel_file_path'])
-    
-    # 実際に使用するExcelファイルを見つける
+
     selected_file = find_available_excel_file(excel_directory, excel_base_name)
-    
+
     if selected_file:
-        loop['excel_file_path'] = selected_file  
+        loop['excel_file_path'] = selected_file
         print(f"ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー\n使用するExcelファイル: {selected_file}")
     else:
-        skipped_files.append({
-            'reason': "Excelファイルが見つからない",
-            'file': excel_base_name
-        })
+        skipped_files.append({'reason': "Excelファイルが見つからない", 'file': excel_base_name})
         print("使用するファイルが見つかりませんでした。次のループを実行します。")
         continue
 
     rename_info = None
     xbrl_file_paths = loop['xbrl_file_paths']
     excel_file_path = loop['excel_file_path']
-    security_code = None  # 初期値
+    security_code = None
+    base_year = None
 
-    for key, paths in xbrl_file_paths.items():
-        if not paths:
-            skipped_files.append({
-                'reason': f"{key} に対応するXBRLファイルが見つからない",
-                'file': excel_file_path
-            })
-            print(f"{key} に対応するファイルが見つかりません。スキップします。")
-            continue
+    # -------------------------
+    # 0) file1（半期）があれば先に読む（base_year決定）
+    # -------------------------
+    x1 = None
+    use_half = bool(xbrl_file_paths.get("file1") and xbrl_file_paths["file1"])
 
-        path = paths[0]
-        
-        # XBRL解析
+    if use_half:
         try:
-            xbrl_data, security_code = parse_xbrl_data(path)
-        except Exception as e:  
-            skipped_files.append({
-                'reason': f"XBRLデータの解析中にエラー: {e}",
-                'file': path
-            })
-            print(f"{key} のファイル {path} を解析中にエラーが発生しました。スキップします。")
-            continue
-
-        cell_map = cell_map_file1 if key == 'file1' else cell_map_file2 if key == 'file2' else cell_map_file3
-
-        if 'CurrentFiscalYearEndDateDEI' in xbrl_data:
-            date_str = xbrl_data['CurrentFiscalYearEndDateDEI']
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            xbrl_data['CurrentFiscalYearEndDateDEIyear'] = dt.year
-            xbrl_data['CurrentFiscalYearEndDateDEImonth'] = dt.month
-
-        try:
-            write_data_to_excel(excel_file_path, xbrl_data, cell_map)
+            path1 = xbrl_file_paths["file1"][0]          # ★追加：path1 を定義
+            x1, _ = parse_xbrl_data(path1, mode="half")  # ★ここで使う
+            base_year = get_fy_end_year(x1)              # 半期の期末年（例：2025）
         except Exception as e:
-            skipped_files.append({
-                'reason': f"Excelデータの書き込み中にエラー: {e}",
-                'file': excel_file_path
-            })
-            print(f"Excelデータの書き込み中にエラーが発生しました。スキップします。")
+            skipped_files.append({'reason': f"file1(半期) 解析エラー: {e}", 'file': excel_file_path})
+            x1 = None
+            use_half = False
 
-        # リネーム情報を取得
-        if key == 'file3' and \
-            'SecurityCodeDEI' in xbrl_data and \
-            'CompanyNameCoverPage' in xbrl_data and \
-            'CurrentFiscalYearEndDateDEI' in xbrl_data:
-            rename_info = (
-                xbrl_data['SecurityCodeDEI'],
-                xbrl_data['CompanyNameCoverPage'],
-                xbrl_data['CurrentFiscalYearEndDateDEI']
-            )
+    # 半期あり/なしで「通期書き込みマップ」を確定
+    annual_map = make_annual_map_for_use_half(use_half, cell_map_annual)
 
-    # Excelファイルのリネーム
-    if rename_info:
+    # -------------------------
+    # 1) file2（最新有報）→ 通期比較を埋める
+    # -------------------------
+    x2 = None
+    if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
-            excel_file_path = rename_excel_file(excel_file_path, *rename_info)
+            path2 = xbrl_file_paths["file2"][0]          # ★追加：path2 を定義
+            x2, security_code = parse_xbrl_data(path2, mode="full")
+
+            y2 = get_fy_end_year(x2)
+            if base_year is None and y2 is not None:
+                base_year = y2
+
+            if base_year is not None and y2 is not None:
+                gap2 = base_year - y2
+                if gap2 > 0:
+                    x2 = shift_with_keep(x2, gap2)
+
+            # 表紙用 年/月
+            if 'CurrentFiscalYearEndDateDEI' in x2:
+                dt = datetime.strptime(x2['CurrentFiscalYearEndDateDEI'], "%Y-%m-%d")
+                x2['CurrentFiscalYearEndDateDEIyear'] = dt.year
+                x2['CurrentFiscalYearEndDateDEImonth'] = dt.month
+
+            write_data_to_excel(excel_file_path, filter_for_annual(x2), annual_map)
+
+            # リネーム情報（file2から取る）
+            if 'SecurityCodeDEI' in x2 and 'CurrentFiscalYearEndDateDEI' in x2:
+                cname = x2.get('CompanyNameCoverPage', '')
+                rename_info = (x2['SecurityCodeDEI'], cname, x2['CurrentFiscalYearEndDateDEI'])
+
         except Exception as e:
-            skipped_files.append({
-                'reason': f"Excelファイルのリネーム中にエラー: {e}",
-                'file': excel_file_path
-            })
-            print(f"Excelファイルのリネーム中にエラーが発生しました。")
+            skipped_files.append({'reason': f"file2(最新有報) 解析/書込エラー: {e}", 'file': excel_file_path})
     else:
-        skipped_files.append({
-            'reason': "リネーム用のデータが不足している",
-            'file': excel_file_path
-        })
-        print("リネーム用のデータが不足しています。")
+        skipped_files.append({'reason': "file2(最新有報) が見つからない", 'file': excel_file_path})
+
+    # -------------------------
+    # 2) file3（過去有報）→ Prior補完（base_year必須）
+    # -------------------------
+    if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
+        try:
+            path3 = xbrl_file_paths["file3"][0]          # ★追加：path3 を定義
+            x3, _ = parse_xbrl_data(path3, mode="full")
+
+            y3 = get_fy_end_year(x3)
+            if y3 is not None:
+                gap3 = base_year - y3
+                if gap3 > 0:
+                    x3 = shift_with_keep(x3, gap3)
+
+                write_data_to_excel(excel_file_path, filter_for_annual_old(x3), annual_map)
+            else:
+                skipped_files.append({'reason': "file3 期末年が取れない", 'file': excel_file_path})
+
+        except Exception as e:
+            skipped_files.append({'reason': f"file3(過去有報) 解析/書込エラー: {e}", 'file': excel_file_path})
+
+    # -------------------------
+    # 3) 半期ありなら最後に YTD/Quarter を確定（最優先）
+    # -------------------------
+    if use_half and x1 is not None:
+        if 'CurrentFiscalYearEndDateDEI' in x1:
+            try:
+                dt = datetime.strptime(x1['CurrentFiscalYearEndDateDEI'], "%Y-%m-%d")
+                x1['CurrentFiscalYearEndDateDEIyear'] = dt.year
+                x1['CurrentFiscalYearEndDateDEImonth'] = dt.month
+            except Exception:
+                pass
+
+        write_data_to_excel(excel_file_path, filter_for_half(x1), cell_map_half)
 
     # 証券コードを表示（デバッグ用）
     if security_code:
@@ -1498,18 +1491,12 @@ for i in range(file_count):
         stock_code = f"{security_code}.T"
 
         try:
-            write_stock_data_to_excel(excel_file_path, stock_code, date_pairs)  # ループ内では `date_pairs` を使用
+            write_stock_data_to_excel(excel_file_path, stock_code, date_pairs)
         except Exception as e:
-            skipped_files.append({
-                'reason': f"株価データの書き込み中にエラー: {e}",
-                'file': excel_file_path
-            })
+            skipped_files.append({'reason': f"株価データの書き込み中にエラー: {e}", 'file': excel_file_path})
             print(f"株価データの書き込み中にエラーが発生しました。スキップします。")
-    if not security_code:
-        skipped_files.append({
-            'reason': "証券コードが取得できない",
-            'file': path
-        })
+    else:
+        skipped_files.append({'reason': "証券コードが取得できない", 'file': excel_file_path})
         print("証券コードが取得できませんでした。")
 
 # スキップされたファイルの一覧を表示
