@@ -298,6 +298,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
     # ========= 2.2) DEI（PeriodEnd / FY start）を先に取得（file1/2/3 共通） =========
     period_end = None
     fy_start_dei = None
+    period_type = None
 
     fy_start_el = soup.find("jpdei_cor:CurrentFiscalYearStartDateDEI")
     if fy_start_el:
@@ -309,6 +310,14 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         period_end = period_end_el.get_text(strip=True)
         out["CurrentPeriodEndDateDEI"] = period_end
 
+    type_el = soup.find("jpdei_cor:TypeOfCurrentPeriodDEI")
+    if type_el:
+        period_type = type_el.get_text(strip=True)
+        out["TypeOfCurrentPeriodDEI"] = period_type
+
+    # ★ halfモードなら「上期末」を専用キーでも保持（リネーム等で使いやすくする）
+    if mode == "half" and period_end:
+        out["HalfPeriodEndDateDEI"] = period_end
 
     # ========= 3) fact収集 =========
     facts = []  # {metric, value, end, months, dim, tag_priority, kind, unit}
@@ -1432,17 +1441,31 @@ for i in range(file_count):
                 if gap2 > 0:
                     x2 = shift_with_keep(x2, gap2)
 
-            # 表紙用 年/月
-            if 'CurrentFiscalYearEndDateDEI' in x2:
-                dt = datetime.strptime(x2['CurrentFiscalYearEndDateDEI'], "%Y-%m-%d")
-                x2['CurrentFiscalYearEndDateDEIyear'] = dt.year
-                x2['CurrentFiscalYearEndDateDEImonth'] = dt.month
+            # 表紙用 年/月（半期ありならfile1優先）
+            fy_source = None
+
+            if use_half and x1 and x1.get("CurrentFiscalYearEndDateDEI"):
+                fy_source = x1["CurrentFiscalYearEndDateDEI"]
+            elif x2 and x2.get("CurrentFiscalYearEndDateDEI"):
+                fy_source = x2["CurrentFiscalYearEndDateDEI"]
+
+            if fy_source:
+                dt = datetime.strptime(fy_source, "%Y-%m-%d")
+                x2["CurrentFiscalYearEndDateDEIyear"] = dt.year
+                x2["CurrentFiscalYearEndDateDEImonth"] = dt.month
 
             write_data_to_excel(excel_file_path, filter_for_annual(x2), annual_map)
+            print("年度に使用したFY:", fy_source)            
 
-            # リネーム情報（file2から取る）
-            if 'SecurityCodeDEI' in x2 and 'CurrentFiscalYearEndDateDEI' in x2:
-                cname = x2.get('CompanyNameCoverPage', '')
+            # リネーム情報（優先順位：半期ありならfile1上期末、なければfile2通期末）
+            cname = x2.get('CompanyNameCoverPage', '') if x2 else ''
+
+            if use_half and x1 and x2 and x2.get('SecurityCodeDEI') and x1.get('HalfPeriodEndDateDEI'):
+                # 半期あり：上期末（例：2025-06-30）でリネーム
+                rename_info = (x2['SecurityCodeDEI'], cname, x1['HalfPeriodEndDateDEI'])
+
+            elif x2 and x2.get('SecurityCodeDEI') and x2.get('CurrentFiscalYearEndDateDEI'):
+                # 半期なし：通期末（例：2024-12-31）でリネーム
                 rename_info = (x2['SecurityCodeDEI'], cname, x2['CurrentFiscalYearEndDateDEI'])
 
         except Exception as e:
@@ -1495,6 +1518,18 @@ for i in range(file_count):
         except Exception as e:
             skipped_files.append({'reason': f"株価データの書き込み中にエラー: {e}", 'file': excel_file_path})
             print(f"株価データの書き込み中にエラーが発生しました。スキップします。")
+        # ★ ここに追加
+        if rename_info:
+            try:
+                excel_file_path = rename_excel_file(
+                    excel_file_path,
+                    rename_info[0],  # security_code
+                    rename_info[1],  # company_name
+                    rename_info[2],  # period_end_date
+                )
+            except Exception as e:
+                print(f"リネーム中にエラー: {e}")
+
     else:
         skipped_files.append({'reason': "証券コードが取得できない", 'file': excel_file_path})
         print("証券コードが取得できませんでした。")
