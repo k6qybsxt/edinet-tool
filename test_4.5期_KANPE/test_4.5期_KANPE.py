@@ -59,6 +59,8 @@ def parse_xbrl_data(xbrl_file, mode="full"):
     with open(xbrl_file, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml-xml")
 
+    out = {}
+
     # ========= 1) context 読み取り =========
     contexts = {}
     for ctx in soup.find_all("context"):
@@ -260,9 +262,14 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         },
 
         # ---------- 株数（instant）：「材料」を拾って差分でTotalNumberに統一 ----------
-        # 発行済株式総数（タグ候補増やした）
+        # 発行済株式総数（優先順を整理）
         "IssuedShares": {
             "tags": [
+                # ★期末ベース（最優先：最も安定しやすい）
+                "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+                # ★提出日ベース（次点）
+                "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+
                 # 代表的（株式等の状況）
                 "jpcrp_cor:TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
                 # サマリー系（会社により出る）
@@ -271,18 +278,25 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 "jpcrp_cor:TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
                 "jpcrp_cor:TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",
                 "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
-                "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
-  ],
+
+                # ★議決権表など“表系”は最後（会社によっては出るが優先しない）
+                "jpcrp_cor:NumberOfSharesIssuedSharesVotingRights",
+            ],
             "kind": "instant_num",
             "unit": "ones",
         },
-        # 自己株式数（タグ候補増やした）
+
+        # 自己株式数（優先順を整理）
         "TreasuryShares": {
             "tags": [
+                # ★自己株式数（合計）が最優先
                 "jpcrp_cor:TotalNumberOfSharesHeldTreasurySharesEtc",
-                "jpcrp_cor:TotalNumberOfSharesHeldInOwnNameTreasurySharesEtc",
+                # ★自己名義（合計が取れない場合の次点）
+                "jpcrp_cor:NumberOfSharesHeldInOwnNameTreasurySharesEtc",
+
+                # 表記ゆれ・補助（会社により出る）
                 "jpcrp_cor:TotalNumberOfSharesHeldInTheNameOfOthersTreasurySharesEtc",
-                # サマリー系（会社により出る）
+                "jpcrp_cor:TotalNumberOfSharesHeldInOwnNameTreasurySharesEtc",
                 "jpcrp_cor:TotalNumberOfTreasurySharesSummaryOfBusinessResults",
                 "jpcrp_cor:NumberOfTreasurySharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
                 "jpcrp_cor:TreasurySharesAtTheEndOfFiscalYearIssuedSharesTotalNumberOfSharesEtc",
@@ -290,10 +304,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
             "kind": "instant_num",
             "unit": "ones",
         },
-    }
-
-    # ========= 2.1) 出力箱を先に用意（DEIを早めに格納するため） =========
-    out = {}
+        }
 
     # ========= 2.2) DEI（PeriodEnd / FY start）を先に取得（file1/2/3 共通） =========
     period_end = None
@@ -398,8 +409,10 @@ def parse_xbrl_data(xbrl_file, mode="full"):
     # ========= 5) 連結優先 + タグ優先で 1つ選ぶ =========
     def pick_best(metric, *, end_date, months=None):
         cands = [f for f in facts if f["metric"] == metric and f["end"] == end_date]
+
         if months is not None:
             cands = [f for f in cands if f["months"] == months]
+
         if not cands:
             return None
 
@@ -669,17 +682,52 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs):
     
     workbook.save(excel_file)
 
-# Excelファイルのリネーム
+# Excelファイルのリネーム（安全版）
+def safe_filename(s: str) -> str:
+    """
+    Windowsでファイル名に使えない文字を置換して安全にする
+    """
+    if s is None:
+        return ""
+    s = str(s).strip()
+    # Windows NG: \ / : * ? " < > |
+    s = re.sub(r'[\\/:*?"<>|]', '_', s)
+    # 末尾のドット/スペースもNG
+    s = s.rstrip(". ").strip()
+    return s
+
 def rename_excel_file(original_path, security_code, company_name, period_end_date):
-    base_name = f"{security_code}_{company_name}_{period_end_date}"
-    new_file_path = os.path.join(os.path.dirname(original_path), f"{base_name}.xlsx")
-    
+    """
+    original_path を「<code>_<name>_<date>.xlsx」にリネームし、パスを返す。
+    同名があれば _1, _2... を付ける。
+    """
+    dir_path = os.path.dirname(original_path)
+
+    code = safe_filename(security_code)
+    name = safe_filename(company_name)
+    date = safe_filename(period_end_date)
+
+    base_name = f"{code}_{name}_{date}".strip("_")
+    if not base_name:
+        raise ValueError("リネーム用の情報が不足しています（code/name/date が空です）。")
+
+    new_file_path = os.path.join(dir_path, f"{base_name}.xlsx")
+
     counter = 1
     while os.path.exists(new_file_path):
-        new_file_path = os.path.join(os.path.dirname(original_path), f"{base_name}_{counter}.xlsx")
+        new_file_path = os.path.join(dir_path, f"{base_name}_{counter}.xlsx")
         counter += 1
-    
-    os.rename(original_path, new_file_path)
+
+    try:
+        os.rename(original_path, new_file_path)
+    except PermissionError as e:
+        # Excelで開いている、または別プロセスが掴んでいる可能性が高い
+        raise PermissionError(
+            f"リネームできません（ファイルが開かれている可能性があります）。\n"
+            f"対象: {original_path}\n"
+            f"対策: Excelで該当ファイルを閉じてから再実行してください。"
+        ) from e
+
     print(f"Excelファイルがリネームされました: {new_file_path}")
     return new_file_path
 
@@ -1429,24 +1477,25 @@ for i in range(file_count):
     x2 = None
     if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
-            path2 = xbrl_file_paths["file2"][0]          # ★追加：path2 を定義
+            path2 = xbrl_file_paths["file2"][0]
             x2, security_code = parse_xbrl_data(path2, mode="full")
 
+            # --- base_year を決める（半期が無いなら有報が基準） ---
             y2 = get_fy_end_year(x2)
             if base_year is None and y2 is not None:
                 base_year = y2
 
+            # --- file2 が base_year より古い年なら Prior側へずらす（保険） ---
             if base_year is not None and y2 is not None:
                 gap2 = base_year - y2
                 if gap2 > 0:
                     x2 = shift_with_keep(x2, gap2)
 
-            # 表紙用 年/月（半期ありならfile1優先）
+            # --- 表紙（N2/O2）は「半期ありなら file1 のFY end」「半期なしなら file2 のFY end」 ---
             fy_source = None
-
             if use_half and x1 and x1.get("CurrentFiscalYearEndDateDEI"):
                 fy_source = x1["CurrentFiscalYearEndDateDEI"]
-            elif x2 and x2.get("CurrentFiscalYearEndDateDEI"):
+            elif x2.get("CurrentFiscalYearEndDateDEI"):
                 fy_source = x2["CurrentFiscalYearEndDateDEI"]
 
             if fy_source:
@@ -1454,19 +1503,19 @@ for i in range(file_count):
                 x2["CurrentFiscalYearEndDateDEIyear"] = dt.year
                 x2["CurrentFiscalYearEndDateDEImonth"] = dt.month
 
+            # --- 通期比較を書き込み（annual_map は use_half により Current が入ったり消えたりする） ---
             write_data_to_excel(excel_file_path, filter_for_annual(x2), annual_map)
-            print("年度に使用したFY:", fy_source)            
 
-            # リネーム情報（優先順位：半期ありならfile1上期末、なければfile2通期末）
-            cname = x2.get('CompanyNameCoverPage', '') if x2 else ''
+            # --- リネーム用：半期ありなら period_end（上期末）を優先、半期なしならFY end ---
+            period_for_name = None
+            if use_half and x1 and x1.get("CurrentPeriodEndDateDEI"):
+                period_for_name = x1["CurrentPeriodEndDateDEI"]
+            elif x2.get("CurrentFiscalYearEndDateDEI"):
+                period_for_name = x2["CurrentFiscalYearEndDateDEI"]
 
-            if use_half and x1 and x2 and x2.get('SecurityCodeDEI') and x1.get('HalfPeriodEndDateDEI'):
-                # 半期あり：上期末（例：2025-06-30）でリネーム
-                rename_info = (x2['SecurityCodeDEI'], cname, x1['HalfPeriodEndDateDEI'])
-
-            elif x2 and x2.get('SecurityCodeDEI') and x2.get('CurrentFiscalYearEndDateDEI'):
-                # 半期なし：通期末（例：2024-12-31）でリネーム
-                rename_info = (x2['SecurityCodeDEI'], cname, x2['CurrentFiscalYearEndDateDEI'])
+            if x2.get("SecurityCodeDEI") and period_for_name:
+                cname = x2.get("CompanyNameCoverPage", "")
+                rename_info = (x2["SecurityCodeDEI"], cname, period_for_name)
 
         except Exception as e:
             skipped_files.append({'reason': f"file2(最新有報) 解析/書込エラー: {e}", 'file': excel_file_path})
