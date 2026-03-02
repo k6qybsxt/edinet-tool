@@ -1,6 +1,8 @@
 import os
 import requests
 from io import StringIO
+import logging
+from logging.handlers import RotatingFileHandler
 import certifi
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -16,19 +18,73 @@ import pandas as pd
 import json
 from openpyxl.cell.cell import Cell
 
+# ===== Logging Policy (固定ルール) =====
+# CRITICAL: 続行不可。設定不備・テンプレ汚染防止ロック等。→ SystemExit で終了
+# ERROR   : 想定外例外。続行はするが必ず調査対象（logger.exception含む）
+# WARNING : 非致命だが結果に影響する可能性（欠損/スキップ/見つからない等）
+# INFO    : 進捗と結果サマリ（開始/終了、選択した決算期、各フェーズwritten/missing 等）
+# DEBUG   : 詳細（XBRLファイル一覧、キー一覧、内部データの中身など）
+def setup_logger(debug: bool = False, log_dir: str | None = None) -> logging.Logger:
+    """
+    - 入口で1回だけ呼ぶ
+    - console: INFO以上（debug=TrueならDEBUG）
+    - file   : DEBUG以上を全部保存（運用証跡）
+    - 時刻は秒まで（ミリ秒無し）
+    - ハンドラ重複を確実に防ぐ
+    """
+    logger = logging.getLogger("edinet")
+    logger.setLevel(logging.DEBUG)  # ロガー本体は常にDEBUG、出力はハンドラ側で制御
+    logger.propagate = False
+
+    # 既存ハンドラがあれば全削除（再実行/REPLでも二重出力しない）
+    if logger.handlers:
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt=datefmt
+    )
+
+    # --- Console handler ---
+    ch = logging.StreamHandler()
+    ch.setFormatter(fmt)
+    ch.setLevel(logging.DEBUG if debug else logging.INFO)
+    logger.addHandler(ch)
+
+    # --- File handler (証跡) ---
+    if log_dir is None:
+        log_dir = os.path.join(os.getcwd(), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_path = os.path.join(log_dir, "run.log")
+    fh = RotatingFileHandler(
+        log_path,
+        maxBytes=2_000_000,  # 2MB
+        backupCount=5,
+        encoding="utf-8"
+    )
+    fh.setFormatter(fmt)
+    fh.setLevel(logging.DEBUG)  # ファイルは常に全部残す
+    logger.addHandler(fh)
+
+    logger.debug(f"logger initialized: debug={debug}, log_path={log_path}")
+    return logger
+
+logger = None
+
+
 # ===== DEBUG設定 =====
 DEBUG = False  # True にすると詳細ログ
 
 def log(*args, **kwargs):
     if DEBUG:
-        print(*args, **kwargs)
-
+        logger.debug(" ".join(map(str, args)))
+        
 # スクリプトのあるフォルダに作業ディレクトリを変更
 script_dir = os.path.dirname(os.path.abspath(__file__))  # スクリプトのあるフォルダを取得
 os.chdir(script_dir)  # 作業ディレクトリをスクリプトのフォルダに変更
-
-# 作業ディレクトリを表示
-print("作業ディレクトリ:", os.getcwd())
 
 # フォルダを選択する関数
 def choose_directory():
@@ -38,14 +94,6 @@ def choose_directory():
     folder_path = filedialog.askdirectory(title="XBRLフォルダを選択してください")
     root.destroy()               # ★これ重要：Tkを閉じる
     return folder_path
-
-# メイン処理
-base_dir = r"C:\Users\silve\OneDrive\PC\開発\test\Python\XBRL"
-print("XBRLフォルダ（固定）:", base_dir)
-
-if not os.path.isdir(base_dir):
-    print("base_dir が存在しません。パスを確認してください:", base_dir)
-    exit()
 
 def trim_value(value, unit='millions'):
     """
@@ -618,9 +666,10 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         out["CurrentFiscalYearEndDateDEI"] = fy_el.get_text(strip=True)
 
     # デバッグ（必要なければ消してOK）
-    print("\n=== OUT KEYS ===")
-    for k in sorted(out.keys()):
-        print(k)
+    if DEBUG:
+        logger.debug("=== OUT KEYS ===")
+        for k in sorted(out.keys()):
+            logger.debug(k)
 
     return out, security_code
 
@@ -641,47 +690,6 @@ def _candidate_names(base_key: str):
 
     # 例外：変換できない形はそのまま
     return [base_key]
-
-def write_data_to_excel_namedranges(excel_file: str, data: dict, *,
-                                   skip_if_formula: bool = True,
-                                   skip_values=("データなし", "", None),
-                                   dry_run: bool = False) -> dict:
-    wb = openpyxl.load_workbook(excel_file, keep_vba=True)
-    result = {"written": [], "skipped": [], "missing": []}
-
-    for key, value in data.items():
-        if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):
-            result["skipped"].append((key, "empty"))
-            continue
-
-        # 連結→個別 の順で NamedRange を探す
-        wrote = False
-        tried = []
-
-        for name in _candidate_names(key):
-            tried.append(name)
-            cells = list(_iter_namedrange_cells(wb, name))
-            if not cells:
-                continue
-
-            for cell in cells:
-                if skip_if_formula and isinstance(cell.value, str) and cell.value.startswith("="):
-                    result["skipped"].append((name, f"formula@{cell.coordinate}"))
-                    continue
-                cell.value = value
-                result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
-                wrote = True
-
-            if wrote:
-                break
-
-        if not wrote:
-            result["missing"].append({"key": key, "tried": tried})
-
-    if not dry_run:
-        wb.save(excel_file)
-
-    return result
 
 # requests session を1回だけ作って使い回す（毎回作るより安定＆高速）
 _YF_SESSION = None
@@ -814,20 +822,23 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs):
 
         # 入力仕様違反（name前提）
         if not name or not target_date or not backup_date:
-            print(f"[WARNING] 株価date_pairsの要素が不完全なのでスキップ: {item}")
+            logger.warning(f"[WARNING] 株価date_pairsの要素が不完全なのでスキップ: {item}")
             result["bad_input"] += 1
             continue
 
-        # 取得（失敗しても全体は止めない：あなたの方針を踏襲）
+        # 取得
         try:
             price = get_stock_price(stock_code, target_date, backup_date)
         except Exception as e:
-            print(f"[WARNING] 株価取得失敗（続行）: {stock_code} {target_date} -> {e}")
+            logger.exception(
+                f"株価取得で想定外エラー（続行） "
+                f"code={stock_code} target={target_date} backup={backup_date}"
+            )
             result["errors"] += 1
             continue
 
         if price is None:
-            print(f"[INFO] {target_date} の株価が取得できませんでした（続行）")
+            logger.warning(f"{target_date} の株価が取得できませんでした（続行）: name={name} code={stock_code}")
             result["miss"] += 1
             continue
 
@@ -836,12 +847,33 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs):
         # 書き込み（NamedRangeのみ）
         wrote = _set_value_to_namedrange(workbook, name, v)
         if not wrote:
-            print(f"[WARNING] NamedRangeが見つからず書けませんでした: {name} ({target_date})")
+            logger.warning(f"NamedRangeが見つからず書けませんでした: {name} ({target_date})")
             result["missing_name"] += 1
             continue
 
         result["written"] += 1
-        print(f"[INFO] {target_date} の株価を書き込みました: {name}")
+        logger.debug(f"{target_date} の株価を書き込みました: {name}")
+
+    # --- 株価処理サマリ（必ず1回出す：運用の核） ---
+    logger.info(
+        f"[stock summary] "
+        f"written={result['written']} "
+        f"miss={result['miss']} "
+        f"errors={result['errors']} "
+        f"missing_name={result['missing_name']} "
+        f"bad_input={result['bad_input']} "
+        f"(code={stock_code})"
+    )
+
+    # --- 問題があれば警告（要調査だが続行） ---
+    if result["errors"] > 0 or result["missing_name"] > 0 or result["bad_input"] > 0:
+        logger.warning(
+            f"[stock warning] issues detected "
+            f"errors={result['errors']} "
+            f"missing_name={result['missing_name']} "
+            f"bad_input={result['bad_input']} "
+            f"(code={stock_code})"
+        )
 
     workbook.save(excel_file)
     return result
@@ -892,7 +924,7 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
             f"対策: Excelで該当ファイルを閉じてから再実行してください。"
         ) from e
 
-    print(f"Excelファイルがリネームされました: {new_file_path}")
+    logger.info(f"Excelファイルがリネームされました: {new_file_path}")
     return new_file_path
 
 cell_map_annual = {
@@ -991,483 +1023,96 @@ cell_map_half = {
 }
 
 # ファイルパスを順番に確認する関数
-import os
-import glob
-
 def find_available_excel_file(base_path, file_name, max_copies=30):
     """
-    旧仕様:
-      <file_name> - コピー.xlsx
-      <file_name> - コピー (i).xlsx
-
-    新仕様:
-      - .xlsx / .xlsm 両対応
-      - file_name の微妙な揺れ（例: 決算分析シート1 / 決算分析シート_1）も拾う
-      - まず厳密候補 → 見つからなければワイルドカード検索にフォールバック
+    方針：
+      1) まずコピー系（- コピー / - コピー (n)）を探し、あれば「更新日時が最新」を返す
+      2) コピーが無ければ、オリジナル（file_name.xlsx/.xlsm）を探す
+      3) オリジナルが見つかったら「新しいコピーを作って」そのパスを返す
+      4) それも無ければワイルドカードで最後の救済
     """
+    import shutil
 
-    # 1) まずは厳密候補を作る
     exts = ["xlsx", "xlsm"]
-    candidates = []
 
-    for i in range(max_copies):
-        if i == 0:
-            # 例: 決算分析シート1 - コピー.xlsx / .xlsm
-            for ext in exts:
-                candidates.append(os.path.join(base_path, f"{file_name} - コピー.{ext}"))
-        else:
-            for ext in exts:
-                candidates.append(os.path.join(base_path, f"{file_name} - コピー ({i}).{ext}"))
+    def newest(paths):
+        paths = [p for p in paths if os.path.exists(p)]
+        if not paths:
+            return None
+        paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        return paths[0]
 
-    for p in candidates:
-        if os.path.exists(p):
-            return p
+    def make_next_copy(original_path):
+        # 例：決算分析シート-1.xlsx → 決算分析シート-1 - コピー.xlsx / (2) / (3)...
+        root, ext = os.path.splitext(original_path)
+        base = root  # 既に拡張子無しのフルパス
 
-    # 2) それでも無ければ、ファイル名ゆれ対応（例: 決算分析シート1 と 決算分析シート_1）
-    #    "決算分析シート1" → "決算分析シート_1" にも対応
-    alt = file_name.replace("決算分析シート", "決算分析シート_")
-    if alt != file_name:
-        candidates2 = []
-        for i in range(max_copies):
-            if i == 0:
-                for ext in exts:
-                    candidates2.append(os.path.join(base_path, f"{alt} - コピー.{ext}"))
-            else:
-                for ext in exts:
-                    candidates2.append(os.path.join(base_path, f"{alt} - コピー ({i}).{ext}"))
+        # まず「 - コピー.ext」が空いていればそこへ
+        candidate0 = f"{base} - コピー{ext}"
+        if not os.path.exists(candidate0):
+            shutil.copy2(original_path, candidate0)
+            return candidate0
 
-        for p in candidates2:
-            if os.path.exists(p):
-                return p
+        # 次に (2)〜 を探す
+        for i in range(2, max_copies + 2):
+            cand = f"{base} - コピー ({i}){ext}"
+            if not os.path.exists(cand):
+                shutil.copy2(original_path, cand)
+                return cand
 
-    # 3) 最終フォールバック：ワイルドカード検索（コピー表記のゆれも吸収）
-    #    例: 決算分析シート_1 - コピー.xlsm など
-    patterns = [
-        os.path.join(base_path, f"{file_name}*コピー*.xlsx"),
-        os.path.join(base_path, f"{file_name}*コピー*.xlsm"),
-        os.path.join(base_path, f"{alt}*コピー*.xlsx"),
-        os.path.join(base_path, f"{alt}*コピー*.xlsm"),
-    ]
+        raise RuntimeError("コピー上限に達しました（max_copies を増やしてください）")
+
+    # --- 0) 名前ゆれ吸収（_ と - の両方を試す） ---
+    variants = {file_name}
+    variants.add(file_name.replace("決算分析シート-", "決算分析シート_"))
+    variants.add(file_name.replace("決算分析シート_", "決算分析シート-"))
+
+    # --- 1) まずコピーを探す（厳密） ---
+    copy_hits = []
+    for v in variants:
+        for ext in exts:
+            copy_hits.append(os.path.join(base_path, f"{v} - コピー.{ext}"))
+            for i in range(2, max_copies + 2):
+                copy_hits.append(os.path.join(base_path, f"{v} - コピー ({i}).{ext}"))
+
+    hit = newest(copy_hits)
+    if hit:
+        return hit
+
+    # --- 2) コピーが無い → オリジナルを探す ---
+    originals = []
+    for v in variants:
+        for ext in exts:
+            originals.append(os.path.join(base_path, f"{v}.{ext}"))
+
+    orig = newest(originals)
+    if orig:
+        # ★重要：オリジナルを返さず、必ずコピーを作って返す
+        try:
+            new_copy = make_next_copy(orig)
+            logger.info(f"テンプレから作業用コピーを作成しました: {new_copy}")
+            return new_copy
+        except Exception:
+            logger.exception("作業用コピー作成に失敗しました")
+            raise
+
+    # --- 3) 最終フォールバック：ワイルドカード（コピー表記のゆれ吸収） ---
+    patterns = []
+    for v in variants:
+        patterns += [
+            os.path.join(base_path, f"{v}*コピー*.xlsx"),
+            os.path.join(base_path, f"{v}*コピー*.xlsm"),
+        ]
     hits = []
     for pat in patterns:
         hits.extend(glob.glob(pat))
 
-    # 見つかったら最初の1件（必要なら並び替えルールを追加）
-    if hits:
-        hits.sort()
-        return hits[0]
+    hit2 = newest(hits)
+    if hit2:
+        return hit2
 
-    print(f"{file_name}のいずれのバージョンも見つかりませんでした。")
+    logger.warning(f"{file_name} のいずれのバージョンも見つかりませんでした。")
     return None
-
-# 各ループで処理するファイルパスをリスト化
-loops = [
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '1-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '1-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '1-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート1.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '2-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '2-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '2-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート2.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '3-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '3-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '3-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート3.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '4-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '4-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '4-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート4.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '5-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '5-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '5-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート5.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '6-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '6-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '6-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート6.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '7-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '7-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '7-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート7.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '8-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '8-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '8-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート8.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '9-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '9-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '9-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート9.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '10-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '10-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '10-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート10.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '11-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '11-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '11-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート11.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '12-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '12-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '12-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート12.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '13-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '13-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '13-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート13.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '14-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '14-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '14-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート14.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '15-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '15-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '15-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート15.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '16-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '16-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '16-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート16.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '17-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '17-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '17-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート17.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '18-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '18-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '18-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート18.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '19-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '19-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '19-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート19.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '20-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '20-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '20-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート20.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '21-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '21-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '21-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート21.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '22-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '22-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '22-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート22.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '23-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '23-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '23-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート23.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '24-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '24-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '24-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート24.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '25-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '25-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '25-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート25.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '26-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '26-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '26-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート26.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '27-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '27-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '27-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート27.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '28-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '28-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '28-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート28.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '29-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '29-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '29-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート29.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '30-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '30-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '30-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート30.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '31-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '31-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '31-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート31.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '32-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '32-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '32-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート32.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '33-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '33-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '33-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート33.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '34-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '34-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '34-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート34.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '35-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '35-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '35-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート35.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '36-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '36-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '36-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート36.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '37-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '37-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '37-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート37.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '38-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '38-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '38-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート38.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '39-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '39-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '39-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート39.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '40-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '40-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '40-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート40.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '41-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '41-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '41-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート41.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '42-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '42-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '42-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート42.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '43-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '43-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '43-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート43.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '44-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '44-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '44-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート44.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '45-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '45-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '45-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート45.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '46-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '46-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '46-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート46.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '47-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '47-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '47-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート47.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '48-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '48-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '48-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート48.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '49-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '49-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '49-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート49.xlsx'
-    },
-    {
-        'xbrl_file_paths': {
-            'file1': glob.glob(os.path.join(base_dir, '50-2*.xbrl')),
-            'file2': glob.glob(os.path.join(base_dir, '50-4*.xbrl')),
-            'file3': glob.glob(os.path.join(base_dir, '50-5*.xbrl'))
-        },
-        'excel_file_path': r'C:\Users\silve\OneDrive\PC\EDINET\決算分析シート\決算分析シート50.xlsx'
-    }
-]
-
-print("DEBUG file1:", glob.glob(os.path.join(base_dir, '1-2*.xbrl')))
-print("DEBUG file2:", glob.glob(os.path.join(base_dir, '1-4*.xbrl')))
-print("DEBUG file3:", glob.glob(os.path.join(base_dir, '1-5*.xbrl')))
-print("DEBUG all files:", os.listdir(base_dir))
 
 #「どのキーをどの書類が書くか」を分けるフィルタ
 def filter_keys_for_file(data: dict, file_kind: str) -> dict:
@@ -1793,7 +1438,7 @@ def write_data_to_excel_namedranges(excel_file: str, data: dict, *,
         "missing":  [name, ...]
       }
     """
-    wb = openpyxl.load_workbook(excel_file)
+    wb = openpyxl.load_workbook(excel_file, keep_vba=excel_file.lower().endswith(".xlsm"))
     result = {"written": [], "skipped": [], "missing": []}
 
     payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
@@ -1833,55 +1478,67 @@ def choose_file_count():
         except ValueError:
             print("数字を入力してください。")
 
-# ファイル数の選択
-file_count = choose_file_count()
+def load_config(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
 
-# スキップされたファイルを記録するリスト
-skipped_files = []
+# 各ループで処理するファイルパスをリスト化
+def build_loops(base_dir, template_dir, max_n=50):
+    """
+    現在：決算分析シート-{n}.xlsx を対象に loops を作る
+    将来：会社コード_会社名 方式に切替予定（この関数だけ差し替えればOK）
+    """
+    loops = []
+    for n in range(1, max_n + 1):
+        file1 = glob.glob(os.path.join(base_dir, f"{n}-2*.xbrl"))
+        file2 = glob.glob(os.path.join(base_dir, f"{n}-4*.xbrl"))
+        file3 = glob.glob(os.path.join(base_dir, f"{n}-5*.xbrl"))
 
-# 決算期を最初に1回だけ選択
-try:
-    def load_config(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        # デバッグ（必要な時だけ）
+        logger.debug(f"[{n}] file1: {file1}")
+        logger.debug(f"[{n}] file2: {file2}")
+        logger.debug(f"[{n}] file3: {file3}")
 
-    config = load_config('決算期_KANPE.json')
-    chosen_period = input("決算期を選択してください（例 25-1）: ")
+        excel_file_path = os.path.join(template_dir, f"決算分析シート_{n}.xlsx")
 
-    if chosen_period in config:
-        date_pairs = config[chosen_period]
-        validate_stock_date_pairs(date_pairs)
-        print(f"選択された決算期: {chosen_period}")
-        print("決算期データ:", date_pairs)
-    else:
-        print("無効な選択です。プログラムを終了します。")
-        exit()  # 無効な選択の場合、プログラム終了
-except Exception as e:
-    print(f"設定ファイルの読み込み中にエラー: {e}")
-    exit()
+        loops.append({
+            "xbrl_file_paths": {"file1": file1, "file2": file2, "file3": file3},
+            "excel_file_path": excel_file_path,
+            "slot": n,  # 将来の拡張用（ログ/追跡用）
+        })
+
+    return loops
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
-for i in range(file_count):
-
+def process_one_loop(loop, date_pairs, skipped_files):
+    """
+    1社（=1ループ）分の処理。
+    - skipped_files は main から渡される（global禁止）
+    - 例外は基本ここで握らず、main側でcatchして次へ進む
+    """
     annual_reported = False
 
-    loop = loops[i]
-    excel_base_name = os.path.basename(loop['excel_file_path']).replace('.xlsx', '')
-    excel_directory = os.path.dirname(loop['excel_file_path'])
+    excel_base_name = os.path.basename(loop["excel_file_path"]).replace(".xlsx", "")
+    excel_directory = os.path.dirname(loop["excel_file_path"])
 
     selected_file = find_available_excel_file(excel_directory, excel_base_name)
+    if not selected_file:
+        skipped_files.append({"reason": "Excelファイルが見つからない", "file": excel_base_name})
+        logger.warning("使用するファイルが見つかりませんでした。次のループを実行します。")
+        return
 
-    if selected_file:
-        loop['excel_file_path'] = selected_file
-        print(f"ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー\n使用するExcelファイル: {selected_file}")
-    else:
-        skipped_files.append({'reason': "Excelファイルが見つからない", 'file': excel_base_name})
-        print("使用するファイルが見つかりませんでした。次のループを実行します。")
-        continue
+    loop["excel_file_path"] = selected_file
+    logger.info(f"使用するExcelファイル: {selected_file}")
+
+    # ★安全ロック：テンプレ（コピー無し）に書き込ませない
+    base_no_ext = os.path.splitext(selected_file)[0]
+    if " - コピー" not in base_no_ext:
+        logger.critical(f"安全ロック発動：コピーではないExcelに書き込もうとしました: {selected_file}")
+        raise SystemExit(1)
 
     rename_info = None
-    xbrl_file_paths = loop['xbrl_file_paths']
-    excel_file_path = loop['excel_file_path']
+    xbrl_file_paths = loop["xbrl_file_paths"]
+    excel_file_path = loop["excel_file_path"]
     security_code = None
     base_year = None
 
@@ -1893,72 +1550,46 @@ for i in range(file_count):
 
     if use_half:
         try:
-            path1 = xbrl_file_paths["file1"][0]          # ★追加：path1 を定義
-            x1, _ = parse_xbrl_data(path1, mode="half")  # ★ここで使う
-            base_year = get_fy_end_year(x1)              # 半期の期末年（例：2025）
+            path1 = xbrl_file_paths["file1"][0]
+            x1, _ = parse_xbrl_data(path1, mode="half")
+            base_year = get_fy_end_year(x1)
         except Exception as e:
-            skipped_files.append({'reason': f"file1(半期) 解析エラー: {e}", 'file': excel_file_path})
+            skipped_files.append({"reason": f"file1(半期) 解析エラー: {e}", "file": excel_file_path})
             x1 = None
             use_half = False
 
-    # 半期あり/なしで「通期書き込みマップ」を確定
-    annual_map = make_annual_map_for_use_half(use_half, cell_map_annual)
-
     # -------------------------
-    # 1) file2（最新有報）→ 通期比較を埋める
+    # 1) file2（最新有報）
     # -------------------------
     x2 = None
     if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
-            # 安全策：未定義参照を防ぐ
             r2 = {"written": [], "skipped": [], "missing": []}
 
             path2 = xbrl_file_paths["file2"][0]
             x2, security_code = parse_xbrl_data(path2, mode="full")
 
-            # --- base_year を決める（半期が無いなら有報が基準） ---
             y2 = get_fy_end_year(x2)
             if base_year is None and y2 is not None:
                 base_year = y2
 
-            # --- file2 が base_year より古い年なら Prior 側へずらす（保険） ---
             if base_year is not None and y2 is not None:
                 gap2 = base_year - y2
                 if gap2 > 0:
                     x2 = shift_with_keep(x2, gap2)
 
-            # --- 通期比較を書き込み（半期ありなら Current を使わない） ---
             r2 = write_data_to_excel_namedranges(
                 excel_file_path,
                 filter_for_annual(x2, use_half=use_half)
             )
-            
-            # --- 表紙（N2/O2）用のFY end を決める：半期ありなら file1 のFY end、半期なしなら file2 のFY end ---
-            fy_source = None
-            if use_half and x1 and x1.get("CurrentFiscalYearEndDateDEI"):
-                fy_source = x1["CurrentFiscalYearEndDateDEI"]
-            elif x2.get("CurrentFiscalYearEndDateDEI"):
-                fy_source = x2["CurrentFiscalYearEndDateDEI"]
 
-            if fy_source:
-                dt = datetime.strptime(fy_source, "%Y-%m-%d")
-                x2["CurrentFiscalYearEndDateDEIyear"] = dt.year
-                x2["CurrentFiscalYearEndDateDEImonth"] = dt.month
-
-            if fy_source:
-                dt = datetime.strptime(fy_source, "%Y-%m-%d")
-                x2["CurrentFiscalYearEndDateDEIyear"] = dt.year
-                x2["CurrentFiscalYearEndDateDEImonth"] = dt.month
-
-            # --- 通期比較を書き込み（annual_map は use_half により Current が入ったり消えたりする） ---
-            filter_for_annual(x2, use_half=use_half)
             if not annual_reported:
-                print("[annual] written:", len(r2["written"]), "missing:", len(r2["missing"]))
+                logger.info(f"[annual] written={len(r2['written'])} missing={len(r2['missing'])}")
                 if r2["missing"]:
-                    print("Missing (annual) first 30:", r2["missing"][:30])
+                    logger.warning(f"[annual] missing first 30: {r2['missing'][:30]}")
                 annual_reported = True
 
-            # --- リネーム用：半期ありなら period_end（上期末）を優先、半期なしならFY end ---
+            # リネーム用：半期ありなら period_end（上期末）を優先
             period_for_name = None
             if use_half and x1 and x1.get("CurrentPeriodEndDateDEI"):
                 period_for_name = x1["CurrentPeriodEndDateDEI"]
@@ -1966,97 +1597,151 @@ for i in range(file_count):
                 period_for_name = x2["CurrentFiscalYearEndDateDEI"]
 
             if x2.get("SecurityCodeDEI") and period_for_name:
-                # 会社名は x2 優先、無ければ x1 からも拾う（保険）
                 cname = x2.get("CompanyNameCoverPage") or (x1.get("CompanyNameCoverPage") if x1 else "") or ""
                 rename_info = (x2["SecurityCodeDEI"], cname, period_for_name)
 
         except Exception as e:
-            skipped_files.append({'reason': f"file2(最新有報) 解析/書込エラー: {e}", 'file': excel_file_path})
+            skipped_files.append({"reason": f"file2(最新有報) 解析/書込エラー: {e}", "file": excel_file_path})
     else:
-        skipped_files.append({'reason': "file2(最新有報) が見つからない", 'file': excel_file_path})
+        skipped_files.append({"reason": "file2(最新有報) が見つからない", "file": excel_file_path})
 
     # -------------------------
-    # 2) file3（過去有報）→ Prior補完（base_year必須）
+    # 2) file3（過去有報）→ Prior補完
     # -------------------------
     if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
         try:
-            path3 = xbrl_file_paths["file3"][0]          # ★追加：path3 を定義
+            path3 = xbrl_file_paths["file3"][0]
             x3, _ = parse_xbrl_data(path3, mode="full")
 
             y3 = get_fy_end_year(x3)
-            if y3 is not None:
+            if y3 is None:
+                skipped_files.append({"reason": "file3 期末年が取れない", "file": excel_file_path})
+            else:
                 gap3 = base_year - y3
                 if gap3 > 0:
                     x3 = shift_with_keep(x3, gap3)
 
                 r3 = write_data_to_excel_namedranges(excel_file_path, filter_for_annual_old(x3))
-                print("[annual_old] written:", len(r3["written"]), "missing:", len(r3["missing"]))
+                logger.info(f"[annual_old] written={len(r3['written'])} missing={len(r3['missing'])}")
                 if r3["missing"]:
-                    print("Missing (annual_old) first 30:", r3["missing"][:30])
-            else:
-                skipped_files.append({'reason': "file3 期末年が取れない", 'file': excel_file_path})
-
+                    logger.warning(f"[annual_old] missing first 30: {r3['missing'][:30]}")
         except Exception as e:
-            skipped_files.append({'reason': f"file3(過去有報) 解析/書込エラー: {e}", 'file': excel_file_path})
+            skipped_files.append({"reason": f"file3(過去有報) 解析/書込エラー: {e}", "file": excel_file_path})
 
     # -------------------------
-    # 3) 半期ありなら最後に YTD/Quarter を確定（最優先）
+    # 3) 半期ありなら最後にYTD/Quarter確定
     # -------------------------
     if use_half and x1 is not None:
-        if 'CurrentFiscalYearEndDateDEI' in x1:
-            try:
-                dt = datetime.strptime(x1['CurrentFiscalYearEndDateDEI'], "%Y-%m-%d")
-                x1['CurrentFiscalYearEndDateDEIyear'] = dt.year
-                x1['CurrentFiscalYearEndDateDEImonth'] = dt.month
-            except Exception:
-                pass
+        try:
+            r1 = write_data_to_excel_namedranges(excel_file_path, filter_for_half(x1))
+            logger.info(f"[half] written={len(r1['written'])} missing={len(r1['missing'])}")
+            if r1["missing"]:
+                logger.warning(f"[half] missing first 30: {r1['missing'][:30]}")
+        except Exception as e:
+            skipped_files.append({"reason": f"half(半期) 書込エラー: {e}", "file": excel_file_path})
 
-        r1 = write_data_to_excel_namedranges(excel_file_path, filter_for_half(x1))
-        print("[half] written:", len(r1["written"]), "missing:", len(r1["missing"]))
-        if r1["missing"]:
-            print("Missing (half) first 30:", r1["missing"][:30])
-
-    # 証券コードを表示（デバッグ用）
+    # -------------------------
+    # 4) 株価（非致命）
+    # -------------------------
     if security_code:
-        print(f"取得した証券コード: {security_code}")
+        logger.info(f"取得した証券コード: {security_code}")
         stock_code = f"{security_code}.T"
-
-        # 株価（失敗しても致命傷にしない：スキップ一覧に入れない）
         try:
             stock_result = write_stock_data_to_excel(excel_file_path, stock_code, date_pairs)
-            # 任意：結果サマリ
             if stock_result:
-                print(
-                    f"[stock] written={stock_result.get('written', 0)} "
-                    f"miss={stock_result.get('miss', 0)} "
-                    f"errors={stock_result.get('errors', 0)} "
-                    f"missing_name={stock_result.get('missing_name', 0)} "
-                    f"bad_input={stock_result.get('bad_input', 0)}"
+                logger.debug(
+                    f"[stock] written={stock_result.get('written',0)} "
+                    f"miss={stock_result.get('miss',0)} "
+                    f"errors={stock_result.get('errors',0)} "
+                    f"missing_name={stock_result.get('missing_name',0)} "
+                    f"bad_input={stock_result.get('bad_input',0)}"
                 )
-        except Exception as e:
-            # ここに来たら「想定外」なので、落とさずに警告だけ
-            print(f"株価データの書き込みで想定外エラー（続行）: {e}")
 
-        # ★ ここに追加
-        if rename_info:
-            try:
-                excel_file_path = rename_excel_file(
-                    excel_file_path,
-                    rename_info[0],  # security_code
-                    rename_info[1],  # company_name
-                    rename_info[2],  # period_end_date
-                )
-            except Exception as e:
-                print(f"リネーム中にエラー: {e}")
-
+        except Exception:
+            logger.exception("株価データの書き込みで想定外エラー（続行）")
     else:
-        skipped_files.append({'reason': "証券コードが取得できない", 'file': excel_file_path})
-        print("証券コードが取得できませんでした。")
+        skipped_files.append({"reason": "証券コードが取得できない", "file": excel_file_path})
+        logger.warning("証券コードが取得できませんでした。")
 
-# スキップされたファイルの一覧を表示
-print("\n--- スキップされたファイル一覧 ---")
-if skipped_files:
-    for skipped in skipped_files:
-        print(f"理由: {skipped['reason']}, ファイル: {skipped['file']}")
-else:
-    print("スキップされたファイルはありません。")
+    # -------------------------
+    # 5) リネーム（非致命）
+    # -------------------------
+    if rename_info:
+        try:
+            rename_excel_file(
+                excel_file_path,
+                rename_info[0],  # security_code
+                rename_info[1],  # company_name
+                rename_info[2],  # period_end_date
+            )
+        except Exception:
+            logger.exception("リネーム中にエラーが発生しました（続行）")
+
+
+def main():
+    # 作業ディレクトリを表示
+    logger.info(f"作業ディレクトリ: {os.getcwd()}")
+
+    # === XBRLフォルダ設定 ===
+    base_dir = r"C:\Users\silve\OneDrive\PC\開発\test\Python\XBRL"
+    template_dir = r"C:\Users\silve\OneDrive\PC\EDINET\決算分析シート"
+
+    logger.info(f"XBRLフォルダ（固定）: {base_dir}")
+    if not os.path.isdir(base_dir):
+        logger.critical(f"base_dir が存在しません。パスを確認してください: {base_dir}")
+        raise SystemExit(1)
+
+    # === 件数入力 ===
+    file_count = choose_file_count()
+
+    # === スキップ一覧（ローカル）===
+    skipped_files = []
+
+    # === loops生成 ===
+    loops = build_loops(base_dir, template_dir, max_n=50)
+
+    # === 決算期を最初に1回だけ選択 ===
+    try:
+        config = load_config("決算期_KANPE.json")
+        chosen_period = input("決算期を選択してください（例 25-1）: ")
+
+        if chosen_period not in config:
+            logger.critical("無効な選択です。プログラムを終了します。")
+            raise SystemExit(1)
+
+        date_pairs = config[chosen_period]
+        validate_stock_date_pairs(date_pairs)
+        logger.info(f"選択された決算期: {chosen_period}")
+        logger.debug(f"決算期データ: {date_pairs}")
+    except Exception:
+        logger.exception("決算期設定の読み込み/選択に失敗しました")
+        raise SystemExit(1)
+
+    # === ★ここが必要：1件ずつ処理する（呼び出し）===
+    for i in range(min(file_count, len(loops))):
+        try:
+            process_one_loop(loops[i], date_pairs, skipped_files)
+        except SystemExit:
+            raise
+        except Exception:
+            logger.exception(f"1件処理で想定外エラー（続行）: index={i}")
+
+    # === スキップ一覧表示（最後）===
+    logger.info("--- スキップされたファイル一覧 ---")
+    if skipped_files:
+        for s in skipped_files:
+            logger.warning(f"スキップ: reason={s['reason']} file={s['file']}")
+    else:
+        logger.info("スキップされたファイルはありません。")
+
+if __name__ == "__main__":
+    logger = setup_logger(debug=DEBUG)
+    try:
+        logger.info("===== プログラム開始 =====")
+        main()
+        logger.info("===== 正常終了 =====")
+    except SystemExit:
+        raise
+    except Exception:
+        logger.exception("致命的エラーで終了しました")
+        raise
