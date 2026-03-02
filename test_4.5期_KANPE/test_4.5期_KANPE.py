@@ -1,4 +1,10 @@
 import os
+import requests
+from io import StringIO
+import certifi
+
+os.environ["SSL_CERT_FILE"] = certifi.where()
+
 import openpyxl
 from bs4 import BeautifulSoup
 import yfinance as yf
@@ -8,6 +14,14 @@ import glob
 from tkinter import Tk, filedialog
 import pandas as pd
 import json
+from openpyxl.cell.cell import Cell
+
+# ===== DEBUG設定 =====
+DEBUG = False  # True にすると詳細ログ
+
+def log(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
 
 # スクリプトのあるフォルダに作業ディレクトリを変更
 script_dir = os.path.dirname(os.path.abspath(__file__))  # スクリプトのあるフォルダを取得
@@ -610,77 +624,227 @@ def parse_xbrl_data(xbrl_file, mode="full"):
 
     return out, security_code
 
-# Excelへのデータ書き込み
-def write_data_to_excel(excel_file, data, cell_map):
-    workbook = openpyxl.load_workbook(excel_file)
-    sheet = workbook['決算入力']
+def _candidate_names(base_key: str):
+    """
+    base_key: 'NetSales_YTD' のような「Scope無し」のキーを想定
+    返り値: ['NetSales_C_YTD', 'NetSales_N_YTD'] のように優先順で返す
+    """
+    parts = base_key.split("_")
+    if len(parts) >= 3:
+        # すでに NetSales_C_YTD のようにScope入りならそのまま
+        return [base_key]
 
-    for key, cell in cell_map.items():
-        if key not in data:
+    # 例: NetSales_YTD → NetSales_C_YTD / NetSales_N_YTD
+    if len(parts) == 2:
+        metric, period = parts
+        return [f"{metric}_C_{period}", f"{metric}_N_{period}"]
+
+    # 例外：変換できない形はそのまま
+    return [base_key]
+
+def write_data_to_excel_namedranges(excel_file: str, data: dict, *,
+                                   skip_if_formula: bool = True,
+                                   skip_values=("データなし", "", None),
+                                   dry_run: bool = False) -> dict:
+    wb = openpyxl.load_workbook(excel_file, keep_vba=True)
+    result = {"written": [], "skipped": [], "missing": []}
+
+    for key, value in data.items():
+        if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):
+            result["skipped"].append((key, "empty"))
             continue
 
-        value = data[key]
+        # 連結→個別 の順で NamedRange を探す
+        wrote = False
+        tried = []
 
-        # None や 「データなし」は書かない
-        if value is None:
-            continue
-        if isinstance(value, str) and value.strip() in ("", "データなし"):
-            continue
-
-        targets = cell if isinstance(cell, list) else [cell]
-
-        for c in targets:
-            current_value = sheet[c].value
-
-            # ==========================
-            # ★ 数式セルは上書きしない
-            # ==========================
-            if isinstance(current_value, str) and current_value.startswith("="):
-                print(f"数式セル {c} はスキップしました。")
+        for name in _candidate_names(key):
+            tried.append(name)
+            cells = list(_iter_namedrange_cells(wb, name))
+            if not cells:
                 continue
 
-            sheet[c] = value
+            for cell in cells:
+                if skip_if_formula and isinstance(cell.value, str) and cell.value.startswith("="):
+                    result["skipped"].append((name, f"formula@{cell.coordinate}"))
+                    continue
+                cell.value = value
+                result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
+                wrote = True
 
-    workbook.save(excel_file)       
+            if wrote:
+                break
 
-# 株価データの取得　調整前株価：auto_adjust=False　調整後株価：auto_adjust=True　←株価同じ。今後変わるかも(2025.02.22現在)
+        if not wrote:
+            result["missing"].append({"key": key, "tried": tried})
+
+    if not dry_run:
+        wb.save(excel_file)
+
+    return result
+
+# requests session を1回だけ作って使い回す（毎回作るより安定＆高速）
+_YF_SESSION = None
+
+def _get_yf_session():
+    global _YF_SESSION
+    if _YF_SESSION is None:
+        s = requests.Session()
+        s.verify = certifi.where()  # ← CA を固定
+        _YF_SESSION = s
+    return _YF_SESSION
+
+# 株価データの取得
+def _to_stooq_symbol(stock_code: str) -> str:
+    """
+    '2206.T' / '2206' どちらが来ても stooq用に変換する
+    stooqの日本株は '2206.JP' 形式
+    """
+    code = stock_code.strip().upper()
+    if code.endswith(".T"):
+        code = code[:-2]
+    # 数字4桁だけ抽出したい場合はここで調整してOK
+    return f"{code}.JP"
+
 def get_stock_price(stock_code, target_date, backup_date, buffer_days=3):
-    start_date = (datetime.strptime(backup_date, '%Y-%m-%d') - timedelta(days=buffer_days)).strftime('%Y-%m-%d')
-    end_date   = (datetime.strptime(target_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+    """
+    stooq から日足CSVを取得して、target_date→見つからなければ過去に遡ってCloseを返す
+    """
+    # 取得期間（余裕を持たせる）
+    start_date = (datetime.strptime(backup_date, "%Y-%m-%d") - timedelta(days=buffer_days)).date()
+    end_date   = (datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)).date()
 
-    hist = yf.download(tickers=stock_code, start=start_date, end=end_date, auto_adjust=False)
+    symbol = _to_stooq_symbol(stock_code)
+    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
 
-    # tz-aware の時だけ外す（naiveなら何もしない）
-    if getattr(hist.index, "tz", None) is not None:
-        hist.index = hist.index.tz_localize(None)
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
 
-    check_date = datetime.strptime(target_date, '%Y-%m-%d')
-    start_dt   = datetime.strptime(start_date, '%Y-%m-%d')
+    df = pd.read_csv(StringIO(r.text))
+    if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+        return None
 
-    while check_date >= start_dt:
-        ts = pd.Timestamp(check_date.date())
-        if ts in hist.index:
-            close = hist.loc[ts, 'Close']
-            return float(close)  # scalar想定
-        check_date -= timedelta(days=1)
+    df["Date"] = pd.to_datetime(df["Date"]).dt.date
+    # 期間で絞る
+    df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
+    if df.empty:
+        return None
+
+    # target_dateから遡って探す
+    check = datetime.strptime(target_date, "%Y-%m-%d").date()
+    start = start_date
+
+    close_map = dict(zip(df["Date"], df["Close"]))
+
+    while check >= start:
+        if check in close_map and pd.notna(close_map[check]):
+            return float(close_map[check])
+        check -= timedelta(days=1)
 
     return None
 
+def validate_stock_date_pairs(date_pairs):
+    """
+    JSONのdate_pairsが「name前提」になっているか検証する。
+    不整合があれば早期に気づけるように ValueError を投げる。
+    """
+    bad = []
+    for i, item in enumerate(date_pairs):
+        # cell が残っていたらNG（完全NamedRange化の契約違反）
+        if "cell" in item:
+            bad.append((i, "cell_is_not_allowed", item))
+            continue
+        # name / target_date / backup_date は必須
+        if not item.get("name") or not item.get("target_date") or not item.get("backup_date"):
+            bad.append((i, "missing_required_keys", item))
+
+    if bad:
+        msg_lines = ["株価date_pairsが name前提になっていません（JSONを修正してください）。"]
+        for i, reason, item in bad[:10]:  # 長くなりすぎないように先頭だけ
+            msg_lines.append(f"  - index={i}, reason={reason}, item={item}")
+        raise ValueError("\n".join(msg_lines))
+
+#NamedRangeに書き込むユーティリティ
+def _set_value_to_namedrange(workbook, range_name: str, value) -> bool:
+    """
+    NamedRangeが存在すれば、その参照先セル(群)に value を書く。成功なら True。
+    1セル想定だが、範囲でも全セルに同じ値を書ける。
+    """
+    dn = workbook.defined_names.get(range_name)
+    if dn is None:
+        return False
+
+    for sheet_name, ref in dn.destinations:
+        if sheet_name not in workbook.sheetnames:
+            continue
+        ws = workbook[sheet_name]
+
+        obj = ws[ref]
+        # ws["A1"] は Cell、ws["A1:B2"] は tuple(tuple(Cell))
+        if isinstance(obj, openpyxl.cell.cell.Cell):
+            obj.value = value
+        else:
+            for row in obj:
+                for cell in row:
+                    cell.value = value
+    return True
+
 # 株価データをExcelに書き込む
 def write_stock_data_to_excel(excel_file, stock_code, date_pairs):
+    """
+    株価は NamedRange 専用（必須）。
+    date_pairs の各要素は必ず:
+      {"name": "...", "target_date": "YYYY-MM-DD", "backup_date": "YYYY-MM-DD"}
+    を満たすこと。
+    """
     workbook = openpyxl.load_workbook(excel_file)
-    sheet = workbook['決算入力']
-    
-    for dates in date_pairs:
-        price = get_stock_price(stock_code, dates['target_date'], dates['backup_date'])
-        if price is not None:
-            sheet[dates['cell']] = float(price.iloc[0]) if isinstance(price, pd.Series) else float(price)
 
-            print(f"{dates['target_date']}の株価がセル{dates['cell']}に保存されました。")
-        else:
-            print(f"{dates['target_date']}のデータが取得できませんでした。")
-    
+    result = {
+        "written": 0,
+        "miss": 0,          # 株価データが取得できなかった（非致命）
+        "errors": 0,        # 例外など（非致命だが要調査）
+        "missing_name": 0,  # NamedRange が見つからない（テンプレ不整合）
+        "bad_input": 0,     # JSON要素の不足（設計ミス）
+    }
+
+    for item in date_pairs:
+        name = item.get("name")
+        target_date = item.get("target_date")
+        backup_date = item.get("backup_date")
+
+        # 入力仕様違反（name前提）
+        if not name or not target_date or not backup_date:
+            print(f"[WARNING] 株価date_pairsの要素が不完全なのでスキップ: {item}")
+            result["bad_input"] += 1
+            continue
+
+        # 取得（失敗しても全体は止めない：あなたの方針を踏襲）
+        try:
+            price = get_stock_price(stock_code, target_date, backup_date)
+        except Exception as e:
+            print(f"[WARNING] 株価取得失敗（続行）: {stock_code} {target_date} -> {e}")
+            result["errors"] += 1
+            continue
+
+        if price is None:
+            print(f"[INFO] {target_date} の株価が取得できませんでした（続行）")
+            result["miss"] += 1
+            continue
+
+        v = float(price)
+
+        # 書き込み（NamedRangeのみ）
+        wrote = _set_value_to_namedrange(workbook, name, v)
+        if not wrote:
+            print(f"[WARNING] NamedRangeが見つからず書けませんでした: {name} ({target_date})")
+            result["missing_name"] += 1
+            continue
+
+        result["written"] += 1
+        print(f"[INFO] {target_date} の株価を書き込みました: {name}")
+
     workbook.save(excel_file)
+    return result
 
 # Excelファイルのリネーム（安全版）
 def safe_filename(s: str) -> str:
@@ -827,16 +991,72 @@ cell_map_half = {
 }
 
 # ファイルパスを順番に確認する関数
-def find_available_excel_file(base_path, file_name, max_copies=10):
+import os
+import glob
+
+def find_available_excel_file(base_path, file_name, max_copies=30):
+    """
+    旧仕様:
+      <file_name> - コピー.xlsx
+      <file_name> - コピー (i).xlsx
+
+    新仕様:
+      - .xlsx / .xlsm 両対応
+      - file_name の微妙な揺れ（例: 決算分析シート1 / 決算分析シート_1）も拾う
+      - まず厳密候補 → 見つからなければワイルドカード検索にフォールバック
+    """
+
+    # 1) まずは厳密候補を作る
+    exts = ["xlsx", "xlsm"]
+    candidates = []
+
     for i in range(max_copies):
         if i == 0:
-            file_path = os.path.join(base_path, f"{file_name} - コピー.xlsx")
+            # 例: 決算分析シート1 - コピー.xlsx / .xlsm
+            for ext in exts:
+                candidates.append(os.path.join(base_path, f"{file_name} - コピー.{ext}"))
         else:
-            file_path = os.path.join(base_path, f"{file_name} - コピー ({i}).xlsx")
-        
-        if os.path.exists(file_path):
-            return file_path
-    
+            for ext in exts:
+                candidates.append(os.path.join(base_path, f"{file_name} - コピー ({i}).{ext}"))
+
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+
+    # 2) それでも無ければ、ファイル名ゆれ対応（例: 決算分析シート1 と 決算分析シート_1）
+    #    "決算分析シート1" → "決算分析シート_1" にも対応
+    alt = file_name.replace("決算分析シート", "決算分析シート_")
+    if alt != file_name:
+        candidates2 = []
+        for i in range(max_copies):
+            if i == 0:
+                for ext in exts:
+                    candidates2.append(os.path.join(base_path, f"{alt} - コピー.{ext}"))
+            else:
+                for ext in exts:
+                    candidates2.append(os.path.join(base_path, f"{alt} - コピー ({i}).{ext}"))
+
+        for p in candidates2:
+            if os.path.exists(p):
+                return p
+
+    # 3) 最終フォールバック：ワイルドカード検索（コピー表記のゆれも吸収）
+    #    例: 決算分析シート_1 - コピー.xlsm など
+    patterns = [
+        os.path.join(base_path, f"{file_name}*コピー*.xlsx"),
+        os.path.join(base_path, f"{file_name}*コピー*.xlsm"),
+        os.path.join(base_path, f"{alt}*コピー*.xlsx"),
+        os.path.join(base_path, f"{alt}*コピー*.xlsm"),
+    ]
+    hits = []
+    for pat in patterns:
+        hits.extend(glob.glob(pat))
+
+    # 見つかったら最初の1件（必要なら並び替えルールを追加）
+    if hits:
+        hits.sort()
+        return hits[0]
+
     print(f"{file_name}のいずれのバージョンも見つかりませんでした。")
     return None
 
@@ -1342,41 +1562,128 @@ def shift_with_keep(data: dict, year_gap: int,
             shifted[k] = data[k]
     return shifted
 
+def filter_for_annual(data: dict, use_half: bool = False) -> dict:
+    """
+    通期テンプレ（旧 cell_map_annual 相当）に存在するキーだけ返す。
+    use_half=True（半期あり）のときは *_Current を書かない運用を維持。
+    """
+    allow = {
+        # 売上
+        "NetSalesPrior4", "NetSalesPrior3", "NetSalesPrior2", "NetSalesPrior1", "NetSalesCurrent",
 
-def filter_for_annual(data: dict) -> dict:
-    """通期比較（Current/Prior* + DEI）。YTD/Quarterは除外。"""
-    out = {}
-    for k, v in data.items():
-        if k.endswith("YTD") or k.endswith("Quarter"):
-            continue
-        if k.endswith("Current") or k.endswith(("Prior1","Prior2","Prior3","Prior4")):
-            out[k] = v
-        if k in ("SecurityCodeDEI", "CurrentFiscalYearEndDateDEI", "CompanyNameCoverPage",
-                 "CurrentFiscalYearEndDateDEIyear","CurrentFiscalYearEndDateDEImonth"):
-            out[k] = v
+        # 売上原価〜営業利益
+        "CostOfSalesPrior4", "CostOfSalesPrior3", "CostOfSalesPrior2", "CostOfSalesPrior1", "CostOfSalesCurrent",
+        "GrossProfitPrior4", "GrossProfitPrior3", "GrossProfitPrior2", "GrossProfitPrior1", "GrossProfitCurrent",
+        "SellingExpensesPrior4", "SellingExpensesPrior3", "SellingExpensesPrior2", "SellingExpensesPrior1", "SellingExpensesCurrent",
+        "OperatingIncomePrior4", "OperatingIncomePrior3", "OperatingIncomePrior2", "OperatingIncomePrior1", "OperatingIncomeCurrent",
+
+        # 経常・純利益
+        "OrdinaryIncomePrior4", "OrdinaryIncomePrior3", "OrdinaryIncomePrior2", "OrdinaryIncomePrior1", "OrdinaryIncomeCurrent",
+        "ProfitLossPrior4", "ProfitLossPrior3", "ProfitLossPrior2", "ProfitLossPrior1", "ProfitLossCurrent",
+
+        # 発行株式数（自己株控除後）
+        "TotalNumberPrior4", "TotalNumberPrior3", "TotalNumberPrior2", "TotalNumberPrior1", "TotalNumberCurrent",
+
+        # BS
+        "TotalAssetsPrior4", "TotalAssetsPrior3", "TotalAssetsPrior2", "TotalAssetsPrior1", "TotalAssetsCurrent",
+        "NetAssetsPrior4", "NetAssetsPrior3", "NetAssetsPrior2", "NetAssetsPrior1", "NetAssetsCurrent",
+
+        # CF
+        "OperatingCashPrior4", "OperatingCashPrior3", "OperatingCashPrior2", "OperatingCashPrior1", "OperatingCashCurrent",
+        "InvestmentCashPrior4", "InvestmentCashPrior3", "InvestmentCashPrior2", "InvestmentCashPrior1", "InvestmentCashCurrent",
+        "FinancingCashPrior4", "FinancingCashPrior3", "FinancingCashPrior2", "FinancingCashPrior1", "FinancingCashCurrent",
+
+        # 現金等
+        "CashAndCashEquivalentsPrior4", "CashAndCashEquivalentsPrior3", "CashAndCashEquivalentsPrior2",
+        "CashAndCashEquivalentsPrior1", "CashAndCashEquivalentsCurrent",
+
+        # 表紙系（必要なら）
+        "SecurityCodeDEI",
+        "CompanyNameCoverPage",
+    }
+
+    out = {k: v for k, v in data.items() if k in allow}
+
+    # 半期あり運用：通期の *_Current は使わない（今まで通り）
+    if use_half:
+        out = {k: v for k, v in out.items() if not k.endswith("Current")}
+
     return out
-
 
 def filter_for_annual_old(data: dict) -> dict:
-    """古い有報はPrior側だけ（Currentは触らない）"""
-    out = {}
-    for k, v in data.items():
-        if k.endswith(("Prior1","Prior2","Prior3","Prior4")):
-            out[k] = v
-    return out
+    """
+    過去有報（file3）は Prior 側だけを使う。
+    さらにテンプレに入力欄がある指標だけに絞る。
+    """
+    allow = {
+        # 売上
+        "NetSalesPrior4", "NetSalesPrior3", "NetSalesPrior2", "NetSalesPrior1",
 
+        # 売上原価〜営業利益
+        "CostOfSalesPrior4", "CostOfSalesPrior3", "CostOfSalesPrior2", "CostOfSalesPrior1",
+        "GrossProfitPrior4", "GrossProfitPrior3", "GrossProfitPrior2", "GrossProfitPrior1",
+        "SellingExpensesPrior4", "SellingExpensesPrior3", "SellingExpensesPrior2", "SellingExpensesPrior1",
+        "OperatingIncomePrior4", "OperatingIncomePrior3", "OperatingIncomePrior2", "OperatingIncomePrior1",
+
+        # 経常・純利益
+        "OrdinaryIncomePrior4", "OrdinaryIncomePrior3", "OrdinaryIncomePrior2", "OrdinaryIncomePrior1",
+        "ProfitLossPrior4", "ProfitLossPrior3", "ProfitLossPrior2", "ProfitLossPrior1",
+
+        # 発行株式数（自己株控除後）
+        "TotalNumberPrior4", "TotalNumberPrior3", "TotalNumberPrior2", "TotalNumberPrior1",
+
+        # BS
+        "TotalAssetsPrior4", "TotalAssetsPrior3", "TotalAssetsPrior2", "TotalAssetsPrior1",
+        "NetAssetsPrior4", "NetAssetsPrior3", "NetAssetsPrior2", "NetAssetsPrior1",
+
+        # CF
+        "OperatingCashPrior4", "OperatingCashPrior3", "OperatingCashPrior2", "OperatingCashPrior1",
+        "InvestmentCashPrior4", "InvestmentCashPrior3", "InvestmentCashPrior2", "InvestmentCashPrior1",
+        "FinancingCashPrior4", "FinancingCashPrior3", "FinancingCashPrior2", "FinancingCashPrior1",
+
+        # 現金等
+        "CashAndCashEquivalentsPrior4", "CashAndCashEquivalentsPrior3",
+        "CashAndCashEquivalentsPrior2", "CashAndCashEquivalentsPrior1",
+    }
+
+    return {k: v for k, v in data.items() if k in allow}
 
 def filter_for_half(data: dict) -> dict:
-    """半期はYTD/Quarterだけ + DEI必要分"""
+    """
+    半期テンプレ（旧 cell_map_half 相当）に存在するキーだけ返す。
+    NamedRange移行後も、テンプレに無い項目は出力しない。
+    """
+    allow = {
+        # PL（YTD）
+        "NetSalesYTD",
+        "OrdinaryIncomeYTD",
+        "ProfitLossYTD",
+
+        # 株式・BS（Quarter）
+        "TotalNumberQuarter",
+        "TotalAssetsQuarter",
+        "NetAssetsQuarter",
+
+        # CF（YTD）
+        "OperatingCashYTD",
+        "InvestmentCashYTD",
+        "FinancingCashYTD",
+
+        # 現金等（Quarter）
+        "CashAndCashEquivalentsQuarter",
+
+        # 表紙（必要なら）
+        "SecurityCodeDEI",
+        "CompanyNameCoverPage",
+        "CurrentFiscalYearEndDateDEIyear",
+        "CurrentFiscalYearEndDateDEImonth",
+    }
+
     out = {}
     for k, v in data.items():
-        if k.endswith("YTD") or k.endswith("Quarter"):
-            out[k] = v
-        if k in ("SecurityCodeDEI", "CurrentFiscalYearEndDateDEI",
-                 "CurrentFiscalYearEndDateDEIyear","CurrentFiscalYearEndDateDEImonth"):
+        if k in allow:
             out[k] = v
     return out
-
 
 def make_annual_map_for_use_half(use_half: bool, base_map: dict) -> dict:
     """
@@ -1391,6 +1698,128 @@ def make_annual_map_for_use_half(use_half: bool, base_map: dict) -> dict:
                                                   "CurrentFiscalYearEndDateDEIyear","CurrentFiscalYearEndDateDEImonth"):
                 m.pop(k, None)
     return m
+
+# =========================
+# NamedRange Writer + キー変換（Scopeなし版）
+# =========================
+# 変換対象の「語尾」一覧（あなたの out キー体系に合わせる）
+_SUFFIXES = [
+    "YTD",
+    "Quarter",
+    "Current",
+    "Prior1", "Prior2", "Prior3", "Prior4",
+]
+
+_suffix_pat = re.compile(rf"^(.+?)({'|'.join(_SUFFIXES)})$")
+
+def to_namedrange_key(key: str) -> str:
+    """
+    例：
+      NetSalesYTD        -> NetSales_YTD
+      TotalAssetsQuarter -> TotalAssets_Quarter
+      ProfitLossPrior2   -> ProfitLoss_Prior2
+      SecurityCodeDEI    -> SecurityCodeDEI（そのまま）
+    """
+    if not isinstance(key, str) or not key:
+        return key
+
+    # DEI系や既に '_' を含むものは基本そのまま（必要なら後で個別対応）
+    if "_" in key:
+        return key
+    if key.endswith("DEI"):
+        return key
+
+    m = _suffix_pat.match(key)
+    if not m:
+        return key
+
+    metric = m.group(1)
+    suffix = m.group(2)
+    return f"{metric}_{suffix}"
+
+
+def transform_keys_for_namedranges(data: dict) -> dict:
+    """
+    data のキーを NamedRange 名に合う形へ変換して返す
+    """
+    out = {}
+    for k, v in data.items():
+        nk = to_namedrange_key(k)
+        out[nk] = v
+    return out
+
+
+def _iter_namedrange_cells(workbook: openpyxl.Workbook, range_name: str):
+    """
+    NamedRangeが指すセル（1セル/複数セル）を返す
+    - ref が "A1" だと ws[ref] は Cell を返す
+    - ref が "A1:B2" だと ws[ref] は 2次元タプルを返す
+    """
+    dn = workbook.defined_names.get(range_name)
+    if dn is None:
+        return
+
+    for sheet_name, ref in dn.destinations:
+        if sheet_name not in workbook.sheetnames:
+            continue
+        ws = workbook[sheet_name]
+
+        obj = ws[ref]
+
+        # 1セル（Cell）ケース
+        if isinstance(obj, Cell):
+            yield obj
+            continue
+
+        # 範囲（2次元のタプル）ケース
+        # obj は ((Cell, Cell, ...), (Cell, Cell, ...), ...)
+        for row in obj:
+            for cell in row:
+                yield cell
+
+def write_data_to_excel_namedranges(excel_file: str, data: dict, *,
+                                   transform_keys: bool = True,
+                                   skip_if_formula: bool = True,
+                                   skip_values=("データなし", "", None),
+                                   dry_run: bool = False) -> dict:
+    """
+    data の key と同名の NamedRange に書き込む（cell_map不要）
+    - transform_keys=True のとき NetSalesYTD -> NetSales_YTD のように変換してから書く
+    - 数式セルは上書きしない（あなたの既存挙動を踏襲）
+    戻り値:
+      {
+        "written": [(name, "Sheet!A1"), ...],
+        "skipped": [(name, reason), ...],
+        "missing":  [name, ...]
+      }
+    """
+    wb = openpyxl.load_workbook(excel_file)
+    result = {"written": [], "skipped": [], "missing": []}
+
+    payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
+
+    for name, value in payload.items():
+        # None / 空 / データなし は書かない
+        if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):
+            result["skipped"].append((name, "empty"))
+            continue
+
+        cells = list(_iter_namedrange_cells(wb, name))
+        if not cells:
+            result["missing"].append(name)
+            continue
+
+        for cell in cells:
+            if skip_if_formula and isinstance(cell.value, str) and cell.value.startswith("="):
+                result["skipped"].append((name, f"formula@{cell.coordinate}"))
+                continue
+            cell.value = value
+            result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
+
+    if not dry_run:
+        wb.save(excel_file)
+
+    return result
 
 # 処理するファイル数を選択
 def choose_file_count():
@@ -1413,7 +1842,7 @@ skipped_files = []
 # 決算期を最初に1回だけ選択
 try:
     def load_config(file_path):
-        with open(file_path, 'r') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     config = load_config('決算期_KANPE.json')
@@ -1421,6 +1850,7 @@ try:
 
     if chosen_period in config:
         date_pairs = config[chosen_period]
+        validate_stock_date_pairs(date_pairs)
         print(f"選択された決算期: {chosen_period}")
         print("決算期データ:", date_pairs)
     else:
@@ -1432,6 +1862,9 @@ except Exception as e:
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
 for i in range(file_count):
+
+    annual_reported = False
+
     loop = loops[i]
     excel_base_name = os.path.basename(loop['excel_file_path']).replace('.xlsx', '')
     excel_directory = os.path.dirname(loop['excel_file_path'])
@@ -1477,6 +1910,9 @@ for i in range(file_count):
     x2 = None
     if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
+            # 安全策：未定義参照を防ぐ
+            r2 = {"written": [], "skipped": [], "missing": []}
+
             path2 = xbrl_file_paths["file2"][0]
             x2, security_code = parse_xbrl_data(path2, mode="full")
 
@@ -1485,13 +1921,19 @@ for i in range(file_count):
             if base_year is None and y2 is not None:
                 base_year = y2
 
-            # --- file2 が base_year より古い年なら Prior側へずらす（保険） ---
+            # --- file2 が base_year より古い年なら Prior 側へずらす（保険） ---
             if base_year is not None and y2 is not None:
                 gap2 = base_year - y2
                 if gap2 > 0:
                     x2 = shift_with_keep(x2, gap2)
 
-            # --- 表紙（N2/O2）は「半期ありなら file1 のFY end」「半期なしなら file2 のFY end」 ---
+            # --- 通期比較を書き込み（半期ありなら Current を使わない） ---
+            r2 = write_data_to_excel_namedranges(
+                excel_file_path,
+                filter_for_annual(x2, use_half=use_half)
+            )
+            
+            # --- 表紙（N2/O2）用のFY end を決める：半期ありなら file1 のFY end、半期なしなら file2 のFY end ---
             fy_source = None
             if use_half and x1 and x1.get("CurrentFiscalYearEndDateDEI"):
                 fy_source = x1["CurrentFiscalYearEndDateDEI"]
@@ -1503,8 +1945,18 @@ for i in range(file_count):
                 x2["CurrentFiscalYearEndDateDEIyear"] = dt.year
                 x2["CurrentFiscalYearEndDateDEImonth"] = dt.month
 
+            if fy_source:
+                dt = datetime.strptime(fy_source, "%Y-%m-%d")
+                x2["CurrentFiscalYearEndDateDEIyear"] = dt.year
+                x2["CurrentFiscalYearEndDateDEImonth"] = dt.month
+
             # --- 通期比較を書き込み（annual_map は use_half により Current が入ったり消えたりする） ---
-            write_data_to_excel(excel_file_path, filter_for_annual(x2), annual_map)
+            filter_for_annual(x2, use_half=use_half)
+            if not annual_reported:
+                print("[annual] written:", len(r2["written"]), "missing:", len(r2["missing"]))
+                if r2["missing"]:
+                    print("Missing (annual) first 30:", r2["missing"][:30])
+                annual_reported = True
 
             # --- リネーム用：半期ありなら period_end（上期末）を優先、半期なしならFY end ---
             period_for_name = None
@@ -1514,7 +1966,8 @@ for i in range(file_count):
                 period_for_name = x2["CurrentFiscalYearEndDateDEI"]
 
             if x2.get("SecurityCodeDEI") and period_for_name:
-                cname = x2.get("CompanyNameCoverPage", "")
+                # 会社名は x2 優先、無ければ x1 からも拾う（保険）
+                cname = x2.get("CompanyNameCoverPage") or (x1.get("CompanyNameCoverPage") if x1 else "") or ""
                 rename_info = (x2["SecurityCodeDEI"], cname, period_for_name)
 
         except Exception as e:
@@ -1536,7 +1989,10 @@ for i in range(file_count):
                 if gap3 > 0:
                     x3 = shift_with_keep(x3, gap3)
 
-                write_data_to_excel(excel_file_path, filter_for_annual_old(x3), annual_map)
+                r3 = write_data_to_excel_namedranges(excel_file_path, filter_for_annual_old(x3))
+                print("[annual_old] written:", len(r3["written"]), "missing:", len(r3["missing"]))
+                if r3["missing"]:
+                    print("Missing (annual_old) first 30:", r3["missing"][:30])
             else:
                 skipped_files.append({'reason': "file3 期末年が取れない", 'file': excel_file_path})
 
@@ -1555,18 +2011,32 @@ for i in range(file_count):
             except Exception:
                 pass
 
-        write_data_to_excel(excel_file_path, filter_for_half(x1), cell_map_half)
+        r1 = write_data_to_excel_namedranges(excel_file_path, filter_for_half(x1))
+        print("[half] written:", len(r1["written"]), "missing:", len(r1["missing"]))
+        if r1["missing"]:
+            print("Missing (half) first 30:", r1["missing"][:30])
 
     # 証券コードを表示（デバッグ用）
     if security_code:
         print(f"取得した証券コード: {security_code}")
         stock_code = f"{security_code}.T"
 
+        # 株価（失敗しても致命傷にしない：スキップ一覧に入れない）
         try:
-            write_stock_data_to_excel(excel_file_path, stock_code, date_pairs)
+            stock_result = write_stock_data_to_excel(excel_file_path, stock_code, date_pairs)
+            # 任意：結果サマリ
+            if stock_result:
+                print(
+                    f"[stock] written={stock_result.get('written', 0)} "
+                    f"miss={stock_result.get('miss', 0)} "
+                    f"errors={stock_result.get('errors', 0)} "
+                    f"missing_name={stock_result.get('missing_name', 0)} "
+                    f"bad_input={stock_result.get('bad_input', 0)}"
+                )
         except Exception as e:
-            skipped_files.append({'reason': f"株価データの書き込み中にエラー: {e}", 'file': excel_file_path})
-            print(f"株価データの書き込み中にエラーが発生しました。スキップします。")
+            # ここに来たら「想定外」なので、落とさずに警告だけ
+            print(f"株価データの書き込みで想定外エラー（続行）: {e}")
+
         # ★ ここに追加
         if rename_info:
             try:
