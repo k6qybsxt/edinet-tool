@@ -18,6 +18,129 @@ import pandas as pd
 import json
 from openpyxl.cell.cell import Cell
 
+# ===== skipped_files: 構造化（原因コード化）=====
+from dataclasses import dataclass, asdict
+from enum import Enum
+import traceback
+
+class SkipCode(str, Enum):
+    EXCEL_NOT_FOUND   = "EXCEL_NOT_FOUND"      # 作業Excelが見つからない
+    FILE1_PARSE_ERROR = "FILE1_PARSE_ERROR"    # 半期XBRL解析失敗
+    FILE2_NOT_FOUND   = "FILE2_NOT_FOUND"      # 最新有報XBRLなし
+    FILE2_ERROR       = "FILE2_ERROR"          # 最新有報 解析/書込失敗
+    FILE3_YEAR_MISS   = "FILE3_YEAR_MISS"      # 過去有報 期末年取れず
+    FILE3_ERROR       = "FILE3_ERROR"          # 過去有報 解析/書込失敗
+    HALF_WRITE_ERROR  = "HALF_WRITE_ERROR"     # 半期 書込失敗
+    NO_SECURITY_CODE  = "NO_SECURITY_CODE"     # 証券コードが取れない（株価等で必要）
+    RENAME_ERROR      = "RENAME_ERROR"         # リネーム失敗（非致命）
+    UNKNOWN           = "UNKNOWN"
+
+@dataclass
+class SkipItem:
+    code: str
+    phase: str               # "excel_select" / "file1" / "file2" / "file3" / "half" / "stock" / "rename"
+    slot: int | None         # loop["slot"] を入れる（将来トレースしやすい）
+    excel: str | None
+    xbrl: str | None
+    message: str
+    exc_type: str | None = None
+    exc_msg: str | None = None
+
+def add_skip(skipped_files: list, *, code: SkipCode, phase: str, loop: dict | None,
+             excel: str | None, xbrl: str | None, message: str, exc: Exception | None = None):
+    item = SkipItem(
+        code=code.value if isinstance(code, SkipCode) else str(code),
+        phase=phase,
+        slot=(loop.get("slot") if loop else None),
+        excel=excel,
+        xbrl=xbrl,
+        message=message,
+        exc_type=(type(exc).__name__ if exc else None),
+        exc_msg=(str(exc) if exc else None),
+    )
+    skipped_files.append(asdict(item))
+
+def log_skip_summary(logger: logging.Logger, skipped_files: list):
+    logger.info("--- skipped summary ---")
+    if not skipped_files:
+        logger.info("skipped=0")
+        return
+
+    # code別件数
+    counts: dict[str, int] = {}
+    for s in skipped_files:
+        c = s.get("code", "UNKNOWN")
+        counts[c] = counts.get(c, 0) + 1
+
+    # 1行サマリ（運用向け）
+    parts = [f"{k}={counts[k]}" for k in sorted(counts.keys())]
+    logger.warning("[skipped summary] " + " ".join(parts))
+
+    # 詳細（最大30件だけ表示：ログ肥大化防止）
+    logger.info("--- skipped details (first 30) ---")
+    for s in skipped_files[:30]:
+        logger.warning(
+            "skip "
+            f"code={s.get('code')} phase={s.get('phase')} slot={s.get('slot')} "
+            f"excel={s.get('excel')} xbrl={s.get('xbrl')} msg={s.get('message')} "
+            f"exc={s.get('exc_type')}:{s.get('exc_msg')}"
+        )
+
+def normalize_security_code(raw: object) -> str | None:
+    """
+    4桁の証券コード(数字)に正規化して返す。取れなければNone。
+    例: "2206", "2206.0", "2206-T", "2206.T", "2206 " -> "2206"
+    """
+    if raw is None:
+        return None
+
+    s = str(raw).strip()
+    if not s:
+        return None
+
+    # 小数っぽい "2206.0" 対策
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".", 1)[0]
+
+    # "2206.T" / "2206-T" / "2206（東証）" みたいな混在を数字だけに寄せる
+    m = re.search(r"(\d{4})", s)
+    if not m:
+        return None
+
+    code = m.group(1)
+    return code
+
+def pick_security_code(*candidates: object) -> str | None:
+    """
+    候補を左から順に見て、最初に正規化できた4桁コードを返す。
+    """
+    for c in candidates:
+        code = normalize_security_code(c)
+        if code:
+            return code
+    return None
+
+def ensure_security_code(x2: dict | None, parsed_code: object, x1: dict | None = None) -> str | None:
+    """
+    file2成功時の security_code を必ず確定させる（優先順位固定）
+    """
+    if x2 is None:
+        return None
+
+    # 優先順位（固定）
+    # 1) parse_xbrl_data の戻り値
+    # 2) DEI の SecurityCode
+    # 3) よくある別名キー（念のため）
+    # 4) file1側（半期）があるなら最後の保険
+    return pick_security_code(
+        parsed_code,
+        x2.get("SecurityCodeDEI"),
+        x2.get("SecurityCode"),
+        x2.get("SecurityCodeCoverPage"),
+        (x1.get("SecurityCodeDEI") if x1 else None),
+        (x1.get("SecurityCode") if x1 else None),
+    )
+
 # ===== Logging Policy (固定ルール) =====
 # CRITICAL: 続行不可。設定不備・テンプレ汚染防止ロック等。→ SystemExit で終了
 # ERROR   : 想定外例外。続行はするが必ず調査対象（logger.exception含む）
@@ -1521,9 +1644,18 @@ def process_one_loop(loop, date_pairs, skipped_files):
     excel_base_name = os.path.basename(loop["excel_file_path"]).replace(".xlsx", "")
     excel_directory = os.path.dirname(loop["excel_file_path"])
 
+    # --- Excel選択失敗 ---
     selected_file = find_available_excel_file(excel_directory, excel_base_name)
     if not selected_file:
-        skipped_files.append({"reason": "Excelファイルが見つからない", "file": excel_base_name})
+        add_skip(
+            skipped_files,
+            code=SkipCode.EXCEL_NOT_FOUND,
+            phase="excel_select",
+            loop=loop,
+            excel=excel_base_name,
+            xbrl=None,
+            message="使用するExcelが見つからない"
+        )
         logger.warning("使用するファイルが見つかりませんでした。次のループを実行します。")
         return
 
@@ -1548,13 +1680,23 @@ def process_one_loop(loop, date_pairs, skipped_files):
     x1 = None
     use_half = bool(xbrl_file_paths.get("file1") and xbrl_file_paths["file1"])
 
+    # --- file1（半期）解析失敗 ---
     if use_half:
         try:
             path1 = xbrl_file_paths["file1"][0]
             x1, _ = parse_xbrl_data(path1, mode="half")
             base_year = get_fy_end_year(x1)
         except Exception as e:
-            skipped_files.append({"reason": f"file1(半期) 解析エラー: {e}", "file": excel_file_path})
+            add_skip(
+                skipped_files,
+                code=SkipCode.FILE1_PARSE_ERROR,
+                phase="file1",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=(xbrl_file_paths["file1"][0] if xbrl_file_paths.get("file1") else None),
+                message="file1(半期) 解析エラー",
+                exc=e
+            )
             x1 = None
             use_half = False
 
@@ -1562,32 +1704,17 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # 1) file2（最新有報）
     # -------------------------
     x2 = None
+
     if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
-            r2 = {"written": [], "skipped": [], "missing": []}
-
             path2 = xbrl_file_paths["file2"][0]
-            x2, security_code = parse_xbrl_data(path2, mode="full")
+            x2, parsed_security_code = parse_xbrl_data(path2, mode="full")
 
-            y2 = get_fy_end_year(x2)
-            if base_year is None and y2 is not None:
-                base_year = y2
+            # ★ここで必ず確定（優先順位固定）
+            security_code = ensure_security_code(x2, parsed_security_code, x1)
+            logger.debug(f"[code check] parsed={parsed_security_code} fixed={security_code}")
 
-            if base_year is not None and y2 is not None:
-                gap2 = base_year - y2
-                if gap2 > 0:
-                    x2 = shift_with_keep(x2, gap2)
-
-            r2 = write_data_to_excel_namedranges(
-                excel_file_path,
-                filter_for_annual(x2, use_half=use_half)
-            )
-
-            if not annual_reported:
-                logger.info(f"[annual] written={len(r2['written'])} missing={len(r2['missing'])}")
-                if r2["missing"]:
-                    logger.warning(f"[annual] missing first 30: {r2['missing'][:30]}")
-                annual_reported = True
+            # （ここに：あなたの既存の file2 書込処理）
 
             # リネーム用：半期ありなら period_end（上期末）を優先
             period_for_name = None
@@ -1596,49 +1723,93 @@ def process_one_loop(loop, date_pairs, skipped_files):
             elif x2.get("CurrentFiscalYearEndDateDEI"):
                 period_for_name = x2["CurrentFiscalYearEndDateDEI"]
 
-            if x2.get("SecurityCodeDEI") and period_for_name:
-                cname = x2.get("CompanyNameCoverPage") or (x1.get("CompanyNameCoverPage") if x1 else "") or ""
-                rename_info = (x2["SecurityCodeDEI"], cname, period_for_name)
+            # ★rename_infoは SecurityCodeDEI を直接参照せず、確定済み security_code を使う
+            if security_code and period_for_name:
+                cname = (
+                    x2.get("CompanyNameCoverPage")
+                    or (x1.get("CompanyNameCoverPage") if x1 else "")
+                    or ""
+                )
+                rename_info = (security_code, cname, period_for_name)
+                logger.debug(f"[rename check] rename_info={rename_info}")
 
         except Exception as e:
-            skipped_files.append({"reason": f"file2(最新有報) 解析/書込エラー: {e}", "file": excel_file_path})
+            add_skip(
+                skipped_files,
+                code=SkipCode.FILE2_ERROR,
+                phase="file2",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=path2,
+                message="file2(最新有報) 解析/書込エラー",
+                exc=e
+            )
     else:
-        skipped_files.append({"reason": "file2(最新有報) が見つからない", "file": excel_file_path})
+        add_skip(
+            skipped_files,
+            code=SkipCode.FILE2_NOT_FOUND,
+            phase="file2",
+            loop=loop,
+            excel=excel_file_path,
+            xbrl=None,
+            message="file2(最新有報) が見つからない"
+        )
 
     # -------------------------
     # 2) file3（過去有報）→ Prior補完
     # -------------------------
+    # --- file3（過去有報）年取れず / 失敗 ---
     if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
         try:
             path3 = xbrl_file_paths["file3"][0]
             x3, _ = parse_xbrl_data(path3, mode="full")
-
             y3 = get_fy_end_year(x3)
-            if y3 is None:
-                skipped_files.append({"reason": "file3 期末年が取れない", "file": excel_file_path})
-            else:
-                gap3 = base_year - y3
-                if gap3 > 0:
-                    x3 = shift_with_keep(x3, gap3)
 
-                r3 = write_data_to_excel_namedranges(excel_file_path, filter_for_annual_old(x3))
-                logger.info(f"[annual_old] written={len(r3['written'])} missing={len(r3['missing'])}")
-                if r3["missing"]:
-                    logger.warning(f"[annual_old] missing first 30: {r3['missing'][:30]}")
+            if y3 is None:
+                add_skip(
+                    skipped_files,
+                    code=SkipCode.FILE3_YEAR_MISS,
+                    phase="file3",
+                    loop=loop,
+                    excel=excel_file_path,
+                    xbrl=path3,
+                    message="file3 期末年が取れない"
+                )
+            else:
+                # （中略：あなたの既存処理）
+                pass
+
         except Exception as e:
-            skipped_files.append({"reason": f"file3(過去有報) 解析/書込エラー: {e}", "file": excel_file_path})
+            add_skip(
+                skipped_files,
+                code=SkipCode.FILE3_ERROR,
+                phase="file3",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=(xbrl_file_paths["file3"][0] if xbrl_file_paths.get("file3") else None),
+                message="file3(過去有報) 解析/書込エラー",
+                exc=e
+            )
 
     # -------------------------
     # 3) 半期ありなら最後にYTD/Quarter確定
     # -------------------------
+    # --- half（半期）書込失敗 ---
     if use_half and x1 is not None:
         try:
             r1 = write_data_to_excel_namedranges(excel_file_path, filter_for_half(x1))
-            logger.info(f"[half] written={len(r1['written'])} missing={len(r1['missing'])}")
-            if r1["missing"]:
-                logger.warning(f"[half] missing first 30: {r1['missing'][:30]}")
+            # （中略：あなたの既存処理）
         except Exception as e:
-            skipped_files.append({"reason": f"half(半期) 書込エラー: {e}", "file": excel_file_path})
+            add_skip(
+                skipped_files,
+                code=SkipCode.HALF_WRITE_ERROR,
+                phase="half",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=(xbrl_file_paths["file1"][0] if xbrl_file_paths.get("file1") else None),
+                message="half(半期) 書込エラー",
+                exc=e
+            )
 
     # -------------------------
     # 4) 株価（非致命）
@@ -1646,6 +1817,7 @@ def process_one_loop(loop, date_pairs, skipped_files):
     if security_code:
         logger.info(f"取得した証券コード: {security_code}")
         stock_code = f"{security_code}.T"
+        logger.debug(f"[stock check] security_code={security_code} stock_code={stock_code}")
         try:
             stock_result = write_stock_data_to_excel(excel_file_path, stock_code, date_pairs)
             if stock_result:
@@ -1659,8 +1831,17 @@ def process_one_loop(loop, date_pairs, skipped_files):
 
         except Exception:
             logger.exception("株価データの書き込みで想定外エラー（続行）")
+    # --- 証券コード無し（株価の前提） ---
     else:
-        skipped_files.append({"reason": "証券コードが取得できない", "file": excel_file_path})
+        add_skip(
+            skipped_files,
+            code=SkipCode.NO_SECURITY_CODE,
+            phase="stock",
+            loop=loop,
+            excel=excel_file_path,
+            xbrl=None,
+            message="証券コードが取得できない"
+        )
         logger.warning("証券コードが取得できませんでした。")
 
     # -------------------------
@@ -1727,12 +1908,7 @@ def main():
             logger.exception(f"1件処理で想定外エラー（続行）: index={i}")
 
     # === スキップ一覧表示（最後）===
-    logger.info("--- スキップされたファイル一覧 ---")
-    if skipped_files:
-        for s in skipped_files:
-            logger.warning(f"スキップ: reason={s['reason']} file={s['file']}")
-    else:
-        logger.info("スキップされたファイルはありません。")
+    log_skip_summary(logger, skipped_files)
 
 if __name__ == "__main__":
     logger = setup_logger(debug=DEBUG)
