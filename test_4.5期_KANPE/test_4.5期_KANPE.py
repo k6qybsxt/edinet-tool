@@ -245,6 +245,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         soup = BeautifulSoup(f, "lxml-xml")
 
     out = {}
+    out_meta = {}
 
     # ========= 1) context 読み取り =========
     contexts = {}
@@ -653,7 +654,19 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 best = pick_best(metric, end_date=h1_ends_fb[0], months=6)
 
         if best:
-            out[f"{metric}YTD"] = trim_value(best["value"], meta["unit"])
+            key = f"{metric}YTD"
+            out[key] = trim_value(best["value"], meta["unit"])
+            out_meta[key] = {
+                "period_start": best.get("start"),
+                "period_end": best.get("end"),
+                "period_kind": "duration",
+                "unit": meta["unit"],
+                "consolidation": "C" if best.get("dim") == "Consolidated" else "N",
+                "tag_used": meta["tags"][best["tag_priority"]],
+                "tag_rank": best["tag_priority"] + 1,
+                "status": "OK",
+            }
+
         else:
             # ★上期YTDは絶対欲しい要望なので、見つからない場合は明示的に埋める
             out[f"{metric}YTD"] = "データなし"
@@ -678,7 +691,19 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 suffix = "Current" if diff == 0 else f"Prior{diff}"
                 best = pick_best(metric, end_date=end_date, months=12)
                 if best:
-                    out[f"{metric}{suffix}"] = trim_value(best["value"], meta["unit"])
+                    key = f"{metric}{suffix}"
+                    out[key] = trim_value(best["value"], meta["unit"])
+                    out_meta[key] = {
+                        "period_start": best.get("start"),
+                        "period_end": best.get("end"),
+                        "period_kind": "duration",
+                        "unit": meta["unit"],
+                        "consolidation": "C" if best.get("dim") == "Consolidated" else "N",
+                        "tag_used": meta["tags"][best["tag_priority"]],
+                        "tag_rank": best["tag_priority"] + 1,
+                        "status": "OK",
+                    }
+
 
     # (B) instant：通期5年（Current/Prior1..4） + 上期末（Quarter）
     # ルール：
@@ -729,7 +754,19 @@ def parse_xbrl_data(xbrl_file, mode="full"):
 
             best_q = pick_best(metric, end_date=chosen_end)
             if best_q:
-                out[f"{metric}Quarter"] = trim_value(best_q["value"], meta["unit"])
+                key = f"{metric}Quarter"
+                out[key] = trim_value(best_q["value"], meta["unit"])
+                out_meta[key] = {
+                    "period_start": None,
+                    "period_end": best_q.get("end"),
+                    "period_kind": "instant",
+                    "unit": meta["unit"],
+                    "consolidation": "C" if best_q.get("dim") == "Consolidated" else "N",
+                    "tag_used": meta["tags"][best_q["tag_priority"]],
+                    "tag_rank": best_q["tag_priority"] + 1,
+                    "status": "OK",
+                }
+
         # ★通期5年：年で Current/Prior1..4 を作る（halfモードでは作らない）
         if mode != "half":
             for end_date in inst_ends:
@@ -745,7 +782,18 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 suffix = "Current" if diff == 0 else f"Prior{diff}"
                 best = pick_best(metric, end_date=end_date)
                 if best:
-                    out[f"{metric}{suffix}"] = trim_value(best["value"], meta["unit"])
+                    key = f"{metric}{suffix}"
+                    out[key] = trim_value(best["value"], meta["unit"])
+                    out_meta[key] = {
+                        "period_start": None,
+                        "period_end": best.get("end"),
+                        "period_kind": "instant",
+                        "unit": meta["unit"],
+                        "consolidation": "C" if best.get("dim") == "Consolidated" else "N",
+                        "tag_used": meta["tags"][best["tag_priority"]],
+                        "tag_rank": best["tag_priority"] + 1,
+                        "status": "OK",
+                    }
 
     # ========= 6.5) TotalNumber を「自己株式控除後」に統一して生成 =========
     # TotalNumber = IssuedShares - TreasuryShares
@@ -760,7 +808,18 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         treasury = out.get(f"TreasuryShares{suffix}")
 
         if isinstance(issued, int) and isinstance(treasury, int):
-            out[f"TotalNumber{suffix}"] = issued - treasury
+            key = f"TotalNumber{suffix}"
+            out[key] = issued - treasury
+            out_meta[key] = {
+                "period_start": None,
+                "period_end": (out_meta.get(f"IssuedShares{suffix}", {}) or {}).get("period_end"),
+                "period_kind": "instant",
+                "unit": "ones",
+                "consolidation": (out_meta.get(f"IssuedShares{suffix}", {}) or {}).get("consolidation"),
+                "tag_used": "CALC(IssuedShares-TreasuryShares)",
+                "tag_rank": 0,
+                "status": "OK",
+            }
 
     # ========= 7) 証券コード等 =========
     security_code = None
@@ -794,7 +853,8 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         for k in sorted(out.keys()):
             logger.debug(k)
 
-    return out, security_code
+    # 返り値を増やす
+    return out, security_code, out_meta
 
 def _candidate_names(base_key: str):
     """
