@@ -17,11 +17,13 @@ from tkinter import Tk, filedialog
 import pandas as pd
 import json
 from openpyxl.cell.cell import Cell
+import shutil
 
 # ===== skipped_files: 構造化（原因コード化）=====
 from dataclasses import dataclass, asdict
 from enum import Enum
 import traceback
+
 
 class SkipCode(str, Enum):
     EXCEL_NOT_FOUND   = "EXCEL_NOT_FOUND"      # 作業Excelが見つからない
@@ -235,6 +237,66 @@ def trim_value(value, unit='millions'):
     except Exception:
         return 'データなし'
 
+SLOTS = ("Quarter", "YTD", "Current", "Prior1", "Prior2", "Prior3", "Prior4")
+
+def split_out_key(out_key: str) -> tuple[str, str] | None:
+    # 例: NetSalesPrior1 -> ("NetSales","Prior1")
+    #     TotalAssetsQuarter -> ("TotalAssets","Quarter")
+    for slot in SLOTS:
+        if out_key.endswith(slot):
+            return out_key[:-len(slot)], slot
+    return None
+
+RAW_COLS = [
+    "company_code",
+    "doc_id",
+    "doc_type",
+    "consolidation",
+    "metric_key",
+    "time_slot",
+    "period_start",
+    "period_end",
+    "period_kind",
+    "value",
+    "unit",
+    "tag_used",
+    "tag_rank",
+    "status",
+    "dup_key",
+    "run_id",
+    "source_file",
+]
+def build_raw_rows(*, company_code: str, doc_id: str, doc_type: str,
+                   out: dict, out_meta: dict) -> list[dict]:
+    rows = []
+    for out_key, val in out.items():
+        sp = split_out_key(out_key)
+        if sp is None:
+            continue
+        metric_key, time_slot = sp
+
+        meta = out_meta.get(out_key, {})
+
+        # valueは数値のみ採用（"データなし"などはNone）
+        value_num = val if isinstance(val, (int, float)) else None
+
+        rows.append({
+            "company_code": company_code,
+            "doc_id": doc_id,
+            "doc_type": doc_type,  # "annual" or "half"
+            "consolidation": meta.get("consolidation"),
+            "metric_key": metric_key,
+            "time_slot": time_slot,
+            "period_start": meta.get("period_start"),
+            "period_end": meta.get("period_end"),
+            "period_kind": meta.get("period_kind"),
+            "value": value_num,
+            "unit": meta.get("unit"),
+            "tag_used": meta.get("tag_used"),
+            "tag_rank": meta.get("tag_rank"),
+            "status": meta.get("status", "OK" if value_num is not None else "MISSING"),
+        })
+    return rows
 
 # XBRLデータの解析（完成版）
 def parse_xbrl_data(xbrl_file, mode="full"):
@@ -666,10 +728,20 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 "tag_rank": best["tag_priority"] + 1,
                 "status": "OK",
             }
-
         else:
-            # ★上期YTDは絶対欲しい要望なので、見つからない場合は明示的に埋める
-            out[f"{metric}YTD"] = "データなし"
+            # ★ MISSING行を残す（annualでもhalfでも）
+            key = f"{metric}YTD"
+            out[key] = None  # rawに空欄で出したいので None 推奨（"データなし" でも可）
+            out_meta[key] = {
+                "period_start": None,
+                "period_end": None,
+                "period_kind": "duration",
+                "unit": meta["unit"],
+                "consolidation": None,
+                "tag_used": None,
+                "tag_rank": None,
+                "status": "MISSING",
+            }
 
         # ★通期 5年 -> Current/Prior1..4（halfモードでは作らない）
         if mode != "half":
@@ -1605,6 +1677,184 @@ def _iter_namedrange_cells(workbook: openpyxl.Workbook, range_name: str):
             for cell in row:
                 yield cell
 
+# raw_edinet 用：キーを (metric_key, time_slot) に分解
+_TIME_SLOTS = ("YTD", "Quarter", "Current", "Prior1", "Prior2", "Prior3", "Prior4")
+
+def split_metric_timeslot(key: str) -> tuple[str, str | None]:
+    for ts in _TIME_SLOTS:
+        if key.endswith(ts):
+            return key[: -len(ts)], ts
+    return key, None
+
+def build_raw_rows_from_out(*,
+                            company_code: str | None,
+                            doc_id: str,
+                            doc_type: str,
+                            out: dict,
+                            out_meta: dict) -> list[dict]:
+    """
+    out/out_meta から raw_rows（RAW_COLSに一致するdict配列）を作る
+    - out_meta を主として回す（MISSING行を残すため）
+    """
+    rows: list[dict] = []
+
+    for key, meta in (out_meta or {}).items():
+        metric_key, time_slot = split_metric_timeslot(key)
+
+        rows.append({
+            "company_code": company_code,
+            "doc_id": doc_id,
+            "doc_type": doc_type,
+            "consolidation": meta.get("consolidation"),
+            "metric_key": metric_key,
+            "time_slot": time_slot,
+            "period_start": meta.get("period_start"),
+            "period_end": meta.get("period_end"),
+            "period_kind": meta.get("period_kind"),
+            "value": out.get(key),
+            "unit": meta.get("unit"),
+            "tag_used": meta.get("tag_used"),
+            "tag_rank": meta.get("tag_rank"),
+            "status": meta.get("status"),
+        })
+
+    return rows
+
+RAW_COLS = [
+    "company_code","doc_id","doc_type","consolidation","metric_key","time_slot",
+    "period_start","period_end","period_kind","value","unit","tag_used","tag_rank","status"
+]
+
+def _split_key(key: str):
+    """
+    key例:
+      NetSalesYTD / NetSalesCurrent / NetSalesPrior1 / TotalAssetsQuarter
+    戻り:
+      metric_key="NetSales", time_slot="YTD" など
+    """
+    if key.endswith("YTD"):
+        return key[:-3], "YTD"
+    if key.endswith("Quarter"):
+        return key[:-7], "Quarter"
+    if key.endswith("Current"):
+        return key[:-7], "Current"
+    if key.startswith("Prior") and False:
+        pass
+    # Prior1..4
+    for n in ("1","2","3","4"):
+        suf = f"Prior{n}"
+        if key.endswith(suf):
+            return key[:-len(suf)], suf
+    return key, ""
+
+
+def append_rows_from_meta(raw_rows: list, *, company_code: str, doc_id: str, doc_type: str, out: dict, out_meta: dict):
+    """
+    out_meta を raw_rows に展開して追記
+    """
+    for key, meta in (out_meta or {}).items():
+        metric_key, time_slot = _split_key(key)
+
+        raw_rows.append({
+            "company_code": company_code,
+            "doc_id": doc_id,
+            "doc_type": doc_type,
+            "consolidation": meta.get("consolidation"),
+            "metric_key": metric_key,
+            "time_slot": time_slot,
+            "period_start": meta.get("period_start"),
+            "period_end": meta.get("period_end"),
+            "period_kind": meta.get("period_kind"),
+            "value": out.get(key),                 # out の値
+            "unit": meta.get("unit"),
+            "tag_used": meta.get("tag_used"),
+            "tag_rank": meta.get("tag_rank"),
+            "status": meta.get("status", "OK"),
+        })
+
+
+def append_missing_annual_ytd_rows(raw_rows: list, *, company_code: str, doc_id: str, out_meta: dict, duration_metric_keys: list[str]):
+    """
+    annual の YTD を「必ず行として残す」
+    - out_meta に {metric}YTD が無いものは MISSING 行を追加
+    """
+    for metric in duration_metric_keys:
+        key = f"{metric}YTD"
+        if (out_meta or {}).get(key):
+            continue
+
+        raw_rows.append({
+            "company_code": company_code,
+            "doc_id": doc_id,
+            "doc_type": "annual",
+            "consolidation": None,
+            "metric_key": metric,
+            "time_slot": "YTD",
+            "period_start": None,
+            "period_end": None,
+            "period_kind": "duration",
+            "value": None,
+            "unit": None,
+            "tag_used": None,
+            "tag_rank": None,
+            "status": "MISSING",
+        })
+
+def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], *, sheet_name: str = "raw_edinet"):
+    """
+    raw_edinet シートに rows を書き込む（ヘッダ1行は残し、2行目以降を再生成）
+    """
+    wb = openpyxl.load_workbook(
+        excel_file,
+        keep_vba=excel_file.lower().endswith(".xlsm")
+    )
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"sheet not found: {sheet_name}")
+
+    ws = wb[sheet_name]
+
+    # 1) 2行目以降を全消し
+    if ws.max_row >= 2:
+        ws.delete_rows(2, ws.max_row - 1)
+
+    # 2) rowsを書き込み
+    r = 2
+    for row in rows:
+        for c, col in enumerate(RAW_COLS, start=1):
+            ws.cell(row=r, column=c).value = row.get(col)
+        r += 1
+
+    wb.save(excel_file)
+
+def restore_namedranges_via_writer(excel_file_path: str, old_values: dict) -> None:
+    """
+    old_values: {range_name: old_value}
+    """
+    try:
+        write_data_to_excel_namedranges(excel_file_path, old_values)
+    except Exception:
+        pass
+
+def snapshot_namedranges(wb, values: dict[str, object]) -> dict[str, object]:
+    """
+    values: {range_name: new_value} の形（これから書く対象だけ）
+    戻り値: {range_name: old_value} （復旧用）
+    """
+    old = {}
+    for name in values.keys():
+        try:
+            old[name] = wb.names[name].refers_to_range.value
+        except Exception:
+            old[name] = None  # 存在しない/参照できない場合
+    return old
+
+def restore_namedranges(wb, old_values: dict[str, object]) -> None:
+    for name, v in old_values.items():
+        try:
+            wb.names[name].refers_to_range.value = v
+        except Exception:
+            pass
+
 def write_data_to_excel_namedranges(excel_file: str, data: dict, *,
                                    transform_keys: bool = True,
                                    skip_if_formula: bool = True,
@@ -1694,12 +1944,23 @@ def build_loops(base_dir, template_dir, max_n=50):
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
 def process_one_loop(loop, date_pairs, skipped_files):
-    """
-    1社（=1ループ）分の処理。
-    - skipped_files は main から渡される（global禁止）
-    - 例外は基本ここで握らず、main側でcatchして次へ進む
-    """
-    annual_reported = False
+    
+    # === ANCHOR: LOOP_START === 
+    parsed_docs = []   # ★ここに file1/2/3 の parse結果を溜める（raw書込は最後に1回）
+    raw_rows = []
+    
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # ★安全装置：テンプレをコピーして作業ファイルに書く（原本保護）
+    excel_file_path = loop["excel_file_path"]  # ここを基準にする
+    work_excel_path = excel_file_path.replace(".xlsx", f"_work_{run_id}.xlsx")
+    shutil.copy(excel_file_path, work_excel_path)
+
+    # 以降は作業ファイルへ書く
+    excel_file_path = work_excel_path
+
+    excel_base_name = os.path.basename(excel_file_path).replace(".xlsx", "")
+    excel_directory = os.path.dirname(excel_file_path)
 
     excel_base_name = os.path.basename(loop["excel_file_path"]).replace(".xlsx", "")
     excel_directory = os.path.dirname(loop["excel_file_path"])
@@ -1744,7 +2005,35 @@ def process_one_loop(loop, date_pairs, skipped_files):
     if use_half:
         try:
             path1 = xbrl_file_paths["file1"][0]
-            x1, _ = parse_xbrl_data(path1, mode="half")
+            x1, sc1, meta1 = parse_xbrl_data(path1, mode="half")
+
+            # === ANCHOR: AFTER_PARSE file1(half) ===
+            # === ANCHOR: AFTER_PARSE file1(half) ===
+            # 3戻り値（out, security_code, out_meta）
+            x1, sc1, meta1 = parse_xbrl_data(path1, mode="half")
+
+            base_year = get_fy_end_year(x1)
+
+            parsed_docs.append({
+                "doc_id": os.path.basename(path1),
+                "doc_type": "half",
+                "out": x1,
+                "out_meta": meta1,
+                "parsed_code": sc1,
+            })
+
+            # raw_rows（監査DB）へ追加
+            company_code = ensure_security_code(x1, sc1, None)
+
+            append_rows_from_meta(
+                raw_rows,
+                company_code=company_code or "",
+                doc_id=os.path.basename(path1),
+                doc_type="half",
+                out=x1,
+                out_meta=meta1,
+            )
+
             base_year = get_fy_end_year(x1)
         except Exception as e:
             add_skip(
@@ -1764,34 +2053,56 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # 1) file2（最新有報）
     # -------------------------
     x2 = None
+    meta2 = None
+    path2 = None
 
     if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
             path2 = xbrl_file_paths["file2"][0]
-            x2, parsed_security_code = parse_xbrl_data(path2, mode="full")
+            x2, parsed_security_code, meta2 = parse_xbrl_data(path2, mode="full")
 
+            # === ANCHOR: AFTER_PARSE file2(annual) ===
             # ★ここで必ず確定（優先順位固定）
             security_code = ensure_security_code(x2, parsed_security_code, x1)
+            company_code = security_code or ""
+            doc_id2 = os.path.basename(path2)
+
+            # meta → raw_rows
+            append_rows_from_meta(
+                raw_rows,
+                company_code=company_code,
+                doc_id=doc_id2,
+                doc_type="annual",
+                out=x2,
+                out_meta=meta2,
+            )
+
+            # ★ annual のYTD(MISSING)行を残す（1回だけ）
+            duration_metric_keys = [
+                "NetSales",
+                "CostOfSales",
+                "GrossProfit",
+                "SellingExpenses",
+                "OperatingIncome",
+                "OrdinaryIncome",
+                "ProfitLoss",
+                "OperatingCash",
+                "InvestmentCash",
+                "FinancingCash",
+            ]
+            append_missing_annual_ytd_rows(
+                raw_rows,
+                company_code=company_code,
+                doc_id=doc_id2,
+                out_meta=meta2,
+                duration_metric_keys=duration_metric_keys,
+            )
+
+            logger.debug(f"[DEBUG meta2] keys sample={list(meta2.keys())[:10] if meta2 else None}")
+            logger.debug(f"[DEBUG meta2] NetSalesCurrent={(meta2 or {}).get('NetSalesCurrent')}")
             logger.debug(f"[code check] parsed={parsed_security_code} fixed={security_code}")
 
             # （ここに：あなたの既存の file2 書込処理）
-
-            # リネーム用：半期ありなら period_end（上期末）を優先
-            period_for_name = None
-            if use_half and x1 and x1.get("CurrentPeriodEndDateDEI"):
-                period_for_name = x1["CurrentPeriodEndDateDEI"]
-            elif x2.get("CurrentFiscalYearEndDateDEI"):
-                period_for_name = x2["CurrentFiscalYearEndDateDEI"]
-
-            # ★rename_infoは SecurityCodeDEI を直接参照せず、確定済み security_code を使う
-            if security_code and period_for_name:
-                cname = (
-                    x2.get("CompanyNameCoverPage")
-                    or (x1.get("CompanyNameCoverPage") if x1 else "")
-                    or ""
-                )
-                rename_info = (security_code, cname, period_for_name)
-                logger.debug(f"[rename check] rename_info={rename_info}")
 
         except Exception as e:
             add_skip(
@@ -1822,8 +2133,34 @@ def process_one_loop(loop, date_pairs, skipped_files):
     if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
         try:
             path3 = xbrl_file_paths["file3"][0]
-            x3, _ = parse_xbrl_data(path3, mode="full")
+            x3, sc3, meta3 = parse_xbrl_data(path3, mode="full")
+
+            # === ANCHOR: AFTER_PARSE file3(annual) ===
+            x3, sc3, meta3 = parse_xbrl_data(path3, mode="full")
+
+            parsed_docs.append({
+                "doc_id": os.path.basename(path3),
+                "doc_type": "annual",
+                "out": x3,
+                "out_meta": meta3,
+                "parsed_code": sc3,
+            })
+
+            # 期末年は1回だけ
             y3 = get_fy_end_year(x3)
+
+            # raw_rows（監査DB）へ追加（file3も残す）
+            company_code = security_code or ensure_security_code(x3, sc3, x1) or ""
+            append_rows_from_meta(
+                raw_rows,
+                company_code=company_code,
+                doc_id=os.path.basename(path3),
+                doc_type="annual",
+                out=x3,
+                out_meta=meta3,
+            )
+
+            # === ANCHOR: AFTER_PARSE file3(annual) ===
 
             if y3 is None:
                 add_skip(
@@ -1857,8 +2194,13 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # --- half（半期）書込失敗 ---
     if use_half and x1 is not None:
         try:
-            r1 = write_data_to_excel_namedranges(excel_file_path, filter_for_half(x1))
-            # （中略：あなたの既存処理）
+            out_half = filter_for_half(x1)
+
+            r1 = write_data_to_excel_namedranges(
+                excel_file_path,
+                out_half
+            )
+
         except Exception as e:
             add_skip(
                 skipped_files,
@@ -1870,6 +2212,15 @@ def process_one_loop(loop, date_pairs, skipped_files):
                 message="half(半期) 書込エラー",
                 exc=e
             )
+
+    for r in raw_rows:
+        r["run_id"] = run_id
+        r["source_file"] = r.get("doc_id")
+
+    # === ANCHOR: BEFORE_RAW_WRITE ===
+    # raw_rows はここまでで溜まっている前提。ここで1回だけ書く。
+    write_rows_to_raw_sheet(excel_file_path, raw_rows, sheet_name="raw_edinet")
+    logger.info(f"[raw] written rows={len(raw_rows)} sheet=raw_edinet")
 
     # -------------------------
     # 4) 株価（非致命）
