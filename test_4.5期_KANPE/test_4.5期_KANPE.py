@@ -18,6 +18,7 @@ import pandas as pd
 import json
 from openpyxl.cell.cell import Cell
 import shutil
+from time import perf_counter
 
 # ===== skipped_files: 構造化（原因コード化）=====
 from dataclasses import dataclass, asdict
@@ -121,6 +122,11 @@ def pick_security_code(*candidates: object) -> str | None:
         if code:
             return code
     return None
+
+def _append_jsonl(path: str, obj: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 def ensure_security_code(x2: dict | None, parsed_code: object, x1: dict | None = None) -> str | None:
     """
@@ -1720,11 +1726,6 @@ def build_raw_rows_from_out(*,
 
     return rows
 
-RAW_COLS = [
-    "company_code","doc_id","doc_type","consolidation","metric_key","time_slot",
-    "period_start","period_end","period_kind","value","unit","tag_used","tag_rank","status"
-]
-
 def _split_key(key: str):
     """
     key例:
@@ -1825,15 +1826,6 @@ def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], *, sheet_name: st
         r += 1
 
     wb.save(excel_file)
-
-def restore_namedranges_via_writer(excel_file_path: str, old_values: dict) -> None:
-    """
-    old_values: {range_name: old_value}
-    """
-    try:
-        write_data_to_excel_namedranges(excel_file_path, old_values)
-    except Exception:
-        pass
 
 def snapshot_namedranges(wb, values: dict[str, object]) -> dict[str, object]:
     """
@@ -1948,20 +1940,25 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # === ANCHOR: LOOP_START === 
     parsed_docs = []   # ★ここに file1/2/3 の parse結果を溜める（raw書込は最後に1回）
     raw_rows = []
+
+    out_buffer: dict[str, object] = {}
     
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
-    # ★安全装置：テンプレをコピーして作業ファイルに書く（原本保護）
-    excel_file_path = loop["excel_file_path"]  # ここを基準にする
-    work_excel_path = excel_file_path.replace(".xlsx", f"_work_{run_id}.xlsx")
-    shutil.copy(excel_file_path, work_excel_path)
+    t0 = perf_counter()
 
-    # 以降は作業ファイルへ書く
-    excel_file_path = work_excel_path
+    loop_event = {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "run_id": run_id,
+        "slot": loop.get("slot"),
+        "excel": os.path.basename(excel_file_path) if "excel_file_path" in locals() else None,
+        "security_code": None,
+        "phases": {},        # {"file1_parse": {"ok": True, "sec": 0.12}, ...}
+        "counts": {},        # {"raw_rows": 123, "excel_ranges": 45, ...}
+        "errors": [],        # 例外など（ここに短い文字列で）
+    }
 
-    excel_base_name = os.path.basename(excel_file_path).replace(".xlsx", "")
-    excel_directory = os.path.dirname(excel_file_path)
-
+    # Excel探索用
     excel_base_name = os.path.basename(loop["excel_file_path"]).replace(".xlsx", "")
     excel_directory = os.path.dirname(loop["excel_file_path"])
 
@@ -1980,18 +1977,26 @@ def process_one_loop(loop, date_pairs, skipped_files):
         logger.warning("使用するファイルが見つかりませんでした。次のループを実行します。")
         return
 
-    loop["excel_file_path"] = selected_file
-    logger.info(f"使用するExcelファイル: {selected_file}")
+    logger.info(f"使用するExcelファイル（元）: {selected_file}")
 
-    # ★安全ロック：テンプレ（コピー無し）に書き込ませない
-    base_no_ext = os.path.splitext(selected_file)[0]
-    if " - コピー" not in base_no_ext:
-        logger.critical(f"安全ロック発動：コピーではないExcelに書き込もうとしました: {selected_file}")
+    # ★安全装置：テンプレ（元）をコピーして作業ファイルに書く（原本保護）
+    base_no_ext, ext = os.path.splitext(selected_file)
+    work_excel_path = f"{base_no_ext}_work_{run_id}{ext}"
+    shutil.copy(selected_file, work_excel_path)
+
+    # 以降は作業ファイルへ書く（loopにも反映）
+    loop["excel_file_path"] = work_excel_path
+    excel_file_path = work_excel_path
+    loop_event["excel"] = os.path.basename(excel_file_path)
+    logger.info(f"使用するExcelファイル（作業）: {excel_file_path}")
+
+    # ★安全ロック：work以外に書き込ませない
+    if "_work_" not in os.path.splitext(excel_file_path)[0]:
+        logger.critical(f"安全ロック発動：workではないExcelに書き込もうとしました: {excel_file_path}")
         raise SystemExit(1)
 
     rename_info = None
     xbrl_file_paths = loop["xbrl_file_paths"]
-    excel_file_path = loop["excel_file_path"]
     security_code = None
     base_year = None
 
@@ -2004,12 +2009,9 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # --- file1（半期）解析失敗 ---
     if use_half:
         try:
-            path1 = xbrl_file_paths["file1"][0]
-            x1, sc1, meta1 = parse_xbrl_data(path1, mode="half")
+            t = perf_counter()
 
-            # === ANCHOR: AFTER_PARSE file1(half) ===
-            # === ANCHOR: AFTER_PARSE file1(half) ===
-            # 3戻り値（out, security_code, out_meta）
+            path1 = xbrl_file_paths["file1"][0]
             x1, sc1, meta1 = parse_xbrl_data(path1, mode="half")
 
             base_year = get_fy_end_year(x1)
@@ -2025,17 +2027,13 @@ def process_one_loop(loop, date_pairs, skipped_files):
             # raw_rows（監査DB）へ追加
             company_code = ensure_security_code(x1, sc1, None)
 
-            append_rows_from_meta(
-                raw_rows,
-                company_code=company_code or "",
-                doc_id=os.path.basename(path1),
-                doc_type="half",
-                out=x1,
-                out_meta=meta1,
-            )
+            # ★成功記録（file1）
+            loop_event["phases"]["file1_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
 
-            base_year = get_fy_end_year(x1)
         except Exception as e:
+            loop_event["phases"]["file1_parse"] = {"ok": False, "sec": None}  # ★ここ（exceptの最初）
+            loop_event["errors"].append("file1_parse_error")
+
             add_skip(
                 skipped_files,
                 code=SkipCode.FILE1_PARSE_ERROR,
@@ -2058,53 +2056,34 @@ def process_one_loop(loop, date_pairs, skipped_files):
 
     if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
         try:
+            t = perf_counter()
+            
             path2 = xbrl_file_paths["file2"][0]
             x2, parsed_security_code, meta2 = parse_xbrl_data(path2, mode="full")
 
             # === ANCHOR: AFTER_PARSE file2(annual) ===
+            parsed_docs.append({
+                "doc_id": os.path.basename(path2),
+                "doc_type": "annual",
+                "out": x2,
+                "out_meta": meta2,
+                "parsed_code": parsed_security_code,
+            })
+            
             # ★ここで必ず確定（優先順位固定）
             security_code = ensure_security_code(x2, parsed_security_code, x1)
-            company_code = security_code or ""
-            doc_id2 = os.path.basename(path2)
+            
+            # ★成功記録（file2）
+            loop_event["phases"]["file2_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
 
-            # meta → raw_rows
-            append_rows_from_meta(
-                raw_rows,
-                company_code=company_code,
-                doc_id=doc_id2,
-                doc_type="annual",
-                out=x2,
-                out_meta=meta2,
-            )
-
-            # ★ annual のYTD(MISSING)行を残す（1回だけ）
-            duration_metric_keys = [
-                "NetSales",
-                "CostOfSales",
-                "GrossProfit",
-                "SellingExpenses",
-                "OperatingIncome",
-                "OrdinaryIncome",
-                "ProfitLoss",
-                "OperatingCash",
-                "InvestmentCash",
-                "FinancingCash",
-            ]
-            append_missing_annual_ytd_rows(
-                raw_rows,
-                company_code=company_code,
-                doc_id=doc_id2,
-                out_meta=meta2,
-                duration_metric_keys=duration_metric_keys,
-            )
-
-            logger.debug(f"[DEBUG meta2] keys sample={list(meta2.keys())[:10] if meta2 else None}")
-            logger.debug(f"[DEBUG meta2] NetSalesCurrent={(meta2 or {}).get('NetSalesCurrent')}")
-            logger.debug(f"[code check] parsed={parsed_security_code} fixed={security_code}")
-
-            # （ここに：あなたの既存の file2 書込処理）
+            # file2 の Excel反映（annual）
+            out2_write = filter_for_annual(x2, use_half=use_half)  # use_half=TrueならCurrentは書かない
+            out_buffer.update(out2_write)
 
         except Exception as e:
+            loop_event["phases"]["file2_parse"] = {"ok": False, "sec": None} 
+            loop_event["errors"].append("file2_error")
+
             add_skip(
                 skipped_files,
                 code=SkipCode.FILE2_ERROR,
@@ -2132,8 +2111,9 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # --- file3（過去有報）年取れず / 失敗 ---
     if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
         try:
+            t = perf_counter()
+
             path3 = xbrl_file_paths["file3"][0]
-            x3, sc3, meta3 = parse_xbrl_data(path3, mode="full")
 
             # === ANCHOR: AFTER_PARSE file3(annual) ===
             x3, sc3, meta3 = parse_xbrl_data(path3, mode="full")
@@ -2151,16 +2131,10 @@ def process_one_loop(loop, date_pairs, skipped_files):
 
             # raw_rows（監査DB）へ追加（file3も残す）
             company_code = security_code or ensure_security_code(x3, sc3, x1) or ""
-            append_rows_from_meta(
-                raw_rows,
-                company_code=company_code,
-                doc_id=os.path.basename(path3),
-                doc_type="annual",
-                out=x3,
-                out_meta=meta3,
-            )
 
             # === ANCHOR: AFTER_PARSE file3(annual) ===
+            # ★成功記録（file3）
+            loop_event["phases"]["file3_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
 
             if y3 is None:
                 add_skip(
@@ -2173,10 +2147,23 @@ def process_one_loop(loop, date_pairs, skipped_files):
                     message="file3 期末年が取れない"
                 )
             else:
+                # ① year_gap を計算（例：base_year - y3）
+                year_gap = base_year - y3
+
+                # ② x3 を Prior 側にずらす（あなたの既存処理がここ）
+                #    例：x3_shifted = shift_with_keep(x3, year_gap)
+                x3_shifted = shift_with_keep(x3, year_gap)   # ←あなたの関数名に合わせて置換
+
+                # ③ ずらした結果を Excel書込みバッファへ（これが追加したい行）
+                out3_write = filter_for_annual_old(x3_shifted)   # ←あなたの関数名に合わせて置換
+                out_buffer.update(out3_write)
                 # （中略：あなたの既存処理）
                 pass
 
         except Exception as e:
+            loop_event["phases"]["file3_parse"] = {"ok": False, "sec": None} 
+            loop_event["errors"].append("file3_error")
+
             add_skip(
                 skipped_files,
                 code=SkipCode.FILE3_ERROR,
@@ -2194,14 +2181,17 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # --- half（半期）書込失敗 ---
     if use_half and x1 is not None:
         try:
-            out_half = filter_for_half(x1)
+            t = perf_counter()
 
-            r1 = write_data_to_excel_namedranges(
-                excel_file_path,
-                out_half
-            )
+            out_half = filter_for_half(x1)
+            out_buffer.update(out_half)
+
+            loop_event["phases"]["half_buffer"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
 
         except Exception as e:
+            loop_event["phases"]["half_buffer"] = {"ok": False, "sec": None}
+            loop_event["errors"].append("half_buffer_error")
+
             add_skip(
                 skipped_files,
                 code=SkipCode.HALF_WRITE_ERROR,
@@ -2217,10 +2207,121 @@ def process_one_loop(loop, date_pairs, skipped_files):
         r["run_id"] = run_id
         r["source_file"] = r.get("doc_id")
 
+    # === ANCHOR: BEFORE_EXCEL_WRITE ===
+    if out_buffer:
+        t = perf_counter()  # ★ここ
+
+        write_data_to_excel_namedranges(excel_file_path, out_buffer)
+
+        loop_event["phases"]["excel_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}  # ★ここ
+        logger.info(f"[excel write] ranges={len(out_buffer)}")
+    else:
+        loop_event["phases"]["excel_write"] = {"ok": True, "sec": 0.0}
+
+    # === ANCHOR: BEFORE_RAW_BUILD ===
+    # company_code（raw用）はここで1回だけ確定
+    company_code_for_raw = security_code or ""
+    if not company_code_for_raw:
+        # 最後の保険：parsed_docs に parsed_code があれば拾う
+        for d in parsed_docs:
+            pc = d.get("parsed_code")
+            if pc:
+                company_code_for_raw = pc
+                break
+    company_code_for_raw = company_code_for_raw or ""
+
+    # out_meta 主導で raw を作る（MISSING行を残せる方式）
+    for d in parsed_docs:
+        raw_rows.extend(
+            build_raw_rows_from_out(
+                company_code=company_code_for_raw,
+                doc_id=d["doc_id"],
+                doc_type=d["doc_type"],
+                out=d["out"],
+                out_meta=d["out_meta"],
+            )
+        )
+
+    # annual の YTD(MISSING) を必ず残す（docごと）
+    duration_metric_keys = [
+        "NetSales",
+        "CostOfSales",
+        "GrossProfit",
+        "SellingExpenses",
+        "OperatingIncome",
+        "OrdinaryIncome",
+        "ProfitLoss",
+        "OperatingCash",
+        "InvestmentCash",
+        "FinancingCash",
+    ]
+    for d in parsed_docs:
+        if d["doc_type"] == "annual":
+            append_missing_annual_ytd_rows(
+                raw_rows,
+                company_code=company_code_for_raw,
+                doc_id=d["doc_id"],
+                out_meta=d["out_meta"],
+                duration_metric_keys=duration_metric_keys,
+            )
+
+    # run_id / source_file は raw 確定後に一括付与
+    for r in raw_rows:
+        r["run_id"] = run_id
+        r["source_file"] = r.get("doc_id")
+
     # === ANCHOR: BEFORE_RAW_WRITE ===
-    # raw_rows はここまでで溜まっている前提。ここで1回だけ書く。
     write_rows_to_raw_sheet(excel_file_path, raw_rows, sheet_name="raw_edinet")
     logger.info(f"[raw] written rows={len(raw_rows)} sheet=raw_edinet")
+
+    # === ANCHOR: BEFORE_RAW_WRITE ===
+    # 1) company_code を確定
+    company_code_for_raw = security_code
+    if not company_code_for_raw:
+        for d in parsed_docs:
+            if d.get("parsed_code"):
+                company_code_for_raw = d["parsed_code"]
+                break
+    company_code_for_raw = company_code_for_raw or ""
+
+    # 3) run_id/source_file を付与（ここがベスト）
+    for r in raw_rows:
+        r["run_id"] = run_id
+        r["source_file"] = r.get("doc_id")
+
+    # 4) 最後に1回だけ書く（後）
+    write_rows_to_raw_sheet(excel_file_path, raw_rows, sheet_name="raw_edinet")
+    logger.info(f"[raw] written rows={len(raw_rows)} sheet=raw_edinet")
+
+    # === ANCHOR: LOOP_SUMMARY ===
+
+    loop_event["security_code"] = security_code
+    loop_event["counts"]["raw_rows"] = len(raw_rows)
+    loop_event["counts"]["excel_ranges"] = len(out_buffer)
+    loop_event["counts"]["skipped_in_loop"] = sum(
+        1 for s in skipped_files if s.get("slot") == loop.get("slot")
+    )
+
+    loop_event["phases"]["loop_total"] = {
+        "ok": True,
+        "sec": round(perf_counter() - t0, 3)
+    }
+
+    # JSONLログへ保存
+    jsonl_path = os.path.join(os.getcwd(), "logs", "loop_summary.jsonl")
+    os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
+
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(loop_event, ensure_ascii=False) + "\n")
+
+    # 人間が読む用ログ
+    logger.info(
+        f"[loop summary] slot={loop.get('slot')} "
+        f"code={security_code} "
+        f"excel_ranges={loop_event['counts']['excel_ranges']} "
+        f"raw_rows={loop_event['counts']['raw_rows']} "
+        f"sec={loop_event['phases']['loop_total']['sec']}"
+    )
 
     # -------------------------
     # 4) 株価（非致命）
