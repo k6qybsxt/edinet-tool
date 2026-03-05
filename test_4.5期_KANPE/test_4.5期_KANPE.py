@@ -498,6 +498,26 @@ def build_raw_rows(*, company_code: str, doc_id: str, doc_type: str,
 def parse_xbrl_data(xbrl_file, mode="full"):
     from datetime import datetime, timedelta
     from lxml import etree
+    from collections import defaultdict, deque
+
+    def _attr_any(el, *names):
+        """
+        属性を name候補から探して返す。
+        lxmlはQName属性になることがあるので、末尾一致でも拾う。
+        """
+        # 1) まず通常の get
+        for n in names:
+            v = el.get(n)
+            if v is not None:
+                return v
+
+        # 2) QName属性対策： {uri}contextRef のようなキーが来る
+        if el.attrib:
+            for k, v in el.attrib.items():
+                kk = k.split("}")[-1]  # localname
+                if kk in names:
+                    return v
+        return None
 
     # ===== util =====
     def parse_ymd(s):
@@ -529,31 +549,38 @@ def parse_xbrl_data(xbrl_file, mode="full"):
     def dim_rank(dim):
         return 0 if dim == "Consolidated" else 1
 
-    # === PATCH: QName照合のため nsmap を取る（prefix依存をやめる）===
-    # rootのnsmap（prefix -> namespaceURI）を取る
-    # iterparse(start) で最初の要素だけ見るので軽い
+    def best_update(store, key, cand):
+        cur = store.get(key)
+        if cur is None:
+            store[key] = cand
+            return
+        if (dim_rank(cand["dim"]), cand["tag_priority"]) < (dim_rank(cur["dim"]), cur["tag_priority"]):
+            store[key] = cand
+
+    # ===== outputs =====
+    out = {}
+    out_meta = {}
+
+    # ===== nsmap -> QName helper =====
     nsmap = {}
     for ev, el0 in etree.iterparse(xbrl_file, events=("start",), recover=True, huge_tree=True):
         nsmap = dict(el0.nsmap or {})
         break
 
     def _qname(tag_prefixed: str) -> str:
-        # "jpcrp_cor:NetSales" -> "{uri}NetSales"
         pref, local = tag_prefixed.split(":", 1)
         uri = nsmap.get(pref)
-        if not uri:
-            # prefixがnsmapに無い場合は絶対一致しないので、ありえないQNameを返す
-            return f"{{}}{local}"
-        return f"{{{uri}}}{local}"
+        return f"{{{uri}}}{local}" if uri else f"{{}}{local}"
 
-    # METRICSの全タグを QName に変換して辞書化
-    # qname("{uri}Local") -> (metric, tag_priority, kind, unit, tag_string)
-    METRIC_Q = {}
+    # === PATCH: METRIC判定を QName ではなく localname で行う（prefix差を吸収）===
+    METRIC_L = {}  # localname -> (metric, tag_priority, kind, unit, tag_used)
+
     for metric, meta in METRICS.items():
         for tag_priority, tag in enumerate(meta["tags"]):
-            METRIC_Q[_qname(tag)] = (metric, tag_priority, meta["kind"], meta["unit"], tag)
+            local = tag.split(":", 1)[1] if ":" in tag else tag
+            # 同じlocalが複数出る場合は、先に入った(=優先度高い)を残す
+            METRIC_L.setdefault(local, (metric, tag_priority, meta["kind"], meta["unit"], tag))
 
-    # DEIも QName 化
     DEI_TAGS = {
         "jpdei_cor:CurrentFiscalYearStartDateDEI": "CurrentFiscalYearStartDateDEI",
         "jpdei_cor:CurrentPeriodEndDateDEI": "CurrentPeriodEndDateDEI",
@@ -565,55 +592,55 @@ def parse_xbrl_data(xbrl_file, mode="full"):
     }
     DEI_Q = {_qname(k): v for k, v in DEI_TAGS.items()}
 
-    # ===== outputs =====
-    out = {}
-    out_meta = {}
+    # ===== state =====
+    contexts = {}  # ctx_id -> {start,end,instant,dim}
 
-    # ===== DEI targets =====
-    DEI_WANT = {
-        "jpdei_cor:CurrentFiscalYearStartDateDEI": "CurrentFiscalYearStartDateDEI",
-        "jpdei_cor:CurrentPeriodEndDateDEI": "CurrentPeriodEndDateDEI",
-        "jpdei_cor:TypeOfCurrentPeriodDEI": "TypeOfCurrentPeriodDEI",
-        "jpdei_cor:CurrentFiscalYearEndDateDEI": "CurrentFiscalYearEndDateDEI",
-        "jpdei_cor:SecurityCodeDEI": "SecurityCodeDEI",
-        "jpdei_cor:FilerNameInJapaneseDEI": "CompanyNameCoverPage",
-        "jpdei_cor:FilerNameDEI": "CompanyNameCoverPage",
-    }
+    ctxref_missing = 0
+    ctxref_notfound = 0
+    ctxref_found = 0
+    ctxref_samples = []
+
+    # factがcontextより先に来たときの保険（ctxref -> list[factinfo]）
+    pending = defaultdict(list)
+
+    # best stores
+    dur_best = {}
+    inst_best = {}
+    fy_end_candidates = set()
+
+    # index（後段を高速に）
+    dur_ends_by_metric_months = defaultdict(set)  # (metric, months) -> set(end)
+    inst_ends_by_metric = defaultdict(set)        # metric -> set(end)
 
     fy_start_dei = None
     period_end_dei = None
     period_type = None
     security_code = None
 
-    # ===== build tag lookup from your existing METRICS =====
-    # full_tag ("jpcrp_cor:NetSales") -> (metric, tag_priority, kind, unit)
-    metric_by_tag = {}
-    for metric, meta in METRICS.items():
-        for tag_priority, tag in enumerate(meta["tags"]):
-            metric_by_tag[tag] = (metric, tag_priority, meta["kind"], meta["unit"])
+    metric_hit = 0
+    metric_hit_nonempty = 0
+    metric_hit_sample = []
 
-    # ===== 1-PASS: contexts + DEI + facts =====
-    contexts = {}
-    dur_best = {}
-    inst_best = {}
-    fy_end_candidates = set()
+    seen_locals = set()
+    seen_local_sample = []
 
-    def best_update(store, key, cand):
-        cur = store.get(key)
-        if cur is None:
-            store[key] = cand
-            return
-        if (dim_rank(cand["dim"]), cand["tag_priority"]) < (dim_rank(cur["dim"]), cur["tag_priority"]):
-            store[key] = cand
 
+
+    # ===== 1-pass iterparse =====
     for event, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
+
         local = el.tag.split("}")[-1]
+
+        if len(seen_local_sample) < 10 and local not in seen_locals:
+            seen_locals.add(local)
+            seen_local_sample.append(local)
 
         # --- context ---
         if local == "context":
-            ctx_id = el.get("id")
+            ctx_id = (el.get("id") or "").strip() or None
             if ctx_id:
                 start_s = end_s = inst_s = None
+
                 for p in el.iter():
                     pl = p.tag.split("}")[-1]
                     if pl == "startDate":
@@ -629,54 +656,23 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                         t = (m.text or "").strip()
                         if t:
                             members.append(t)
+
                 is_noncon = any("NonConsolidatedMember" in t for t in members)
                 dim = "NonConsolidated" if is_noncon else "Consolidated"
 
-                contexts[ctx_id] = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
+                ctx = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
+                contexts[ctx_id] = ctx
 
-            el.clear()
-            continue
+                if ctx_id in pending:
+                    for finfo in pending.pop(ctx_id):
+                        metric, tag_priority, kind, unit, tag_used, txt = finfo
 
-        # --- DEI (QName) ---
-        k = DEI_Q.get(el.tag)
-        if k:
-            v = (el.text or "").strip()
-            if v:
-                if k == "CompanyNameCoverPage":
-                    if "CompanyNameCoverPage" not in out:
-                        out["CompanyNameCoverPage"] = v
-                else:
-                    out[k] = v
-
-                if k == "CurrentFiscalYearStartDateDEI":
-                    fy_start_dei = v
-                elif k == "CurrentPeriodEndDateDEI":
-                    period_end_dei = v
-                elif k == "TypeOfCurrentPeriodDEI":
-                    period_type = v
-                elif k == "SecurityCodeDEI":
-                    if v.isdigit() and len(v) >= 2:
-                        security_code = v[:-1]
-                        out["SecurityCodeDEI"] = security_code
-
-            el.clear()
-            continue
-
-        # --- FACT (QName) ---
-        info = METRIC_Q.get(el.tag)
-        if info:
-            metric, tag_priority, kind, unit, tag_used = info
-            ctxref = el.get("contextRef")
-            if ctxref:
-                ctx = contexts.get(ctxref)
-                if ctx:
-                    txt = (el.text or "").strip()
-                    if txt:
                         if kind == "duration":
                             if ctx["start"] and ctx["end"]:
                                 months = duration_bucket_months(ctx["start"], ctx["end"])
                                 if months in (6, 12):
                                     end_date = ctx["end"]
+
                                     cand = {
                                         "value": txt,
                                         "start": ctx["start"],
@@ -686,12 +682,17 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                                         "tag_priority": tag_priority,
                                         "tag_used": tag_used,
                                     }
+
                                     best_update(dur_best, (metric, end_date, months), cand)
+                                    dur_ends_by_metric_months[(metric, months)].add(end_date)
+
                                     if months == 12 and parse_ymd(end_date):
                                         fy_end_candidates.add(end_date)
+
                         else:
                             if ctx["instant"]:
                                 end_date = ctx["instant"]
+
                                 cand = {
                                     "value": txt,
                                     "start": None,
@@ -700,11 +701,186 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                                     "tag_priority": tag_priority,
                                     "tag_used": tag_used,
                                 }
+
                                 best_update(inst_best, (metric, end_date), cand)
+                                inst_ends_by_metric[metric].add(end_date)
+
+            el.clear()
+            continue
+
+        # --- DEI ---
+        k = DEI_Q.get(el.tag)
+
+        if k:
+            v = (el.text or "").strip()
+
+            if v:
+                if k == "CompanyNameCoverPage":
+                    if "CompanyNameCoverPage" not in out:
+                        out["CompanyNameCoverPage"] = v
+                else:
+                    out[k] = v
+
+                if k == "CurrentFiscalYearStartDateDEI":
+                    fy_start_dei = v
+
+                elif k == "CurrentPeriodEndDateDEI":
+                    period_end_dei = v
+
+                elif k == "TypeOfCurrentPeriodDEI":
+                    period_type = v
+
+                elif k == "SecurityCodeDEI":
+                    if v.isdigit() and len(v) >= 2:
+                        security_code = v[:-1]
+                        out["SecurityCodeDEI"] = security_code
+
+            el.clear()
+            continue
+
+        # --- FACT ---
+        info = METRIC_L.get(local)
+
+        if info:
+
+            metric, tag_priority, kind, unit, tag_used = info
+
+            metric_hit += 1
+
+            txt = (el.text or "").strip()
+
+            if txt:
+                metric_hit_nonempty += 1
+
+            if len(metric_hit_sample) < 8:
+                metric_hit_sample.append((local, tag_used))
+
+            ctxref = (_attr_any(el, "contextRef") or "").strip() or None
+
+            # --- ctxrefメーター（最初の10件だけサンプル）---
+            if len(ctxref_samples) < 10:
+                ctxref_samples.append((local, ctxref, ctxref in contexts if ctxref else None))
+
+            if not ctxref:
+                ctxref_missing += 1
+            else:
+                if ctxref in contexts:
+                    ctxref_found += 1
+                else:
+                    ctxref_notfound += 1
+
+            if metric_hit <= 5:
+                logger.warning(
+                    "[ctxref sample] local=%s ctxref=%s has_ctx=%s",
+                    local,
+                    ctxref,
+                    (ctxref in contexts) if ctxref else None
+                )
+
+            if ctxref:
+
+                txt = (el.text or "").strip()
+
+                if txt:
+
+                    ctx = contexts.get(ctxref)
+
+                    if ctx is None:
+                        pending[ctxref].append(
+                            (metric, tag_priority, kind, unit, tag_used, txt)
+                        )
+
+                    else:
+
+                        if kind == "duration":
+
+                            if ctx["start"] and ctx["end"]:
+
+                                months = duration_bucket_months(ctx["start"], ctx["end"])
+
+                                if months in (6, 12):
+
+                                    end_date = ctx["end"]
+
+                                    cand = {
+                                        "value": txt,
+                                        "start": ctx["start"],
+                                        "end": end_date,
+                                        "months": months,
+                                        "dim": ctx["dim"],
+                                        "tag_priority": tag_priority,
+                                        "tag_used": tag_used,
+                                    }
+
+                                    best_update(dur_best, (metric, end_date, months), cand)
+
+                                    dur_ends_by_metric_months[(metric, months)].add(end_date)
+
+                                    if months == 12 and parse_ymd(end_date):
+                                        fy_end_candidates.add(end_date)
+
+                        else:
+
+                            if ctx["instant"]:
+
+                                end_date = ctx["instant"]
+
+                                cand = {
+                                    "value": txt,
+                                    "start": None,
+                                    "end": end_date,
+                                    "dim": ctx["dim"],
+                                    "tag_priority": tag_priority,
+                                    "tag_used": tag_used,
+                                }
+
+                                best_update(inst_best, (metric, end_date), cand)
+
+                                inst_ends_by_metric[metric].add(end_date)
 
         el.clear()
 
-    # halfキー
+    logger.warning(
+        "[ctxref meter] mode=%s missing=%d notfound=%d found=%d samples=%s",
+        mode, ctxref_missing, ctxref_notfound, ctxref_found, ctxref_samples
+    )
+
+    # ===== DEBUG METER (temporary) =====
+    try:
+
+        dur_n = len(dur_best)
+        inst_n = len(inst_best)
+
+        dur_6 = sum(1 for (m, end, months) in dur_best.keys() if months == 6)
+        dur_12 = sum(1 for (m, end, months) in dur_best.keys() if months == 12)
+
+        logger.warning(
+            "[parse debug] mode=%s contexts=%d dur_best=%d(inst=%d) dur6=%d dur12=%d ns_has_jppfs=%s ns_has_jpcrp=%s",
+            mode,
+            len(contexts),
+            dur_n,
+            inst_n,
+            dur_6,
+            dur_12,
+            ("jppfs_cor" in nsmap),
+            ("jpcrp_cor" in nsmap),
+        )
+
+    except Exception:
+        pass
+
+
+    logger.warning("[local sample] mode=%s %s", mode, seen_local_sample)
+
+    logger.warning(
+        "[fact meter] mode=%s metric_hit=%d metric_nonempty=%d sample=%s",
+        mode,
+        metric_hit,
+        metric_hit_nonempty,
+        metric_hit_sample
+    )
+
+    # ===== DEI half key =====
     if mode == "half" and period_end_dei:
         out["HalfPeriodEndDateDEI"] = period_end_dei
 
@@ -725,6 +901,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 prev_fy_end = fy_end_dt.replace(year=fy_end_dt.year - 1)
                 fy_start = (prev_fy_end + timedelta(days=1)).strftime("%Y-%m-%d")
     if fy_start is None and base_fy_end:
+        # base_fy_endに一致する12ヶ月 cand の start を拾う
         starts = []
         for (m, end, months), cand in dur_best.items():
             if months == 12 and end == base_fy_end and cand.get("start") and parse_ymd(cand["start"]):
@@ -748,16 +925,14 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 best = cand
 
         if best is None and fy_start:
-            ends = sorted({end for (m, end, months) in dur_best.keys()
-                           if m == metric and months == 6 and dur_best[(m, end, months)].get("start") == fy_start and parse_ymd(end)},
+            ends = sorted({e for e in dur_ends_by_metric_months.get((metric, 6), set())
+                           if parse_ymd(e) and dur_best.get((metric, e, 6), {}).get("start") == fy_start},
                           reverse=True)
             if ends:
                 best = dur_best.get((metric, ends[0], 6))
 
         if best is None:
-            ends = sorted({end for (m, end, months) in dur_best.keys()
-                           if m == metric and months == 6 and parse_ymd(end)},
-                          reverse=True)
+            ends = sorted({e for e in dur_ends_by_metric_months.get((metric, 6), set()) if parse_ymd(e)}, reverse=True)
             if ends:
                 best = dur_best.get((metric, ends[0], 6))
 
@@ -789,9 +964,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
 
         # 12ヶ月 Current/Prior（fullのみ）
         if mode != "half":
-            ends_12 = sorted({end for (m, end, months) in dur_best.keys()
-                              if m == metric and months == 12 and parse_ymd(end)},
-                             reverse=True)
+            ends_12 = sorted({e for e in dur_ends_by_metric_months.get((metric, 12), set()) if parse_ymd(e)}, reverse=True)
             for end_date in ends_12:
                 if base_year is None:
                     break
@@ -823,7 +996,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
         if meta["kind"] == "duration":
             continue
 
-        inst_ends = sorted({end for (m, end) in inst_best.keys() if m == metric and parse_ymd(end)}, reverse=True)
+        inst_ends = sorted({e for e in inst_ends_by_metric.get(metric, set()) if parse_ymd(e)}, reverse=True)
 
         # Quarter
         if inst_ends:
@@ -910,7 +1083,6 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 "status": "OK",
             }
 
-    # 返り値
     return out, security_code, out_meta
 
 def _candidate_names(base_key: str):
@@ -2089,6 +2261,8 @@ def process_one_loop(loop, date_pairs, skipped_files):
                 "parsed_code": sc1,
             })
 
+            logger.info(f"[parse bench] mode=half xbrl={os.path.basename(path1)} out={len(x1)} meta={len(meta1)} sec={round(perf_counter()-t,3)}")
+
             # raw_rows（監査DB）へ追加
             company_code = ensure_security_code(x1, sc1, None)
 
@@ -2135,6 +2309,8 @@ def process_one_loop(loop, date_pairs, skipped_files):
                 "parsed_code": parsed_security_code,
             })
             
+            logger.info(f"[parse bench] mode=full xbrl={os.path.basename(path2)} out={len(x2)} meta={len(meta2)} sec={round(perf_counter()-t,3)}")
+
             # ★ここで必ず確定（優先順位固定）
             security_code = ensure_security_code(x2, parsed_security_code, x1)
             
@@ -2143,7 +2319,12 @@ def process_one_loop(loop, date_pairs, skipped_files):
 
             # file2 の Excel反映（annual）
             out2_write = filter_for_annual(x2, use_half=use_half)  # use_half=TrueならCurrentは書かない
-            out_buffer.update(out2_write)
+
+            logger.warning(f"[buffer debug] file2_annual keys={sorted(list(out2_write.keys()))}")
+            logger.warning(f"[buffer debug] file2_annual nonempty={sum(1 for v in out2_write.values() if v not in (None, ''))}")
+
+            for k, v in out2_write.items():
+                buffer_put(k, v, "file2_annual")
 
         except Exception as e:
             loop_event["phases"]["file2_parse"] = {"ok": False, "sec": None} 
@@ -2237,14 +2418,14 @@ def process_one_loop(loop, date_pairs, skipped_files):
                     parsed_docs[-1]["out"] = x3_shifted
                     parsed_docs[-1]["out_meta"] = meta3_shifted
 
-                # ③ ずらした結果を Excel書込みバッファへ
-                out3_write = filter_for_annual_old(x3_shifted)  # ここはあなたの関数名でOK
+                    # ③ ずらした結果を Excel書込みバッファへ
+                    out3_write = filter_for_annual_old(x3_shifted)  # ここはあなたの関数名でOK
 
-                # out_buffer.update(out3_write) はやめて統一
-                for k, v in out3_write.items():
-                    buffer_put(k, v, "file3_annual")
-                # （中略：あなたの既存処理）
-                pass
+                    logger.warning(f"[buffer debug] file3_annual keys={sorted(list(out3_write.keys()))}")
+                    for k, v in out3_write.items():
+                        buffer_put(k, v, "file3_annual")
+                    # （中略：あなたの既存処理）
+                    pass
 
         except Exception as e:
             loop_event["phases"]["file3_parse"] = {"ok": False, "sec": None} 
@@ -2270,9 +2451,16 @@ def process_one_loop(loop, date_pairs, skipped_files):
             t = perf_counter()
 
             out_half = filter_for_half(x1)
-            out_buffer.update(out_half)
+
+            logger.warning(f"[buffer debug] half_final keys={sorted(list(out_half.keys()))}")
+            logger.warning(f"[buffer debug] half_final nonempty={sum(1 for v in out_half.values() if v not in (None, ''))}")
+
+            for k, v in out_half.items():
+                buffer_put(k, v, "half_final")
 
             loop_event["phases"]["half_buffer"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+
+            logger.info(f"[half finalize bench] sec={round(perf_counter()-t,3)}")
 
         except Exception as e:
             loop_event["phases"]["half_buffer"] = {"ok": False, "sec": None}
