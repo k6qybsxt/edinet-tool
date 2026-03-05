@@ -1804,7 +1804,28 @@ def append_missing_annual_ytd_rows(raw_rows: list, *, company_code: str, doc_id:
 def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], *, sheet_name: str = "raw_edinet"):
     """
     raw_edinet シートに rows を書き込む（ヘッダ1行は残し、2行目以降を再生成）
+    重要：
+      - period_start / period_end は Excel 側の MAXIFS 等で「日付」として扱える必要がある
+      - よって "YYYY-MM-DD" 文字列 → datetime.date に変換して書く
     """
+    import datetime as _dt
+
+    def _to_excel_date(v):
+        # すでに date/datetime ならそのまま
+        if isinstance(v, _dt.datetime):
+            return v.date()
+        if isinstance(v, _dt.date):
+            return v
+
+        # "YYYY-MM-DD" を date に変換
+        if isinstance(v, str):
+            s = v.strip()
+            try:
+                return _dt.datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception:
+                return v  # 変換できないものはそのまま（監査優先）
+        return v
+
     wb = openpyxl.load_workbook(
         excel_file,
         keep_vba=excel_file.lower().endswith(".xlsm")
@@ -1818,14 +1839,49 @@ def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], *, sheet_name: st
     if ws.max_row >= 2:
         ws.delete_rows(2, ws.max_row - 1)
 
-    # 2) rowsを書き込み
+    # 2) rowsを書き込み（型を整える）
     r = 2
     for row in rows:
         for c, col in enumerate(RAW_COLS, start=1):
-            ws.cell(row=r, column=c).value = row.get(col)
+            v = row.get(col)
+
+            # ★ここが肝：日付は Excel 日付型へ
+            if col in ("period_start", "period_end"):
+                v = _to_excel_date(v)
+
+            ws.cell(row=r, column=c).value = v
         r += 1
 
     wb.save(excel_file)
+
+# === PATCH: out_meta の suffix shift（file3用）===
+def shift_out_meta_by_yeargap(out_meta: dict, year_gap: int) -> dict:
+    """
+    out_meta のキー（NetSalesCurrent / NetSalesPrior1..）を year_gap 分ずらす
+    値(meta dict)はそのまま
+    """
+    if year_gap <= 0:
+        return out_meta
+
+    shifted = {}
+    for k, meta in (out_meta or {}).items():
+        m = re.match(r"^(.*?)(Current|Prior(\d+))$", k)
+        if not m:
+            shifted[k] = meta
+            continue
+
+        prefix = m.group(1)
+        suf = m.group(2)
+
+        if suf == "Current":
+            n = year_gap
+        else:
+            n = year_gap + int(m.group(3))
+
+        if 1 <= n <= 4:
+            shifted[f"{prefix}Prior{n}"] = meta
+
+    return shifted
 
 def snapshot_namedranges(wb, values: dict[str, object]) -> dict[str, object]:
     """
@@ -1940,6 +1996,36 @@ def process_one_loop(loop, date_pairs, skipped_files):
     # === ANCHOR: LOOP_START === 
     parsed_docs = []   # ★ここに file1/2/3 の parse結果を溜める（raw書込は最後に1回）
     raw_rows = []
+
+    # === PATCH: out_buffer put（上書き検知つき）===
+    out_buffer_src = {}          # key -> src label
+    out_buffer_collisions = []   # (key, old_src, new_src)
+
+    def buffer_put(key: str, value, src_label: str):
+        if value is None or value == "":
+            return
+
+        prio = {"file1_half": 3, "file2_annual": 2, "file3_annual": 1}
+        new_p = prio.get(src_label, 0)
+
+        if key in out_buffer:
+            old_src = out_buffer_src.get(key, "?")
+            old_p = prio.get(old_src, 0)
+
+            # half優先：halfが既に入っていれば annual は上書きしない
+            if old_src == "file1_half" and src_label in ("file2_annual", "file3_annual"):
+                out_buffer_collisions.append((key, old_src, src_label))
+                return
+
+            # それ以外は優先度で弱い方は上書き禁止
+            if new_p < old_p:
+                out_buffer_collisions.append((key, old_src, src_label))
+                return
+
+            out_buffer_collisions.append((key, old_src, src_label))
+
+        out_buffer[key] = value
+        out_buffer_src[key] = src_label
 
     out_buffer: dict[str, object] = {}
     
@@ -2150,13 +2236,34 @@ def process_one_loop(loop, date_pairs, skipped_files):
                 # ① year_gap を計算（例：base_year - y3）
                 year_gap = base_year - y3
 
-                # ② x3 を Prior 側にずらす（あなたの既存処理がここ）
-                #    例：x3_shifted = shift_with_keep(x3, year_gap)
-                x3_shifted = shift_with_keep(x3, year_gap)   # ←あなたの関数名に合わせて置換
+                # === PATCH: year_gap 安全チェック ===
+                if not (1 <= year_gap <= 4):
+                    add_skip(
+                        skipped_files,
+                        code=SkipCode.FILE3_YEAR_MISS,
+                        phase="file3",
+                        loop=loop,
+                        excel=excel_file_path,
+                        xbrl=path3,
+                        message=f"file3 year_gap abnormal base={base_year} y3={y3} gap={year_gap}"
+                    )
+                else:
+                    # ② x3 を Prior 側にずらす
+                    x3_shifted = shift_with_keep(x3, year_gap)
 
-                # ③ ずらした結果を Excel書込みバッファへ（これが追加したい行）
-                out3_write = filter_for_annual_old(x3_shifted)   # ←あなたの関数名に合わせて置換
-                out_buffer.update(out3_write)
+                    # meta3 もずらす
+                    meta3_shifted = shift_out_meta_by_yeargap(meta3, year_gap)
+
+                    # parsed_docs を更新
+                    parsed_docs[-1]["out"] = x3_shifted
+                    parsed_docs[-1]["out_meta"] = meta3_shifted
+
+                # ③ ずらした結果を Excel書込みバッファへ
+                out3_write = filter_for_annual_old(x3_shifted)  # ここはあなたの関数名でOK
+
+                # out_buffer.update(out3_write) はやめて統一
+                for k, v in out3_write.items():
+                    buffer_put(k, v, "file3_annual")
                 # （中略：あなたの既存処理）
                 pass
 
@@ -2208,8 +2315,13 @@ def process_one_loop(loop, date_pairs, skipped_files):
         r["source_file"] = r.get("doc_id")
 
     # === ANCHOR: BEFORE_EXCEL_WRITE ===
+    if out_buffer_collisions:
+        logger.warning("[excel buffer] collisions=%d", len(out_buffer_collisions))
+        for k, old_src, new_src in out_buffer_collisions[:50]:
+            winner = out_buffer_src.get(k, "?")
+            logger.warning(" overwrite: %s  %s -> %s (winner=%s)", k, old_src, new_src, winner)
     if out_buffer:
-        t = perf_counter()  # ★ここ
+        t = perf_counter() 
 
         write_data_to_excel_namedranges(excel_file_path, out_buffer)
 
@@ -2265,6 +2377,106 @@ def process_one_loop(loop, date_pairs, skipped_files):
                 duration_metric_keys=duration_metric_keys,
             )
 
+    # === PATCH: raw_rows 最終一意化（重複ゼロ化）===
+
+    def _raw_key(row: dict):
+        # 「同一判定キー」：raw異常検知のロジックと合わせる
+        # まずは監査の粒度（会社×書類×doc_type×metric×slot×連結×期間×unit）で固める
+        return (
+            row.get("company_code", ""),
+            row.get("doc_id", ""),
+            row.get("doc_type", ""),
+            row.get("consolidation", ""),
+            row.get("metric_key", ""),
+            row.get("time_slot", ""),
+            row.get("period_start", ""),
+            row.get("period_end", ""),
+            row.get("period_kind", ""),   # duration/instant
+            row.get("unit", ""),
+        )
+
+    # === PATCH: raw_rows 最終一意化（テンプレの重複判定に寄せる）===
+
+    def _raw_key_for_template(row: dict):
+        # テンプレの重複判定に合わせる（期間は見ない想定）
+        # ★ここが重要：period_start/end を入れない
+        return (
+            row.get("company_code", ""),
+            row.get("doc_type", ""),
+            row.get("consolidation", ""),
+            row.get("metric_key", ""),
+            row.get("time_slot", ""),
+            row.get("period_kind", ""),   # duration/instant を区別したい場合だけ残す
+        )
+
+    def dedupe_raw_rows_keep_best(rows: list[dict]) -> tuple[list[dict], int]:
+        """
+        同一キー（テンプレ基準）を1行に統合する。
+        優先順位:
+        OK > MISSING > ERROR
+        tag_rank が小さいほど良い（あれば）
+        period_end が新しい方を優先（あれば）
+        """
+        import datetime as _dt
+
+        def _to_date(x):
+            if isinstance(x, _dt.datetime): return x.date()
+            if isinstance(x, _dt.date): return x
+            return None
+
+        def score(r: dict):
+            status = (r.get("status") or "").upper()
+            status_score = {"OK": 3, "MISSING": 2, "ERROR": 1}.get(status, 0)
+
+            tr = r.get("tag_rank")
+            try:
+                tag_rank_score = -int(tr)    # 小さいほど良い -> マイナスで大きいほど良いにする
+            except Exception:
+                tag_rank_score = -999999
+
+            has_value = 1 if (r.get("value") not in (None, "")) else 0
+            has_unit  = 1 if (r.get("unit")  not in (None, "")) else 0
+
+            pe = _to_date(r.get("period_end"))
+            period_score = pe.toordinal() if pe else -1
+
+            return (status_score, has_value, has_unit, tag_rank_score, period_score)
+
+        best = {}
+        dup_count = 0
+        for row in rows:
+            k = _raw_key_for_template(row)
+            if k not in best:
+                best[k] = row
+            else:
+                dup_count += 1
+                if score(row) > score(best[k]):
+                    best[k] = row
+
+        # 元順をなるべく維持
+        seen = set()
+        out = []
+        for row in rows:
+            k = _raw_key_for_template(row)
+            if k in seen:
+                continue
+            out.append(best[k])
+            seen.add(k)
+
+        return out, dup_count
+    
+    from collections import Counter
+    cnt = Counter(_raw_key_for_template(r) for r in raw_rows)
+    dup_keys = [k for k,v in cnt.items() if v > 1]
+    if dup_keys:
+        logger.warning("[raw dup still] groups=%d (show top 10)", len(dup_keys))
+        for k in dup_keys[:10]:
+            logger.warning(" dup_key=%s count=%d", k, cnt[k])
+
+    raw_rows, deduped = dedupe_raw_rows_keep_best(raw_rows)
+    if deduped:
+        logger.warning("[raw dedupe] removed_duplicates=%d final_rows=%d", deduped, len(raw_rows)) 
+
     # run_id / source_file は raw 確定後に一括付与
     for r in raw_rows:
         r["run_id"] = run_id
@@ -2288,10 +2500,6 @@ def process_one_loop(loop, date_pairs, skipped_files):
     for r in raw_rows:
         r["run_id"] = run_id
         r["source_file"] = r.get("doc_id")
-
-    # 4) 最後に1回だけ書く（後）
-    write_rows_to_raw_sheet(excel_file_path, raw_rows, sheet_name="raw_edinet")
-    logger.info(f"[raw] written rows={len(raw_rows)} sheet=raw_edinet")
 
     # === ANCHOR: LOOP_SUMMARY ===
 
