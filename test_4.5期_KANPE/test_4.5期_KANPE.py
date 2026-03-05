@@ -24,6 +24,8 @@ from time import perf_counter
 from dataclasses import dataclass, asdict
 from enum import Enum
 import traceback
+from lxml import etree
+
 
 
 class SkipCode(str, Enum):
@@ -88,6 +90,192 @@ def log_skip_summary(logger: logging.Logger, skipped_files: list):
             f"excel={s.get('excel')} xbrl={s.get('xbrl')} msg={s.get('message')} "
             f"exc={s.get('exc_type')}:{s.get('exc_msg')}"
         )
+
+# =========================
+# 1) METRICS（あなたの現行をそのまま）
+# =========================
+METRICS = {
+    # ---------- PL / CF（duration） ----------
+    "NetSales": {
+        "tags": [
+            # ★半期サマリー（最優先）
+            "jpcrp_cor:NetSalesSummaryOfBusinessResults",
+            # 通常PL
+            "jppfs_cor:NetSales",
+            # 保険（売上相当）
+            "jpcrp_cor:RevenuesFromExternalCustomers",
+            # IFRS
+            "jpigp_cor:RevenueIFRS",
+            "jpigp_cor:NetSalesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    "CostOfSales": {
+        "tags": ["jppfs_cor:CostOfSales", "jpigp_cor:CostOfSalesIFRS"],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    "GrossProfit": {
+        "tags": ["jppfs_cor:GrossProfit", "jpigp_cor:GrossProfitIFRS"],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    "SellingExpenses": {
+        "tags": [
+            "jppfs_cor:SellingGeneralAndAdministrativeExpenses",
+            "jpigp_cor:SellingGeneralAndAdministrativeExpensesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    "OperatingIncome": {
+        "tags": ["jppfs_cor:OperatingIncome", "jpigp_cor:OperatingProfitLossIFRS"],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    "OrdinaryIncome": {
+        "tags": [
+            # ★半期サマリー（最優先）
+            "jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults",
+            # J-GAAP
+            "jppfs_cor:OrdinaryIncome",
+            # IFRS（経常相当）
+            "jpigp_cor:ProfitLossBeforeTaxIFRS",
+            "jpigp_cor:ProfitLossBeforeIncomeTaxesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    "ProfitLoss": {
+        "tags": [
+            # ★半期サマリー（最優先）
+            "jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
+            # 日本基準（半期）
+            "jppfs_cor:ProfitLossAttributableToOwnersOfParent",
+            # 日本基準（通期）
+            "jppfs_cor:ProfitLoss",
+            # IFRS
+            "jpigp_cor:ProfitLossAttributableToOwnersOfParentIFRS",
+            "jpigp_cor:ProfitLossIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    #営業CF
+    "OperatingCash": {
+        "tags": [
+            # ★半期サマリー（最優先）
+            "jpcrp_cor:NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults",
+            # 通常CF
+            "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
+            # IFRS
+            "jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    #投資CF
+    "InvestmentCash": {
+        "tags": [
+            # ★半期サマリー（最優先）
+            "jpcrp_cor:NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults",
+            # 通常CF（表記ゆれ対策で2つ）
+            "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
+            "jppfs_cor:NetCashProvidedByUsedInInvestingActivities",
+            # IFRS
+            "jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+    #財務CF
+    "FinancingCash": {
+        "tags": [
+            # ★半期サマリー（最優先）
+            "jpcrp_cor:NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults",
+            # 通常CF
+            "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
+            # IFRS
+            "jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+
+    # ---------- BS（instant） ----------
+    "TotalAssets": {
+        "tags": [
+            "jpcrp_cor:TotalAssetsSummaryOfBusinessResults",
+            "jpcrp_cor:TotalAssetsIFRSSummaryOfBusinessResults",
+            "jpigp_cor:AssetsIFRS",
+        ],
+        "kind": "instant_num",
+        "unit": "millions",
+    },
+    "NetAssets": {
+        "tags": [
+            "jpcrp_cor:NetAssetsSummaryOfBusinessResults",
+            "jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+            "jpigp_cor:EquityAttributableToOwnersOfParentIFRS",
+        ],
+        "kind": "instant_num",
+        "unit": "millions",
+    },
+    "CashAndCashEquivalents": {
+        "tags": [
+            "jppfs_cor:CashAndCashEquivalents",
+            "jpigp_cor:CashAndCashEquivalentsIFRS",
+            "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
+        ],
+        "kind": "instant_num",
+        "unit": "millions",
+    },
+
+    # ---------- 株数（instant）：「材料」を拾って差分でTotalNumberに統一 ----------
+    # 発行済株式総数（優先順を整理）
+    "IssuedShares": {
+        "tags": [
+            # ★期末ベース（最優先：最も安定しやすい）
+            "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+            # ★提出日ベース（次点）
+            "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+
+            # 代表的（株式等の状況）
+            "jpcrp_cor:TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
+            # サマリー系（会社により出る）
+            "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+            # 普通株/普通株式名義系（会社により出る）
+            "jpcrp_cor:TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
+            "jpcrp_cor:TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",
+            "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+
+            # ★議決権表など“表系”は最後（会社によっては出るが優先しない）
+            "jpcrp_cor:NumberOfSharesIssuedSharesVotingRights",
+        ],
+        "kind": "instant_num",
+        "unit": "ones",
+    },
+
+    # 自己株式数（優先順を整理）
+    "TreasuryShares": {
+        "tags": [
+            # ★自己株式数（合計）が最優先
+            "jpcrp_cor:TotalNumberOfSharesHeldTreasurySharesEtc",
+            # ★自己名義（合計が取れない場合の次点）
+            "jpcrp_cor:NumberOfSharesHeldInOwnNameTreasurySharesEtc",
+
+            # 表記ゆれ・補助（会社により出る）
+            "jpcrp_cor:TotalNumberOfSharesHeldInTheNameOfOthersTreasurySharesEtc",
+            "jpcrp_cor:TotalNumberOfSharesHeldInOwnNameTreasurySharesEtc",
+            "jpcrp_cor:TotalNumberOfTreasurySharesSummaryOfBusinessResults",
+            "jpcrp_cor:NumberOfTreasurySharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+            "jpcrp_cor:TreasurySharesAtTheEndOfFiscalYearIssuedSharesTotalNumberOfSharesEtc",
+        ],
+        "kind": "instant_num",
+        "unit": "ones",
+    },
+    }
 
 def normalize_security_code(raw: object) -> str | None:
     """
@@ -304,425 +492,277 @@ def build_raw_rows(*, company_code: str, doc_id: str, doc_type: str,
         })
     return rows
 
+
+
 # XBRLデータの解析（完成版）
 def parse_xbrl_data(xbrl_file, mode="full"):
-    # mode:
-    #   "full" : YTD + Current/Prior + Quarter + DEI（有報向け）
-    #   "half" : YTD + Quarter + DEI だけ（半期向け：Current/Prior作らない）
-    with open(xbrl_file, "r", encoding="utf-8") as f:
-        soup = BeautifulSoup(f, "lxml-xml")
+    from datetime import datetime, timedelta
+    from lxml import etree
 
-    out = {}
-    out_meta = {}
-
-    # ========= 1) context 読み取り =========
-    contexts = {}
-    for ctx in soup.find_all("context"):
-        ctx_id = ctx.get("id")
-        if not ctx_id:
-            continue
-
-        period = ctx.find("period")
-        if not period:
-            continue
-
-        start = period.find("startDate")
-        end = period.find("endDate")
-        instant = period.find("instant")
-
-        start_s = start.get_text(strip=True) if start else None
-        end_s = end.get_text(strip=True) if end else None
-        inst_s = instant.get_text(strip=True) if instant else None
-
-        members = [m.get_text(strip=True) for m in ctx.find_all("xbrldi:explicitMember")]
-        is_noncon = any("NonConsolidatedMember" in t for t in members)
-        dim = "NonConsolidated" if is_noncon else "Consolidated"
-
-        contexts[ctx_id] = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
-
+    # ===== util =====
     def parse_ymd(s):
-        """日付っぽい文字列だけYYYY-MM-DDで処理。失敗したら None。"""
         try:
             return datetime.strptime(s, "%Y-%m-%d")
         except Exception:
             return None
 
     def months_diff(s, e):
-        """日付 s->e のだいたいの月差。日が足りない分は1か月減らす。"""
         if not s or not e:
             return None
         m = (e.year - s.year) * 12 + (e.month - s.month)
-        # 例：4/1→9/30 は 5か月差に見えるが、上期として拾いたい
-        # なので「日が小さくても減らしすぎない」ように調整は緩めにする
         if e.day < s.day:
             m -= 1
         return m
 
     def duration_bucket_months(start_ymd, end_ymd):
-        """duration期間を「上期(6)」「通期(12)」に分類（6/12以外は無視）"""
         s = parse_ymd(start_ymd)
         e = parse_ymd(end_ymd)
         md = months_diff(s, e)
         if md is None:
             return None
-
-        # 上期：5〜7か月程度を6扱い（会社・暦のズレ吸収）
         if 5 <= md <= 7:
             return 6
-
-        # 通期：11〜13か月程度を12扱い
         if 11 <= md <= 13:
             return 12
-
         return None
 
-    # ========= 2) メトリクス定義（ここに増やす） =========
-    METRICS = {
-        # ---------- PL / CF（duration） ----------
-        "NetSales": {
-            "tags": [
-                # ★半期サマリー（最優先）
-                "jpcrp_cor:NetSalesSummaryOfBusinessResults",
-                # 通常PL
-                "jppfs_cor:NetSales",
-                # 保険（売上相当）
-                "jpcrp_cor:RevenuesFromExternalCustomers",
-                # IFRS
-                "jpigp_cor:RevenueIFRS",
-                "jpigp_cor:NetSalesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "CostOfSales": {
-            "tags": ["jppfs_cor:CostOfSales", "jpigp_cor:CostOfSalesIFRS"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "GrossProfit": {
-            "tags": ["jppfs_cor:GrossProfit", "jpigp_cor:GrossProfitIFRS"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "SellingExpenses": {
-            "tags": [
-                "jppfs_cor:SellingGeneralAndAdministrativeExpenses",
-                "jpigp_cor:SellingGeneralAndAdministrativeExpensesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "OperatingIncome": {
-            "tags": ["jppfs_cor:OperatingIncome", "jpigp_cor:OperatingProfitLossIFRS"],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "OrdinaryIncome": {
-            "tags": [
-                # ★半期サマリー（最優先）
-                "jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults",
-                # J-GAAP
-                "jppfs_cor:OrdinaryIncome",
-                # IFRS（経常相当）
-                "jpigp_cor:ProfitLossBeforeTaxIFRS",
-                "jpigp_cor:ProfitLossBeforeIncomeTaxesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        "ProfitLoss": {
-            "tags": [
-                # ★半期サマリー（最優先）
-                "jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
-                # 日本基準（半期）
-                "jppfs_cor:ProfitLossAttributableToOwnersOfParent",
-                # 日本基準（通期）
-                "jppfs_cor:ProfitLoss",
-                # IFRS
-                "jpigp_cor:ProfitLossAttributableToOwnersOfParentIFRS",
-                "jpigp_cor:ProfitLossIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        #営業CF
-        "OperatingCash": {
-            "tags": [
-                # ★半期サマリー（最優先）
-                "jpcrp_cor:NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults",
-                # 通常CF
-                "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
-                # IFRS
-                "jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        #投資CF
-        "InvestmentCash": {
-            "tags": [
-                # ★半期サマリー（最優先）
-                "jpcrp_cor:NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults",
-                # 通常CF（表記ゆれ対策で2つ）
-                "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
-                "jppfs_cor:NetCashProvidedByUsedInInvestingActivities",
-                # IFRS
-                "jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
-        #財務CF
-        "FinancingCash": {
-            "tags": [
-                # ★半期サマリー（最優先）
-                "jpcrp_cor:NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults",
-                # 通常CF
-                "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
-                # IFRS
-                "jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS",
-            ],
-            "kind": "duration",
-            "unit": "millions",
-        },
+    def dim_rank(dim):
+        return 0 if dim == "Consolidated" else 1
 
-        # ---------- BS（instant） ----------
-        "TotalAssets": {
-            "tags": [
-                "jpcrp_cor:TotalAssetsSummaryOfBusinessResults",
-                "jpcrp_cor:TotalAssetsIFRSSummaryOfBusinessResults",
-                "jpigp_cor:AssetsIFRS",
-            ],
-            "kind": "instant_num",
-            "unit": "millions",
-        },
-        "NetAssets": {
-            "tags": [
-                "jpcrp_cor:NetAssetsSummaryOfBusinessResults",
-                "jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
-                "jpigp_cor:EquityAttributableToOwnersOfParentIFRS",
-            ],
-            "kind": "instant_num",
-            "unit": "millions",
-        },
-        "CashAndCashEquivalents": {
-            "tags": [
-                "jppfs_cor:CashAndCashEquivalents",
-                "jpigp_cor:CashAndCashEquivalentsIFRS",
-                "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
-            ],
-            "kind": "instant_num",
-            "unit": "millions",
-        },
+    # === PATCH: QName照合のため nsmap を取る（prefix依存をやめる）===
+    # rootのnsmap（prefix -> namespaceURI）を取る
+    # iterparse(start) で最初の要素だけ見るので軽い
+    nsmap = {}
+    for ev, el0 in etree.iterparse(xbrl_file, events=("start",), recover=True, huge_tree=True):
+        nsmap = dict(el0.nsmap or {})
+        break
 
-        # ---------- 株数（instant）：「材料」を拾って差分でTotalNumberに統一 ----------
-        # 発行済株式総数（優先順を整理）
-        "IssuedShares": {
-            "tags": [
-                # ★期末ベース（最優先：最も安定しやすい）
-                "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
-                # ★提出日ベース（次点）
-                "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+    def _qname(tag_prefixed: str) -> str:
+        # "jpcrp_cor:NetSales" -> "{uri}NetSales"
+        pref, local = tag_prefixed.split(":", 1)
+        uri = nsmap.get(pref)
+        if not uri:
+            # prefixがnsmapに無い場合は絶対一致しないので、ありえないQNameを返す
+            return f"{{}}{local}"
+        return f"{{{uri}}}{local}"
 
-                # 代表的（株式等の状況）
-                "jpcrp_cor:TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
-                # サマリー系（会社により出る）
-                "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
-                # 普通株/普通株式名義系（会社により出る）
-                "jpcrp_cor:TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
-                "jpcrp_cor:TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",
-                "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
-
-                # ★議決権表など“表系”は最後（会社によっては出るが優先しない）
-                "jpcrp_cor:NumberOfSharesIssuedSharesVotingRights",
-            ],
-            "kind": "instant_num",
-            "unit": "ones",
-        },
-
-        # 自己株式数（優先順を整理）
-        "TreasuryShares": {
-            "tags": [
-                # ★自己株式数（合計）が最優先
-                "jpcrp_cor:TotalNumberOfSharesHeldTreasurySharesEtc",
-                # ★自己名義（合計が取れない場合の次点）
-                "jpcrp_cor:NumberOfSharesHeldInOwnNameTreasurySharesEtc",
-
-                # 表記ゆれ・補助（会社により出る）
-                "jpcrp_cor:TotalNumberOfSharesHeldInTheNameOfOthersTreasurySharesEtc",
-                "jpcrp_cor:TotalNumberOfSharesHeldInOwnNameTreasurySharesEtc",
-                "jpcrp_cor:TotalNumberOfTreasurySharesSummaryOfBusinessResults",
-                "jpcrp_cor:NumberOfTreasurySharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
-                "jpcrp_cor:TreasurySharesAtTheEndOfFiscalYearIssuedSharesTotalNumberOfSharesEtc",
-            ],
-            "kind": "instant_num",
-            "unit": "ones",
-        },
-        }
-
-    # ========= 2.2) DEI（PeriodEnd / FY start）を先に取得（file1/2/3 共通） =========
-    period_end = None
-    fy_start_dei = None
-    period_type = None
-
-    fy_start_el = soup.find("jpdei_cor:CurrentFiscalYearStartDateDEI")
-    if fy_start_el:
-        fy_start_dei = fy_start_el.get_text(strip=True)
-        out["CurrentFiscalYearStartDateDEI"] = fy_start_dei
-
-    period_end_el = soup.find("jpdei_cor:CurrentPeriodEndDateDEI")
-    if period_end_el:
-        period_end = period_end_el.get_text(strip=True)
-        out["CurrentPeriodEndDateDEI"] = period_end
-
-    type_el = soup.find("jpdei_cor:TypeOfCurrentPeriodDEI")
-    if type_el:
-        period_type = type_el.get_text(strip=True)
-        out["TypeOfCurrentPeriodDEI"] = period_type
-
-    # ★ halfモードなら「上期末」を専用キーでも保持（リネーム等で使いやすくする）
-    if mode == "half" and period_end:
-        out["HalfPeriodEndDateDEI"] = period_end
-
-    # ========= 3) fact収集 =========
-    facts = []  # {metric, value, end, months, dim, tag_priority, kind, unit}
+    # METRICSの全タグを QName に変換して辞書化
+    # qname("{uri}Local") -> (metric, tag_priority, kind, unit, tag_string)
+    METRIC_Q = {}
     for metric, meta in METRICS.items():
         for tag_priority, tag in enumerate(meta["tags"]):
-            for el in soup.find_all(tag):
-                ctxref = el.get("contextRef")
-                if not ctxref or ctxref not in contexts:
-                    continue
-                info = contexts[ctxref]
+            METRIC_Q[_qname(tag)] = (metric, tag_priority, meta["kind"], meta["unit"], tag)
 
-                if meta["kind"] == "duration":
-                    if not info["start"] or not info["end"]:
-                        continue
-                    months = duration_bucket_months(info["start"], info["end"])
-                    if months not in (6, 12):
-                        continue
-                    end_date = info["end"]
+    # DEIも QName 化
+    DEI_TAGS = {
+        "jpdei_cor:CurrentFiscalYearStartDateDEI": "CurrentFiscalYearStartDateDEI",
+        "jpdei_cor:CurrentPeriodEndDateDEI": "CurrentPeriodEndDateDEI",
+        "jpdei_cor:TypeOfCurrentPeriodDEI": "TypeOfCurrentPeriodDEI",
+        "jpdei_cor:CurrentFiscalYearEndDateDEI": "CurrentFiscalYearEndDateDEI",
+        "jpdei_cor:SecurityCodeDEI": "SecurityCodeDEI",
+        "jpdei_cor:FilerNameInJapaneseDEI": "CompanyNameCoverPage",
+        "jpdei_cor:FilerNameDEI": "CompanyNameCoverPage",
+    }
+    DEI_Q = {_qname(k): v for k, v in DEI_TAGS.items()}
+
+    # ===== outputs =====
+    out = {}
+    out_meta = {}
+
+    # ===== DEI targets =====
+    DEI_WANT = {
+        "jpdei_cor:CurrentFiscalYearStartDateDEI": "CurrentFiscalYearStartDateDEI",
+        "jpdei_cor:CurrentPeriodEndDateDEI": "CurrentPeriodEndDateDEI",
+        "jpdei_cor:TypeOfCurrentPeriodDEI": "TypeOfCurrentPeriodDEI",
+        "jpdei_cor:CurrentFiscalYearEndDateDEI": "CurrentFiscalYearEndDateDEI",
+        "jpdei_cor:SecurityCodeDEI": "SecurityCodeDEI",
+        "jpdei_cor:FilerNameInJapaneseDEI": "CompanyNameCoverPage",
+        "jpdei_cor:FilerNameDEI": "CompanyNameCoverPage",
+    }
+
+    fy_start_dei = None
+    period_end_dei = None
+    period_type = None
+    security_code = None
+
+    # ===== build tag lookup from your existing METRICS =====
+    # full_tag ("jpcrp_cor:NetSales") -> (metric, tag_priority, kind, unit)
+    metric_by_tag = {}
+    for metric, meta in METRICS.items():
+        for tag_priority, tag in enumerate(meta["tags"]):
+            metric_by_tag[tag] = (metric, tag_priority, meta["kind"], meta["unit"])
+
+    # ===== 1-PASS: contexts + DEI + facts =====
+    contexts = {}
+    dur_best = {}
+    inst_best = {}
+    fy_end_candidates = set()
+
+    def best_update(store, key, cand):
+        cur = store.get(key)
+        if cur is None:
+            store[key] = cand
+            return
+        if (dim_rank(cand["dim"]), cand["tag_priority"]) < (dim_rank(cur["dim"]), cur["tag_priority"]):
+            store[key] = cand
+
+    for event, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
+        local = el.tag.split("}")[-1]
+
+        # --- context ---
+        if local == "context":
+            ctx_id = el.get("id")
+            if ctx_id:
+                start_s = end_s = inst_s = None
+                for p in el.iter():
+                    pl = p.tag.split("}")[-1]
+                    if pl == "startDate":
+                        start_s = (p.text or "").strip() or None
+                    elif pl == "endDate":
+                        end_s = (p.text or "").strip() or None
+                    elif pl == "instant":
+                        inst_s = (p.text or "").strip() or None
+
+                members = []
+                for m in el.iter():
+                    if m.tag.split("}")[-1] == "explicitMember":
+                        t = (m.text or "").strip()
+                        if t:
+                            members.append(t)
+                is_noncon = any("NonConsolidatedMember" in t for t in members)
+                dim = "NonConsolidated" if is_noncon else "Consolidated"
+
+                contexts[ctx_id] = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
+
+            el.clear()
+            continue
+
+        # --- DEI (QName) ---
+        k = DEI_Q.get(el.tag)
+        if k:
+            v = (el.text or "").strip()
+            if v:
+                if k == "CompanyNameCoverPage":
+                    if "CompanyNameCoverPage" not in out:
+                        out["CompanyNameCoverPage"] = v
                 else:
-                    if not info["instant"]:
-                        continue
-                    months = None
-                    end_date = info["instant"]
+                    out[k] = v
 
-                facts.append({
-                    "metric": metric,
-                    "value": el.get_text(strip=True),
-                    "start": info["start"],        # ★追加
-                    "end": end_date,
-                    "months": months,
-                    "dim": info["dim"],
-                    "tag_priority": tag_priority,
-                    "kind": meta["kind"],
-                    "unit": meta["unit"],
-                })
+                if k == "CurrentFiscalYearStartDateDEI":
+                    fy_start_dei = v
+                elif k == "CurrentPeriodEndDateDEI":
+                    period_end_dei = v
+                elif k == "TypeOfCurrentPeriodDEI":
+                    period_type = v
+                elif k == "SecurityCodeDEI":
+                    if v.isdigit() and len(v) >= 2:
+                        security_code = v[:-1]
+                        out["SecurityCodeDEI"] = security_code
 
-    # ========= 4) 「基準年」を決める（最新の通期duration end） =========
-    fy_ends = sorted(
-        {f["end"] for f in facts if f["kind"] == "duration" and f["months"] == 12 and parse_ymd(f["end"])},
-        reverse=True
-    )
+            el.clear()
+            continue
+
+        # --- FACT (QName) ---
+        info = METRIC_Q.get(el.tag)
+        if info:
+            metric, tag_priority, kind, unit, tag_used = info
+            ctxref = el.get("contextRef")
+            if ctxref:
+                ctx = contexts.get(ctxref)
+                if ctx:
+                    txt = (el.text or "").strip()
+                    if txt:
+                        if kind == "duration":
+                            if ctx["start"] and ctx["end"]:
+                                months = duration_bucket_months(ctx["start"], ctx["end"])
+                                if months in (6, 12):
+                                    end_date = ctx["end"]
+                                    cand = {
+                                        "value": txt,
+                                        "start": ctx["start"],
+                                        "end": end_date,
+                                        "months": months,
+                                        "dim": ctx["dim"],
+                                        "tag_priority": tag_priority,
+                                        "tag_used": tag_used,
+                                    }
+                                    best_update(dur_best, (metric, end_date, months), cand)
+                                    if months == 12 and parse_ymd(end_date):
+                                        fy_end_candidates.add(end_date)
+                        else:
+                            if ctx["instant"]:
+                                end_date = ctx["instant"]
+                                cand = {
+                                    "value": txt,
+                                    "start": None,
+                                    "end": end_date,
+                                    "dim": ctx["dim"],
+                                    "tag_priority": tag_priority,
+                                    "tag_used": tag_used,
+                                }
+                                best_update(inst_best, (metric, end_date), cand)
+
+        el.clear()
+
+    # halfキー
+    if mode == "half" and period_end_dei:
+        out["HalfPeriodEndDateDEI"] = period_end_dei
+
+    # ===== base_year / fy_start =====
+    fy_ends = sorted({d for d in fy_end_candidates if parse_ymd(d)}, reverse=True)
     base_fy_end = fy_ends[0] if fy_ends else None
     base_dt = parse_ymd(base_fy_end) if base_fy_end else None
     base_year = base_dt.year if base_dt else None
 
-    # ========= 4.2) 当期の期首日（FY start）を推定 =========
     fy_start = None
-
-    # (A) DEIの CurrentFiscalYearStartDateDEI があれば最優先
     if fy_start_dei and parse_ymd(fy_start_dei):
         fy_start = fy_start_dei
-
-    # (B) 無ければ CurrentFiscalYearEndDateDEI から逆算（保険）
     if fy_start is None:
-        fy_el = soup.find("jpdei_cor:CurrentFiscalYearEndDateDEI")
-        if fy_el:
-            try:
-                fy_end_dei = parse_ymd(fy_el.get_text(strip=True))
-                if fy_end_dei:
-                    prev_fy_end = fy_end_dei.replace(year=fy_end_dei.year - 1)
-                    fy_start = (prev_fy_end + timedelta(days=1)).strftime("%Y-%m-%d")
-            except Exception:
-                fy_start = None
-
-    # (C) それでも取れなければ従来ロジック（最終保険）
+        fy_end_dei = out.get("CurrentFiscalYearEndDateDEI")
+        if fy_end_dei:
+            fy_end_dt = parse_ymd(fy_end_dei)
+            if fy_end_dt:
+                prev_fy_end = fy_end_dt.replace(year=fy_end_dt.year - 1)
+                fy_start = (prev_fy_end + timedelta(days=1)).strftime("%Y-%m-%d")
     if fy_start is None and base_fy_end:
-        starts = sorted(
-            {f["start"] for f in facts
-            if f["kind"] == "duration"
-            and f["months"] == 12
-            and f["end"] == base_fy_end
-            and f.get("start")
-            and parse_ymd(f["start"])},
-            key=lambda s: parse_ymd(s)
-        )
+        starts = []
+        for (m, end, months), cand in dur_best.items():
+            if months == 12 and end == base_fy_end and cand.get("start") and parse_ymd(cand["start"]):
+                starts.append(cand["start"])
+        starts = sorted(set(starts), key=lambda s: parse_ymd(s))
         if starts:
             fy_start = starts[0]
-    # ========= 5) 連結優先 + タグ優先で 1つ選ぶ =========
-    def pick_best(metric, *, end_date, months=None):
-        cands = [f for f in facts if f["metric"] == metric and f["end"] == end_date]
 
-        if months is not None:
-            cands = [f for f in cands if f["months"] == months]
+    period_end = period_end_dei
 
-        if not cands:
-            return None
-
-        def dim_rank(d):
-            return 0 if d == "Consolidated" else 1
-
-        cands.sort(key=lambda f: (dim_rank(f["dim"]), f["tag_priority"]))
-        return cands[0]
-
-    # ========= 6) 出力（自動割り当て） =========
-    # (A) duration：上期YTD（当期だけ） + 通期5年（Current/Prior1..4）
+    # ===== OUTPUT: duration =====
     for metric, meta in METRICS.items():
         if meta["kind"] != "duration":
             continue
 
-        ## 上期（当期だけ） -> xxxYTD
-        # 0) (halfなら) DEIの period_end があれば「end==period_end & months==6」を最優先
-        # 1) 期首(fy_start)が推定できるなら「start==fy_start & months==6」で次に優先
-        # 2) ダメなら「months==6 の中で最も新しいend」を拾う（保険）
+        # YTD(6)
         best = None
-
-        # (0) half：period_end一致を最優先（※ここでbestを確定させる）
         if mode == "half" and period_end and parse_ymd(period_end):
-            cand = pick_best(metric, end_date=period_end, months=6)
-            if cand:
-                # fy_start が取れているなら start も一致しているものだけ採用（前年YTD誤採用の防止）
-                if (fy_start is None) or (cand.get("start") == fy_start):
-                    best = cand
+            cand = dur_best.get((metric, period_end, 6))
+            if cand and ((fy_start is None) or (cand.get("start") == fy_start)):
+                best = cand
 
-        # (1) 期首一致で探す（次に優先）
         if best is None and fy_start:
-            h1_ends = sorted(
-                {f["end"] for f in facts
-                 if f["metric"] == metric
-                 and f["months"] == 6
-                 and f.get("start") == fy_start
-                 and parse_ymd(f["end"])},
-                reverse=True
-            )
-            if h1_ends:
-                best = pick_best(metric, end_date=h1_ends[0], months=6)
+            ends = sorted({end for (m, end, months) in dur_best.keys()
+                           if m == metric and months == 6 and dur_best[(m, end, months)].get("start") == fy_start and parse_ymd(end)},
+                          reverse=True)
+            if ends:
+                best = dur_best.get((metric, ends[0], 6))
 
-        # (2) フォールバック：months==6の最新を拾う（上期YTDを必ず作るため）
         if best is None:
-            h1_ends_fb = sorted(
-                {f["end"] for f in facts
-                 if f["metric"] == metric
-                 and f["months"] == 6
-                 and parse_ymd(f["end"])},
-                reverse=True
-            )
-            if h1_ends_fb:
-                best = pick_best(metric, end_date=h1_ends_fb[0], months=6)
+            ends = sorted({end for (m, end, months) in dur_best.keys()
+                           if m == metric and months == 6 and parse_ymd(end)},
+                          reverse=True)
+            if ends:
+                best = dur_best.get((metric, ends[0], 6))
 
+        key = f"{metric}YTD"
         if best:
-            key = f"{metric}YTD"
             out[key] = trim_value(best["value"], meta["unit"])
             out_meta[key] = {
                 "period_start": best.get("start"),
@@ -730,14 +770,12 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 "period_kind": "duration",
                 "unit": meta["unit"],
                 "consolidation": "C" if best.get("dim") == "Consolidated" else "N",
-                "tag_used": meta["tags"][best["tag_priority"]],
-                "tag_rank": best["tag_priority"] + 1,
+                "tag_used": best.get("tag_used"),
+                "tag_rank": (best.get("tag_priority") or 0) + 1,
                 "status": "OK",
             }
         else:
-            # ★ MISSING行を残す（annualでもhalfでも）
-            key = f"{metric}YTD"
-            out[key] = None  # rawに空欄で出したいので None 推奨（"データなし" でも可）
+            out[key] = None
             out_meta[key] = {
                 "period_start": None,
                 "period_end": None,
@@ -749,14 +787,12 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 "status": "MISSING",
             }
 
-        # ★通期 5年 -> Current/Prior1..4（halfモードでは作らない）
+        # 12ヶ月 Current/Prior（fullのみ）
         if mode != "half":
-            fy_ends_metric = sorted(
-                {f["end"] for f in facts
-                 if f["metric"] == metric and f["months"] == 12 and parse_ymd(f["end"])},
-                reverse=True
-            )
-            for end_date in fy_ends_metric:
+            ends_12 = sorted({end for (m, end, months) in dur_best.keys()
+                              if m == metric and months == 12 and parse_ymd(end)},
+                             reverse=True)
+            for end_date in ends_12:
                 if base_year is None:
                     break
                 dt = parse_ymd(end_date)
@@ -767,70 +803,52 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                     continue
 
                 suffix = "Current" if diff == 0 else f"Prior{diff}"
-                best = pick_best(metric, end_date=end_date, months=12)
-                if best:
-                    key = f"{metric}{suffix}"
-                    out[key] = trim_value(best["value"], meta["unit"])
-                    out_meta[key] = {
-                        "period_start": best.get("start"),
-                        "period_end": best.get("end"),
+                best12 = dur_best.get((metric, end_date, 12))
+                if best12:
+                    k2 = f"{metric}{suffix}"
+                    out[k2] = trim_value(best12["value"], meta["unit"])
+                    out_meta[k2] = {
+                        "period_start": best12.get("start"),
+                        "period_end": best12.get("end"),
                         "period_kind": "duration",
                         "unit": meta["unit"],
-                        "consolidation": "C" if best.get("dim") == "Consolidated" else "N",
-                        "tag_used": meta["tags"][best["tag_priority"]],
-                        "tag_rank": best["tag_priority"] + 1,
+                        "consolidation": "C" if best12.get("dim") == "Consolidated" else "N",
+                        "tag_used": best12.get("tag_used"),
+                        "tag_rank": (best12.get("tag_priority") or 0) + 1,
                         "status": "OK",
                     }
 
-
-    # (B) instant：通期5年（Current/Prior1..4） + 上期末（Quarter）
-    # ルール：
-    # - Quarterは「最新のinstant」を採用（＝上期末が最新になりやすい）
-    # - 通期5年は「年」で割り当て（base_yearとの差分）だが halfモードでは作らない
+    # ===== OUTPUT: instant =====
     for metric, meta in METRICS.items():
         if meta["kind"] == "duration":
             continue
 
-        inst_ends = sorted(
-            {f["end"] for f in facts if f["metric"] == metric and parse_ymd(f["end"])},
-            reverse=True
-        )
+        inst_ends = sorted({end for (m, end) in inst_best.keys() if m == metric and parse_ymd(end)}, reverse=True)
 
-        # Quarter：DEIのCurrentPeriodEndDateDEIを最優先（無ければ最も近いinstant、最後に最新）
+        # Quarter
         if inst_ends:
-            chosen_end = inst_ends[0]  # 従来フォールバック（最新）
-
+            chosen_end = inst_ends[0]
             target_dt = parse_ymd(period_end) if period_end else None
             if target_dt:
-                # 1) 完全一致があればそれ
                 if period_end in inst_ends:
                     chosen_end = period_end
                 else:
-                    # 2) 最も近い日付を選ぶ（ただしFY startより前は除外して飛びを防止）
                     fy_start_dt = parse_ymd(fy_start) if fy_start else None
-
                     inst_dts = []
                     for e in inst_ends:
                         dt = parse_ymd(e)
                         if not dt:
                             continue
-                        # FY start が取れている場合は、それ以前を候補から除外
                         if fy_start_dt and dt < fy_start_dt:
                             continue
                         inst_dts.append(dt)
-
-                    # FY start 制限で候補が空なら、制限なしで再収集（保険）
                     if not inst_dts:
-                        for e in inst_ends:
-                            dt = parse_ymd(e)
-                            if dt:
-                                inst_dts.append(dt)
-
+                        inst_dts = [parse_ymd(e) for e in inst_ends if parse_ymd(e)]
                     if inst_dts:
                         inst_dts.sort(key=lambda dt: abs((dt - target_dt).days))
                         chosen_end = inst_dts[0].strftime("%Y-%m-%d")
 
-            best_q = pick_best(metric, end_date=chosen_end)
+            best_q = inst_best.get((metric, chosen_end))
             if best_q:
                 key = f"{metric}Quarter"
                 out[key] = trim_value(best_q["value"], meta["unit"])
@@ -840,12 +858,12 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                     "period_kind": "instant",
                     "unit": meta["unit"],
                     "consolidation": "C" if best_q.get("dim") == "Consolidated" else "N",
-                    "tag_used": meta["tags"][best_q["tag_priority"]],
-                    "tag_rank": best_q["tag_priority"] + 1,
+                    "tag_used": best_q.get("tag_used"),
+                    "tag_rank": (best_q.get("tag_priority") or 0) + 1,
                     "status": "OK",
                 }
 
-        # ★通期5年：年で Current/Prior1..4 を作る（halfモードでは作らない）
+        # Current/Prior（fullのみ）
         if mode != "half":
             for end_date in inst_ends:
                 if base_year is None:
@@ -858,33 +876,26 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                     continue
 
                 suffix = "Current" if diff == 0 else f"Prior{diff}"
-                best = pick_best(metric, end_date=end_date)
-                if best:
+                best_i = inst_best.get((metric, end_date))
+                if best_i:
                     key = f"{metric}{suffix}"
-                    out[key] = trim_value(best["value"], meta["unit"])
+                    out[key] = trim_value(best_i["value"], meta["unit"])
                     out_meta[key] = {
                         "period_start": None,
-                        "period_end": best.get("end"),
+                        "period_end": best_i.get("end"),
                         "period_kind": "instant",
                         "unit": meta["unit"],
-                        "consolidation": "C" if best.get("dim") == "Consolidated" else "N",
-                        "tag_used": meta["tags"][best["tag_priority"]],
-                        "tag_rank": best["tag_priority"] + 1,
+                        "consolidation": "C" if best_i.get("dim") == "Consolidated" else "N",
+                        "tag_used": best_i.get("tag_used"),
+                        "tag_rank": (best_i.get("tag_priority") or 0) + 1,
                         "status": "OK",
                     }
 
-    # ========= 6.5) TotalNumber を「自己株式控除後」に統一して生成 =========
-    # TotalNumber = IssuedShares - TreasuryShares
-    # halfモードでは Quarter だけ作る（Current/Prior は作らない）
-    if mode == "half":
-        suffixes = ["Quarter"]
-    else:
-        suffixes = ["Current", "Prior1", "Prior2", "Prior3", "Prior4", "Quarter"]
-
+    # ===== TotalNumber =====
+    suffixes = ["Quarter"] if mode == "half" else ["Current", "Prior1", "Prior2", "Prior3", "Prior4", "Quarter"]
     for suffix in suffixes:
         issued = out.get(f"IssuedShares{suffix}")
         treasury = out.get(f"TreasuryShares{suffix}")
-
         if isinstance(issued, int) and isinstance(treasury, int):
             key = f"TotalNumber{suffix}"
             out[key] = issued - treasury
@@ -899,39 +910,7 @@ def parse_xbrl_data(xbrl_file, mode="full"):
                 "status": "OK",
             }
 
-    # ========= 7) 証券コード等 =========
-    security_code = None
-    sc_el = soup.find("jpdei_cor:SecurityCodeDEI")
-    if sc_el:
-        sc = sc_el.get_text(strip=True)
-        if sc.isdigit() and len(sc) >= 2:
-            security_code = sc[:-1]
-            out["SecurityCodeDEI"] = security_code
-
-    # ========= 会社名（DEI） =========
-    name_tags = [
-        "jpdei_cor:FilerNameInJapaneseDEI",     # 通常これ
-        "jpdei_cor:FilerNameDEI",               # 会社によってはこれ
-    ]
-
-    for tag in name_tags:
-        name_el = soup.find(tag)
-        if name_el:
-            out["CompanyNameCoverPage"] = name_el.get_text(strip=True)
-            break
-
-    # FY end date（年/月分解用に保持）
-    fy_el = soup.find("jpdei_cor:CurrentFiscalYearEndDateDEI")
-    if fy_el:
-        out["CurrentFiscalYearEndDateDEI"] = fy_el.get_text(strip=True)
-
-    # デバッグ（必要なければ消してOK）
-    if DEBUG:
-        logger.debug("=== OUT KEYS ===")
-        for k in sorted(out.keys()):
-            logger.debug(k)
-
-    # 返り値を増やす
+    # 返り値
     return out, security_code, out_meta
 
 def _candidate_names(base_key: str):
