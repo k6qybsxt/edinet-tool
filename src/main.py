@@ -2751,7 +2751,7 @@ def main():
 
     # === XBRLフォルダ設定 ===
     base_dir = str(BASE_DIR / "data" / "input" / "XBRL")
-    template_dir = r"C:\Users\silve\OneDrive\PC\EDINET\決算分析シート"
+    template_dir = str(BASE_DIR / "templates")
 
     logger.info(f"XBRLフォルダ（固定）: {base_dir}")
     if not os.path.isdir(base_dir):
