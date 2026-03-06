@@ -20,6 +20,7 @@ from openpyxl.cell.cell import Cell
 import shutil
 from time import perf_counter
 from pathlib import Path
+from stock_fetcher import validate_stock_date_pairs, write_stock_data_to_excel
 
 # ===== skipped_files: 構造化（原因コード化）=====
 from dataclasses import dataclass, asdict
