@@ -19,6 +19,7 @@ import json
 from openpyxl.cell.cell import Cell
 import shutil
 from time import perf_counter
+from pathlib import Path
 
 # ===== skipped_files: 構造化（原因コード化）=====
 from dataclasses import dataclass, asdict
@@ -374,7 +375,7 @@ def setup_logger(debug: bool = False, log_dir: str | None = None) -> logging.Log
 
     # --- File handler (証跡) ---
     if log_dir is None:
-        log_dir = os.path.join(os.getcwd(), "logs")
+        log_dir = str(BASE_DIR / "logs")
     os.makedirs(log_dir, exist_ok=True)
 
     log_path = os.path.join(log_dir, "run.log")
@@ -401,9 +402,7 @@ def log(*args, **kwargs):
     if DEBUG:
         logger.debug(" ".join(map(str, args)))
         
-# スクリプトのあるフォルダに作業ディレクトリを変更
-script_dir = os.path.dirname(os.path.abspath(__file__))  # スクリプトのあるフォルダを取得
-os.chdir(script_dir)  # 作業ディレクトリをスクリプトのフォルダに変更
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # フォルダを選択する関数
 def choose_directory():
@@ -2111,8 +2110,8 @@ def choose_file_count():
             print("数字を入力してください。")
 
 def load_config(file_path):
-            with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 # 各ループで処理するファイルパスをリスト化
 def build_loops(base_dir, template_dir, max_n=50):
@@ -2683,7 +2682,7 @@ def process_one_loop(loop, date_pairs, skipped_files):
     }
 
     # JSONLログへ保存
-    jsonl_path = os.path.join(os.getcwd(), "logs", "loop_summary.jsonl")
+    jsonl_path = str(BASE_DIR / "logs" / "loop_summary.jsonl")
     os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
 
     with open(jsonl_path, "a", encoding="utf-8") as f:
@@ -2748,10 +2747,10 @@ def process_one_loop(loop, date_pairs, skipped_files):
 
 def main():
     # 作業ディレクトリを表示
-    logger.info(f"作業ディレクトリ: {os.getcwd()}")
+    logger.info(f"プロジェクトルート: {BASE_DIR}")
 
     # === XBRLフォルダ設定 ===
-    base_dir = r"C:\Users\silve\OneDrive\PC\開発\test\Python\XBRL"
+    base_dir = str(BASE_DIR / "data" / "input" / "XBRL")
     template_dir = r"C:\Users\silve\OneDrive\PC\EDINET\決算分析シート"
 
     logger.info(f"XBRLフォルダ（固定）: {base_dir}")
@@ -2770,7 +2769,7 @@ def main():
 
     # === 決算期を最初に1回だけ選択 ===
     try:
-        config = load_config("決算期_KANPE.json")
+        config = load_config(BASE_DIR / "config" / "決算期_KANPE.json")
         chosen_period = input("決算期を選択してください（例 25-1）: ")
 
         if chosen_period not in config:

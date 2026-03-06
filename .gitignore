@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+
+XBRL/
+data/input/XBRL/
+
+logs/
+*.log
+*.jsonl
+
+data/output/
+*.xlsx
+*.xlsm
