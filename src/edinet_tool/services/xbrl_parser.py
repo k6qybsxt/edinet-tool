@@ -334,8 +334,21 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
 
     # ===== 1-pass iterparse =====
     for event, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
-
         local = el.tag.split("}")[-1]
+
+        # context の子要素は parent(context) を読むまで clear しない
+        if local in {
+            "startDate",
+            "endDate",
+            "instant",
+            "explicitMember",
+            "entity",
+            "identifier",
+            "period",
+            "scenario",
+            "segment",
+        }:
+            continue
 
         if len(seen_local_sample) < 10 and local not in seen_locals:
             seen_locals.add(local)
@@ -543,8 +556,11 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
                                 best_update(inst_best, (metric, end_date), cand)
 
                                 inst_ends_by_metric[metric].add(end_date)
-
         el.clear()
+
+
+    sample_ctx = list(contexts.items())[:5]
+    logger.warning("[context sample] mode=%s %s", mode, sample_ctx)
 
     logger.warning(
         "[ctxref meter] mode=%s missing=%d notfound=%d found=%d samples=%s",
@@ -668,20 +684,45 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
                 "status": "MISSING",
             }
 
-        # 12ヶ月 Current/Prior（fullのみ）
-        if mode != "half":
-            ends_12 = sorted({e for e in dur_ends_by_metric_months.get((metric, 12), set()) if parse_ymd(e)}, reverse=True)
+        # 12ヶ月 Current/Prior（full） / Prior1（half）
+        ends_12 = sorted(
+            {e for e in dur_ends_by_metric_months.get((metric, 12), set()) if parse_ymd(e)},
+            reverse=True
+        )
+
+        if mode == "half":
+            # 半期ファイルでは「直近の12ヶ月実績」を Prior1 として採用
+            if ends_12:
+                end_date = ends_12[0]
+                best12 = dur_best.get((metric, end_date, 12))
+                if best12:
+                    k2 = f"{metric}Prior1"
+                    out[k2] = trim_value(best12["value"], meta["unit"])
+                    out_meta[k2] = {
+                        "period_start": best12.get("start"),
+                        "period_end": best12.get("end"),
+                        "period_kind": "duration",
+                        "unit": meta["unit"],
+                        "consolidation": "C" if best12.get("dim") == "Consolidated" else "N",
+                        "tag_used": best12.get("tag_used"),
+                        "tag_rank": (best12.get("tag_priority") or 0) + 1,
+                        "status": "OK",
+                    }
+        else:
             for end_date in ends_12:
                 if base_year is None:
-                    break
+                    continue
+
                 dt = parse_ymd(end_date)
                 if not dt:
                     continue
+
                 diff = base_year - dt.year
                 if diff < 0 or diff > 4:
                     continue
 
                 suffix = "Current" if diff == 0 else f"Prior{diff}"
+
                 best12 = dur_best.get((metric, end_date, 12))
                 if best12:
                     k2 = f"{metric}{suffix}"
@@ -742,19 +783,52 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
                     "status": "OK",
                 }
 
-        # Current/Prior（fullのみ）
-        if mode != "half":
+        # Current/Prior（full） / Prior1（half）
+        if mode == "half":
+            # 半期ファイルでは、四半期末(Quarter)とは別に、
+            # 直近の期末instantを Prior1 として採用する
+            prior1_candidates = []
+
+            target_q_end = parse_ymd(period_end) if period_end else None
             for end_date in inst_ends:
-                if base_year is None:
-                    break
                 dt = parse_ymd(end_date)
                 if not dt:
                     continue
+                if target_q_end and dt >= target_q_end:
+                    continue
+                prior1_candidates.append(end_date)
+
+            if prior1_candidates:
+                end_date = sorted(prior1_candidates, reverse=True)[0]
+                best_i = inst_best.get((metric, end_date))
+                if best_i:
+                    key = f"{metric}Prior1"
+                    out[key] = trim_value(best_i["value"], meta["unit"])
+                    out_meta[key] = {
+                        "period_start": None,
+                        "period_end": best_i.get("end"),
+                        "period_kind": "instant",
+                        "unit": meta["unit"],
+                        "consolidation": "C" if best_i.get("dim") == "Consolidated" else "N",
+                        "tag_used": best_i.get("tag_used"),
+                        "tag_rank": (best_i.get("tag_priority") or 0) + 1,
+                        "status": "OK",
+                    }
+        else:
+            for end_date in inst_ends:
+                if base_year is None:
+                    continue
+
+                dt = parse_ymd(end_date)
+                if not dt:
+                    continue
+
                 diff = base_year - dt.year
                 if diff < 0 or diff > 4:
                     continue
 
                 suffix = "Current" if diff == 0 else f"Prior{diff}"
+
                 best_i = inst_best.get((metric, end_date))
                 if best_i:
                     key = f"{metric}{suffix}"
@@ -771,7 +845,7 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
                     }
 
     # ===== TotalNumber =====
-    suffixes = ["Quarter"] if mode == "half" else ["Current", "Prior1", "Prior2", "Prior3", "Prior4", "Quarter"]
+    suffixes = ["Quarter", "Prior1"] if mode == "half" else ["Current", "Prior1", "Prior2", "Prior3", "Prior4", "Quarter"]
     for suffix in suffixes:
         issued = out.get(f"IssuedShares{suffix}")
         treasury = out.get(f"TreasuryShares{suffix}")

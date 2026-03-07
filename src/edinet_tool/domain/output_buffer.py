@@ -8,14 +8,19 @@ class OutputBuffer:
         if value is None or value == "":
             return
 
-        prio = {"file1_half": 3, "file2_annual": 2, "file3_annual": 1}
+        prio = {
+            "half_final": 3,
+            "file1_half": 3,
+            "file2_annual": 2,
+            "file3_annual": 1,
+        }
         new_p = prio.get(src_label, 0)
 
         if key in self._data:
             old_src = self._src.get(key, "?")
             old_p = prio.get(old_src, 0)
 
-            if old_src == "file1_half" and src_label in ("file2_annual", "file3_annual"):
+            if old_src in ("half_final", "file1_half") and src_label in ("file2_annual", "file3_annual"):
                 self._collisions.append((key, old_src, src_label))
                 return
 

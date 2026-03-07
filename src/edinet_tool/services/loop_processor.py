@@ -21,8 +21,6 @@ import os
 from datetime import datetime
 from time import perf_counter
 
-logger = None
-
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
 def process_one_loop(loop, date_pairs, skipped_files, logger):
     
@@ -155,7 +153,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
     security_code=security_code,
     run_id=run_id,
     logger=logger,
-    )
+)
 
     # === ANCHOR: BEFORE_RAW_WRITE ===
     write_rows_to_raw_sheet(excel_file_path, raw_rows, RAW_COLS, sheet_name="raw_edinet")

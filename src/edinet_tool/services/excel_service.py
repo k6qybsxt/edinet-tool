@@ -56,85 +56,48 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
 
 def find_available_excel_file(base_path, file_name, logger, max_copies=30):
     """
-    1) コピー系を探し、あれば更新日時が最新を返す
-    2) コピーが無ければオリジナルを探す
-    3) オリジナルが見つかったら新しいコピーを作って返す
-    4) それも無ければワイルドカードで最後の救済
+    必ず“オリジナルテンプレ”から新しい作業用コピーを作って返す
     """
     exts = ["xlsx", "xlsm"]
 
-    def newest(paths):
-        paths = [p for p in paths if os.path.exists(p)]
-        if not paths:
-            return None
-        paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-        return paths[0]
+    def first_existing(paths):
+        for p in paths:
+            if os.path.exists(p):
+                return p
+        return None
 
     def make_next_copy(original_path):
         root, ext = os.path.splitext(original_path)
-        base = root
-
-        candidate0 = f"{base} - コピー{ext}"
+        candidate0 = f"{root} - コピー{ext}"
         if not os.path.exists(candidate0):
             shutil.copy2(original_path, candidate0)
             return candidate0
 
         for i in range(2, max_copies + 2):
-            cand = f"{base} - コピー ({i}){ext}"
+            cand = f"{root} - コピー ({i}){ext}"
             if not os.path.exists(cand):
                 shutil.copy2(original_path, cand)
                 return cand
 
         raise RuntimeError("コピー上限に達しました（max_copies を増やしてください）")
 
-    variants = {file_name}
-    variants.add(file_name.replace("決算分析シート-", "決算分析シート_"))
-    variants.add(file_name.replace("決算分析シート_", "決算分析シート-"))
+    # ここでは“オリジナル名”だけを候補にする
+    candidates = []
+    for ext in exts:
+        candidates.append(os.path.join(base_path, f"{file_name}.{ext}"))
 
-    copy_hits = []
-    for v in variants:
-        for ext in exts:
-            copy_hits.append(os.path.join(base_path, f"{v} - コピー.{ext}"))
-            for i in range(2, max_copies + 2):
-                copy_hits.append(os.path.join(base_path, f"{v} - コピー ({i}).{ext}"))
+    orig = first_existing(candidates)
+    if not orig:
+        logger.warning(f"{file_name} のオリジナルテンプレが見つかりませんでした。")
+        return None
 
-    hit = newest(copy_hits)
-    if hit:
-        return hit
-
-    originals = []
-    for v in variants:
-        for ext in exts:
-            originals.append(os.path.join(base_path, f"{v}.{ext}"))
-
-    orig = newest(originals)
-    if orig:
-        try:
-            new_copy = make_next_copy(orig)
-            logger.info(f"テンプレから作業用コピーを作成しました: {new_copy}")
-            return new_copy
-        except Exception:
-            logger.exception("作業用コピー作成に失敗しました")
-            raise
-
-    patterns = []
-    for v in variants:
-        patterns += [
-            os.path.join(base_path, f"{v}*コピー*.xlsx"),
-            os.path.join(base_path, f"{v}*コピー*.xlsm"),
-        ]
-
-    hits = []
-    for pat in patterns:
-        hits.extend(glob.glob(pat))
-
-    hit2 = newest(hits)
-    if hit2:
-        return hit2
-
-    logger.warning(f"{file_name} のいずれのバージョンも見つかりませんでした。")
-    return None
-
+    try:
+        new_copy = make_next_copy(orig)
+        logger.info(f"テンプレから作業用コピーを作成しました: {new_copy}")
+        return new_copy
+    except Exception:
+        logger.exception("作業用コピー作成に失敗しました")
+        raise
 
 _SUFFIXES = [
     "YTD",
@@ -210,7 +173,7 @@ def write_data_to_excel_namedranges(
     data: dict,
     *,
     transform_keys: bool = True,
-    skip_if_formula: bool = True,
+    skip_if_formula: bool = False,
     skip_values=("データなし", "", None),
     dry_run: bool = False,
 ):
