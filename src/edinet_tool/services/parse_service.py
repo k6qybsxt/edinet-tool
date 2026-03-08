@@ -18,27 +18,41 @@ from edinet_tool.domain.year_shift import (
 def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, logger, perf_counter):
     x1 = None
     base_year = None
-    use_half = bool(xbrl_file_paths.get("file1") and xbrl_file_paths["file1"])
 
-    if use_half:
+    path1 = None
+    if xbrl_file_paths.get("file1") and xbrl_file_paths["file1"]:
+        path1 = xbrl_file_paths["file1"][0]
+
+    is_half_doc = bool(path1 and os.path.basename(path1).startswith(f"{loop.get('slot')}-2"))
+
+    if path1:
         try:
             t = perf_counter()
 
-            path1 = xbrl_file_paths["file1"][0]
-            x1, sc1, meta1 = parse_xbrl_file(path1, mode="half", logger=logger)
+            if is_half_doc:
+                x1, sc1, meta1 = parse_xbrl_file(path1, mode="half", logger=logger)
+                doc_type = "half"
+                phase_name = "file1_parse"
+            else:
+                x1, sc1, meta1 = parse_xbrl_file(path1, mode="full", logger=logger)
+                doc_type = "annual"
+                phase_name = "file1_parse"
 
             base_year = get_fy_end_year(x1)
 
             parsed_docs.append({
                 "doc_id": os.path.basename(path1),
-                "doc_type": "half",
+                "doc_type": doc_type,
                 "out": x1,
                 "out_meta": meta1,
                 "parsed_code": sc1,
             })
 
-            logger.info(f"[parse bench] mode=half xbrl={os.path.basename(path1)} out={len(x1)} meta={len(meta1)} sec={round(perf_counter()-t,3)}")
-            loop_event["phases"]["file1_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            logger.info(
+                f"[parse bench] mode={'half' if is_half_doc else 'full'} xbrl={os.path.basename(path1)} "
+                f"out={len(x1)} meta={len(meta1)} sec={round(perf_counter()-t,3)}"
+            )
+            loop_event["phases"][phase_name] = {"ok": True, "sec": round(perf_counter() - t, 3)}
 
         except Exception as e:
             loop_event["phases"]["file1_parse"] = {"ok": False, "sec": None}
@@ -50,17 +64,18 @@ def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_
                 phase="file1",
                 loop=loop,
                 excel=excel_file_path,
-                xbrl=(xbrl_file_paths["file1"][0] if xbrl_file_paths.get("file1") else None),
-                message="file1(半期) 解析エラー",
+                xbrl=path1,
+                message="file1 解析エラー",
                 exc=e
             )
             x1 = None
-            use_half = False
+            base_year = None
+
+    use_half = is_half_doc
 
     return x1, base_year, use_half
 
-
-def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, use_half, out_buffer, logger, perf_counter):
+def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, use_half, base_year, out_buffer, logger, perf_counter):
     x2 = None
     meta2 = None
     path2 = None
@@ -84,9 +99,33 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
             logger.info(f"[parse bench] mode=full xbrl={os.path.basename(path2)} out={len(x2)} meta={len(meta2)} sec={round(perf_counter()-t,3)}")
 
             security_code = ensure_security_code(x2, parsed_security_code, x1)
+
+            if base_year is None:
+                base_year = get_fy_end_year(x2)
+
             loop_event["phases"]["file2_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
 
-            out2_write = filter_for_annual(x2, use_half=use_half)
+            if use_half:
+                out2_write = filter_for_annual(x2, use_half=True)
+            else:
+                y2 = get_fy_end_year(x2)
+                if y2 is None or base_year is None:
+                    out2_write = filter_for_annual(x2, use_half=False)
+                else:
+                    year_gap2 = base_year - y2
+                    if year_gap2 >= 1:
+                        x2_shifted = shift_with_keep(x2, year_gap2)
+                        out2_write = filter_for_annual_old(x2_shifted)
+                    else:
+                        out2_write = filter_for_annual(x2, use_half=False)
+
+                # 上期なしの TotalNumber は専用配置
+                for kk in list(out2_write.keys()):
+                    if kk.startswith("TotalNumber"):
+                        del out2_write[kk]
+
+                if x2.get("TotalNumberCurrent") not in (None, ""):
+                    out2_write["TotalNumberPrior2"] = x2["TotalNumberCurrent"]
 
             logger.warning(f"[buffer debug] file2_annual keys={sorted(list(out2_write.keys()))}")
             logger.warning(f"[buffer debug] file2_annual nonempty={sum(1 for v in out2_write.values() if v not in (None, ''))}")
@@ -119,7 +158,7 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
             message="file2(最新有報) が見つからない"
         )
 
-    return x2, meta2, path2, security_code
+    return x2, meta2, path2, security_code, base_year
 
 
 def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, security_code, base_year, out_buffer, logger, perf_counter):

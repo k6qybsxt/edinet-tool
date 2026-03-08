@@ -61,6 +61,8 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
     loop_event["excel"] = os.path.basename(excel_file_path)
 
     xbrl_file_paths = loop["xbrl_file_paths"]
+    logger.warning(f"[loop debug] xbrl_file_paths={xbrl_file_paths}")
+
     security_code = None
     base_year = None
 
@@ -78,10 +80,49 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         perf_counter=perf_counter,
     )
 
+    if (not use_half) and x1 is not None:
+        out1_write = {}
+
+        # 上期なしを明示
+        out1_write["UseHalfModeFlag"] = 0
+
+        # file1 の通常指標は Current / Prior1 だけ使う
+        for k, v in x1.items():
+            if v in (None, ""):
+                continue
+
+            if k.endswith("Quarter"):
+                continue
+            elif k.endswith("Prior2"):
+                continue
+            elif k.endswith("Prior3"):
+                continue
+            elif k.endswith("Prior4"):
+                continue
+            else:
+                out1_write[k] = v
+
+        # TotalNumber は専用配置
+        for kk in list(out1_write.keys()):
+            if kk.startswith("TotalNumber"):
+                del out1_write[kk]
+
+        if x1.get("TotalNumberCurrent") not in (None, ""):
+            out1_write["TotalNumberCurrent"] = x1["TotalNumberCurrent"]
+
+        logger.warning(f"[buffer debug] file1_annual keys={sorted(list(out1_write.keys()))}")
+        logger.warning(f"[buffer debug] file1_annual nonempty={sum(1 for v in out1_write.values() if v not in (None, ''))}")
+        logger.warning(f"[buffer debug] file1 TotalNumberCurrent={out1_write.get('TotalNumberCurrent')}")
+
+        for k, v in out1_write.items():
+            if v in (None, ""):
+                continue
+            out_buffer.put(k, v, "file1_annual")
+
     # -------------------------
     # 1) file2（最新有報）
     # -------------------------
-    x2, meta2, path2, security_code = parse_latest_annual_doc(
+    x2, meta2, path2, security_code, base_year = parse_latest_annual_doc(
         loop=loop,
         xbrl_file_paths=xbrl_file_paths,
         excel_file_path=excel_file_path,
@@ -90,6 +131,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         loop_event=loop_event,
         x1=x1,
         use_half=use_half,
+        base_year=base_year,
         out_buffer=out_buffer,
         logger=logger,
         perf_counter=perf_counter,
@@ -140,6 +182,13 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         t = perf_counter()
 
         out_buffer_dict = out_buffer.to_dict()
+
+        if not use_half:
+            out_buffer_dict = {
+                k: v for k, v in out_buffer_dict.items()
+                if not k.endswith("Quarter")
+            }
+
         write_data_to_excel_namedranges(excel_file_path, out_buffer_dict)
 
         loop_event["phases"]["excel_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}

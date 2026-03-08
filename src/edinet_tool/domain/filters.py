@@ -18,6 +18,8 @@ def filter_for_annual(out: dict, use_half: bool = False):
             continue
 
         if not use_half:
+            if k.endswith("Quarter"):
+                continue
             result[k] = v
             continue
 
