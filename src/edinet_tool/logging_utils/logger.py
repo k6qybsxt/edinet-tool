@@ -1,13 +1,20 @@
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-
+from edinet_tool.config.settings import (
+    LOG_LEVEL,
+    LOG_DIR,
+    LOG_MAX_BYTES,
+    LOG_BACKUP_COUNT,
+)
 
 logger = None
-DEBUG = False
 
 
-def setup_logger(debug: bool = False, log_dir: str | None = None) -> logging.Logger:
+def setup_logger(
+    log_level: str | None = None,
+    log_dir: str | None = None,
+) -> logging.Logger:
     logger = logging.getLogger("edinet")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
@@ -15,6 +22,9 @@ def setup_logger(debug: bool = False, log_dir: str | None = None) -> logging.Log
     if logger.handlers:
         for h in list(logger.handlers):
             logger.removeHandler(h)
+
+    effective_level_name = (log_level or LOG_LEVEL or "INFO").upper()
+    effective_console_level = getattr(logging, effective_level_name, logging.INFO)
 
     datefmt = "%Y-%m-%d %H:%M:%S"
     fmt = logging.Formatter(
@@ -24,29 +34,31 @@ def setup_logger(debug: bool = False, log_dir: str | None = None) -> logging.Log
 
     ch = logging.StreamHandler()
     ch.setFormatter(fmt)
-    ch.setLevel(logging.DEBUG if debug else logging.INFO)
+    ch.setLevel(effective_console_level)
     logger.addHandler(ch)
 
-    if log_dir is None:
-        log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
+    effective_log_dir = log_dir or LOG_DIR or "logs"
+    os.makedirs(effective_log_dir, exist_ok=True)
 
-    log_path = os.path.join(log_dir, "run.log")
+    log_path = os.path.join(effective_log_dir, "run.log")
     fh = RotatingFileHandler(
         log_path,
-        maxBytes=2_000_000,
-        backupCount=5,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
         encoding="utf-8"
     )
     fh.setFormatter(fmt)
     fh.setLevel(logging.DEBUG)
     logger.addHandler(fh)
 
-    logger.debug(f"logger initialized: debug={debug}, log_path={log_path}")
+    logger.debug(
+        "logger initialized: console_level=%s, log_path=%s",
+        effective_level_name,
+        log_path,
+    )
     return logger
-
 
 def log(*args, **kwargs):
     global logger
-    if DEBUG and logger is not None:
+    if logger is not None:
         logger.debug(" ".join(map(str, args)))

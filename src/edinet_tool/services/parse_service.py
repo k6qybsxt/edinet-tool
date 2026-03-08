@@ -127,8 +127,8 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
                 if x2.get("TotalNumberCurrent") not in (None, ""):
                     out2_write["TotalNumberPrior2"] = x2["TotalNumberCurrent"]
 
-            logger.warning(f"[buffer debug] file2_annual keys={sorted(list(out2_write.keys()))}")
-            logger.warning(f"[buffer debug] file2_annual nonempty={sum(1 for v in out2_write.values() if v not in (None, ''))}")
+            logger.debug(f"[buffer debug] file2_annual keys={sorted(list(out2_write.keys()))}")
+            logger.debug(f"[buffer debug] file2_annual nonempty={sum(1 for v in out2_write.values() if v not in (None, ''))}")
 
             for k, v in out2_write.items():
                 out_buffer.put(k, v, "file2_annual")
@@ -214,9 +214,16 @@ def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, sk
 
                     out3_write = filter_for_annual_old(x3_shifted)
 
-                    logger.warning(f"[buffer debug] file3_annual keys={sorted(list(out3_write.keys()))}")
+                    logger.debug(f"[buffer debug] file3_annual keys={sorted(list(out3_write.keys()))}")
+
+                    skipped_overlap = 0
                     for k, v in out3_write.items():
+                        if out_buffer.has(k):
+                            skipped_overlap += 1
+                            continue
                         out_buffer.put(k, v, "file3_annual")
+
+                    logger.info(f"[buffer optimize] file3 skipped overlaps={skipped_overlap}")
 
         except Exception as e:
             loop_event["phases"]["file3_parse"] = {"ok": False, "sec": None}
@@ -241,11 +248,19 @@ def finalize_half_buffer(loop, xbrl_file_paths, excel_file_path, skipped_files, 
 
             out_half = filter_for_half(x1)
 
-            logger.warning(f"[buffer debug] half_final keys={sorted(list(out_half.keys()))}")
-            logger.warning(f"[buffer debug] half_final nonempty={sum(1 for v in out_half.values() if v not in (None, ''))}")
+            logger.debug(f"[buffer debug] half_final keys={sorted(list(out_half.keys()))}")
+            logger.debug(f"[buffer debug] half_final nonempty={sum(1 for v in out_half.values() if v not in (None, ''))}")
+
+            removed_before_put = 0
+            for k in list(out_half.keys()):
+                if out_buffer.has(k):
+                    out_buffer.pop(k)
+                    removed_before_put += 1
 
             for k, v in out_half.items():
                 out_buffer.put(k, v, "half_final")
+
+            logger.info(f"[buffer optimize] half_final removed_before_put={removed_before_put}")
 
             loop_event["phases"]["half_buffer"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
             logger.info(f"[half finalize bench] sec={round(perf_counter()-t,3)}")

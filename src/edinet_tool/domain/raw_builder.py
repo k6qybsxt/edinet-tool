@@ -39,6 +39,7 @@ def split_metric_timeslot(metric_key: str):
 
 def build_raw_rows_from_out(company_code, doc_id, doc_type, out, out_meta):
     rows = []
+    seen_raw_keys = set()
 
     if not isinstance(out_meta, dict):
         return rows
@@ -48,16 +49,34 @@ def build_raw_rows_from_out(company_code, doc_id, doc_type, out, out_meta):
         metric_base_with_slot, suffix = _split_key(metric_with_suffix)
         metric_base, time_slot = split_metric_timeslot(metric_base_with_slot)
 
+        consolidation = meta.get("consolidation") or ""
+        metric_key = metric_base or ""
+        time_slot2 = time_slot or suffix or ""
+        period_kind = meta.get("period_kind") or ""
+
+        raw_key = (
+            company_code or "",
+            doc_type or "",
+            consolidation,
+            metric_key,
+            time_slot2,
+            period_kind,
+        )
+
+        if raw_key in seen_raw_keys:
+            continue
+        seen_raw_keys.add(raw_key)
+
         row = {
             "company_code": company_code or "",
             "doc_id": doc_id or "",
             "doc_type": doc_type or "",
-            "consolidation": meta.get("consolidation") or "",
-            "metric_key": metric_base or "",
-            "time_slot": time_slot or suffix or "",
+            "consolidation": consolidation,
+            "metric_key": metric_key,
+            "time_slot": time_slot2,
             "period_start": meta.get("period_start"),
             "period_end": meta.get("period_end"),
-            "period_kind": meta.get("period_kind") or "",
+            "period_kind": period_kind,
             "value": out.get(key) if isinstance(out, dict) else None,
             "unit": meta.get("unit") or "",
             "tag_used": meta.get("tag_used") or "",
@@ -68,7 +87,6 @@ def build_raw_rows_from_out(company_code, doc_id, doc_type, out, out_meta):
 
     return rows
 
-
 def append_missing_annual_ytd_rows(raw_rows, company_code, doc_id, out_meta, duration_metric_keys):
     if not isinstance(out_meta, dict):
         return
@@ -76,7 +94,6 @@ def append_missing_annual_ytd_rows(raw_rows, company_code, doc_id, out_meta, dur
     existing = {
         (
             r.get("company_code", ""),
-            r.get("doc_id", ""),
             r.get("doc_type", ""),
             r.get("metric_key", ""),
             r.get("time_slot", ""),
@@ -88,7 +105,6 @@ def append_missing_annual_ytd_rows(raw_rows, company_code, doc_id, out_meta, dur
     for metric_key in duration_metric_keys:
         k = (
             company_code or "",
-            doc_id or "",
             "annual",
             metric_key,
             "YTD",

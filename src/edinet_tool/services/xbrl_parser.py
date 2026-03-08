@@ -496,7 +496,7 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
                     ctxref_notfound += 1
 
             if metric_hit <= 5:
-                logger.warning(
+                logger.debug(
                     "[ctxref sample] local=%s ctxref=%s has_ctx=%s",
                     local,
                     ctxref,
@@ -567,9 +567,9 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
 
 
     sample_ctx = list(contexts.items())[:5]
-    logger.warning("[context sample] mode=%s %s", mode, sample_ctx)
+    logger.debug("[context sample] mode=%s %s", mode, sample_ctx)
 
-    logger.warning(
+    logger.debug(
         "[ctxref meter] mode=%s missing=%d notfound=%d found=%d samples=%s",
         mode, ctxref_missing, ctxref_notfound, ctxref_found, ctxref_samples
     )
@@ -583,7 +583,7 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
         dur_6 = sum(1 for (m, end, months) in dur_best.keys() if months == 6)
         dur_12 = sum(1 for (m, end, months) in dur_best.keys() if months == 12)
 
-        logger.warning(
+        logger.debug(
             "[parse debug] mode=%s contexts=%d dur_best=%d(inst=%d) dur6=%d dur12=%d ns_has_jppfs=%s ns_has_jpcrp=%s",
             mode,
             len(contexts),
@@ -599,9 +599,9 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
         pass
 
 
-    logger.warning("[local sample] mode=%s %s", mode, seen_local_sample)
+    logger.debug("[local sample] mode=%s %s", mode, seen_local_sample)
 
-    logger.warning(
+    logger.debug(
         "[fact meter] mode=%s metric_hit=%d metric_nonempty=%d sample=%s",
         mode,
         metric_hit,
@@ -889,12 +889,12 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
             "status": "OK",
         }
 
-        if display_unit_votes["百万円"] == 0 and display_unit_votes["千円"] == 0:
-            out["DocumentDisplayUnit"] = "百万円"
-        elif display_unit_votes["百万円"] >= display_unit_votes["千円"]:
-            out["DocumentDisplayUnit"] = "百万円"
-        else:
-            out["DocumentDisplayUnit"] = "千円"
+    if display_unit_votes["百万円"] == 0 and display_unit_votes["千円"] == 0:
+        out["DocumentDisplayUnit"] = "百万円"
+    elif display_unit_votes["百万円"] >= display_unit_votes["千円"]:
+        out["DocumentDisplayUnit"] = "百万円"
+    else:
+        out["DocumentDisplayUnit"] = "千円"
 
     return out, security_code, out_meta
 

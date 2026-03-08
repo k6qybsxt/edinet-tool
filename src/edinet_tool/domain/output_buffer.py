@@ -41,6 +41,14 @@ class OutputBuffer:
 
     def winner_of(self, key: str):
         return self._src.get(key, "?")
+    
+    def has(self, key: str) -> bool:
+        return key in self._data
+
+    def pop(self, key: str):
+        if key in self._data:
+            self._data.pop(key, None)
+            self._src.pop(key, None)
 
     def __len__(self):
         return len(self._data)

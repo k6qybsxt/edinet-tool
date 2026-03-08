@@ -61,7 +61,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
     loop_event["excel"] = os.path.basename(excel_file_path)
 
     xbrl_file_paths = loop["xbrl_file_paths"]
-    logger.warning(f"[loop debug] xbrl_file_paths={xbrl_file_paths}")
+    logger.debug(f"[loop debug] xbrl_file_paths={xbrl_file_paths}")
 
     security_code = None
     base_year = None
@@ -110,9 +110,9 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         if x1.get("TotalNumberCurrent") not in (None, ""):
             out1_write["TotalNumberCurrent"] = x1["TotalNumberCurrent"]
 
-        logger.warning(f"[buffer debug] file1_annual keys={sorted(list(out1_write.keys()))}")
-        logger.warning(f"[buffer debug] file1_annual nonempty={sum(1 for v in out1_write.values() if v not in (None, ''))}")
-        logger.warning(f"[buffer debug] file1 TotalNumberCurrent={out1_write.get('TotalNumberCurrent')}")
+        logger.debug(f"[buffer debug] file1_annual keys={sorted(list(out1_write.keys()))}")
+        logger.debug(f"[buffer debug] file1_annual nonempty={sum(1 for v in out1_write.values() if v not in (None, ''))}")
+        logger.debug(f"[buffer debug] file1 TotalNumberCurrent={out1_write.get('TotalNumberCurrent')}")
 
         for k, v in out1_write.items():
             if v in (None, ""):
@@ -171,13 +171,17 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         perf_counter=perf_counter,
     )
 
+    logger.info(f"[buffer optimize] final_keys={len(out_buffer.to_dict())}")
+
     # === ANCHOR: BEFORE_EXCEL_WRITE ===
     collisions = out_buffer.collisions()
     if collisions:
         logger.warning("[excel buffer] collisions=%d", len(collisions))
+        logger.debug("[excel buffer] collision details start")
         for k, old_src, new_src in collisions[:50]:
             winner = out_buffer.winner_of(k)
-            logger.warning(" overwrite: %s  %s -> %s (winner=%s)", k, old_src, new_src, winner)
+            logger.debug(" overwrite: %s  %s -> %s (winner=%s)", k, old_src, new_src, winner)
+
     if out_buffer:
         t = perf_counter()
 

@@ -3,13 +3,12 @@ import os
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
-from edinet_tool.config.settings import BASE_DIR, load_config
+from edinet_tool.config.settings import BASE_DIR, load_config, LOG_LEVEL
 from edinet_tool.services.stock_service import validate_stock_date_pairs
 from edinet_tool.domain.skip import log_skip_summary
 from edinet_tool.services.loop_processor import process_one_loop
 from edinet_tool.services.loop_builder import build_loops
 from edinet_tool.logging_utils.logger import setup_logger
-import edinet_tool.logging_utils.logger as logger_module
 from edinet_tool.cli.prompts import choose_file_count
 
 logger = None
@@ -66,10 +65,10 @@ def main():
     log_skip_summary(logger, skipped_files)
 
 if __name__ == "__main__":
-    logger = setup_logger(debug=logger_module.DEBUG)
-    logger_module.logger = logger
+    logger = setup_logger(log_level=LOG_LEVEL)
     try:
         logger.info("===== プログラム開始 =====")
+        logger.info(f"[log config] level={LOG_LEVEL}")
         main()
         logger.info("===== 正常終了 =====")
     except SystemExit:
