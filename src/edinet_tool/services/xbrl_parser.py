@@ -173,9 +173,6 @@ METRICS = {
             "jpcrp_cor:TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
             "jpcrp_cor:TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",
             "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
-
-            # ★議決権表など“表系”は最後（会社によっては出るが優先しない）
-            "jpcrp_cor:NumberOfSharesIssuedSharesVotingRights",
         ],
         "kind": "instant_num",
         "unit": "ones",
@@ -844,24 +841,43 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
                         "status": "OK",
                     }
 
-    # ===== TotalNumber =====
-    suffixes = ["Quarter", "Prior1"] if mode == "half" else ["Current", "Prior1", "Prior2", "Prior3", "Prior4", "Quarter"]
+    # === TotalNumber 計算 ===
+    suffixes = [
+        "Current",
+        "Prior1",
+        "Prior2",
+        "Prior3",
+        "Prior4",
+        "Quarter"
+    ]
+
     for suffix in suffixes:
+
         issued = out.get(f"IssuedShares{suffix}")
         treasury = out.get(f"TreasuryShares{suffix}")
-        if isinstance(issued, int) and isinstance(treasury, int):
-            key = f"TotalNumber{suffix}"
-            out[key] = issued - treasury
-            out_meta[key] = {
-                "period_start": None,
-                "period_end": (out_meta.get(f"IssuedShares{suffix}", {}) or {}).get("period_end"),
-                "period_kind": "instant",
-                "unit": "ones",
-                "consolidation": (out_meta.get(f"IssuedShares{suffix}", {}) or {}).get("consolidation"),
-                "tag_used": "CALC(IssuedShares-TreasuryShares)",
-                "tag_rank": 0,
-                "status": "OK",
-            }
+
+        if issued is None or treasury is None:
+            continue
+
+        key = f"TotalNumber{suffix}"
+
+        try:
+            value = int(issued) - int(treasury)
+        except Exception:
+            continue
+
+        out[key] = value
+
+        out_meta[key] = {
+            "period_start": None,
+            "period_end": (out_meta.get(f"IssuedShares{suffix}", {}) or {}).get("period_end"),
+            "period_kind": "instant",
+            "unit": "shares",
+            "consolidation": (out_meta.get(f"IssuedShares{suffix}", {}) or {}).get("consolidation"),
+            "tag_used": "CALC(IssuedShares-TreasuryShares)",
+            "tag_rank": 0,
+            "status": "OK",
+        }
 
     return out, security_code, out_meta
 

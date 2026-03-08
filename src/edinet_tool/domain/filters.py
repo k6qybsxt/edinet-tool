@@ -21,7 +21,21 @@ def filter_for_annual(out: dict, use_half: bool = False):
             result[k] = v
             continue
 
-        # 半期ありのときは、最新有報(file2)を全体時系列に合わせて1年後ろへずらす
+        # TotalNumber は専用ルール
+        # 半期ありのとき
+        #   Current -> Prior1
+        #   Prior1以降は捨てる
+        if k.startswith("TotalNumber"):
+            if k.endswith("Current"):
+                nk = k[:-len("Current")] + "Prior1"
+                result[nk] = v
+            elif k.endswith("Quarter"):
+                result[k] = v
+            else:
+                continue
+            continue
+
+        # それ以外は従来どおり1年後ろへずらす
         # Current -> Prior1
         # Prior1  -> Prior2
         # Prior2  -> Prior3
