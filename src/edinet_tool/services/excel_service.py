@@ -143,6 +143,70 @@ def transform_keys_for_namedranges(data: dict) -> dict:
         out[nk] = v
     return out
 
+_FINANCIAL_PREFIXES = (
+    "NetSales_",
+    "CostOfSales_",
+    "GrossProfit_",
+    "SellingExpenses_",
+    "OperatingIncome_",
+    "OrdinaryIncome_",
+    "ProfitLoss_",
+    "OperatingCash_",
+    "InvestmentCash_",
+    "FinancingCash_",
+    "TotalAssets_",
+    "NetAssets_",
+    "CashAndCashEquivalents_",
+)
+
+_TOTALNUMBER_KEYS = {
+    "TotalNumber_Current",
+    "TotalNumber_Quarter",
+    "TotalNumber_Prior1",
+    "TotalNumber_Prior2",
+    "TotalNumber_Prior3",
+    "TotalNumber_Prior4",
+}
+
+
+def _to_number(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.replace(",", "").strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
+
+
+def _scale_value_for_excel(name: str, value, display_unit: str):
+    num = _to_number(value)
+    if num is None:
+        return value
+
+    # 発行株数欄は常に千未満四捨五入
+    if name in _TOTALNUMBER_KEYS:
+        return int(round(num / 1000))
+
+    # 財務数値は決算書単位に合わせる
+    if name.startswith(_FINANCIAL_PREFIXES):
+        if display_unit == "千円":
+            return int(round(num / 1000))
+        return int(round(num / 1_000_000))
+
+    return value
+
+
+def _apply_excel_scaling(payload: dict, display_unit: str) -> dict:
+    out = {}
+    for k, v in payload.items():
+        out[k] = _scale_value_for_excel(k, v, display_unit)
+    return out
+
 
 def _iter_namedrange_cells(workbook: openpyxl.Workbook, range_name: str):
     """
@@ -172,6 +236,7 @@ def write_data_to_excel_namedranges(
     excel_file: str,
     data: dict,
     *,
+    display_unit: str = "百万円",
     transform_keys: bool = True,
     skip_if_formula: bool = False,
     skip_values=("データなし", "", None),
@@ -184,6 +249,11 @@ def write_data_to_excel_namedranges(
     result = {"written": [], "skipped": [], "missing": []}
 
     payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
+
+    payload = _apply_excel_scaling(payload, display_unit)
+
+    if "決算入力" in wb.sheetnames:
+        wb["決算入力"]["J2"] = display_unit
 
     for name, value in payload.items():
         if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):

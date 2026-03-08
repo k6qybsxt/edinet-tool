@@ -323,6 +323,7 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
     metric_hit = 0
     metric_hit_nonempty = 0
     metric_hit_sample = []
+    display_unit_votes = {"百万円": 0, "千円": 0}
 
     seen_locals = set()
     seen_local_sample = []
@@ -464,6 +465,15 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
             metric_hit += 1
 
             txt = (el.text or "").strip()
+
+            unit_ref = (el.get("unitRef") or "").strip()
+            decimals = (el.get("decimals") or "").strip()
+
+            if unit_ref == "JPY":
+                if decimals == "-6":
+                    display_unit_votes["百万円"] += 1
+                elif decimals == "-3":
+                    display_unit_votes["千円"] += 1
 
             if txt:
                 metric_hit_nonempty += 1
@@ -878,6 +888,13 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
             "tag_rank": 0,
             "status": "OK",
         }
+
+        if display_unit_votes["百万円"] == 0 and display_unit_votes["千円"] == 0:
+            out["DocumentDisplayUnit"] = "百万円"
+        elif display_unit_votes["百万円"] >= display_unit_votes["千円"]:
+            out["DocumentDisplayUnit"] = "百万円"
+        else:
+            out["DocumentDisplayUnit"] = "千円"
 
     return out, security_code, out_meta
 

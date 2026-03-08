@@ -189,7 +189,19 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
                 if not k.endswith("Quarter")
             }
 
-        write_data_to_excel_namedranges(excel_file_path, out_buffer_dict)
+        display_unit = "百万円"
+        if x1 is not None and x1.get("DocumentDisplayUnit") in ("百万円", "千円"):
+            display_unit = x1["DocumentDisplayUnit"]
+        elif x2 is not None and x2.get("DocumentDisplayUnit") in ("百万円", "千円"):
+            display_unit = x2["DocumentDisplayUnit"]
+
+        logger.info(f"[excel display unit] {display_unit}")
+
+        write_data_to_excel_namedranges(
+            excel_file_path,
+            out_buffer_dict,
+            display_unit=display_unit,
+        )
 
         loop_event["phases"]["excel_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
         logger.info(f"[excel write] ranges={len(out_buffer_dict)}")
