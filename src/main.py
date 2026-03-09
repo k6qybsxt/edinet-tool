@@ -1,10 +1,11 @@
 import certifi
 import os
+import gc
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
 from edinet_tool.config.settings import BASE_DIR, load_config, LOG_LEVEL
-from edinet_tool.services.stock_service import validate_stock_date_pairs
+from edinet_tool.services.stock_service import validate_stock_date_pairs, clear_stock_price_cache
 from edinet_tool.domain.skip import log_skip_summary
 from edinet_tool.services.loop_processor import process_one_loop
 from edinet_tool.services.loop_builder import build_loops
@@ -14,6 +15,10 @@ from edinet_tool.cli.prompts import choose_file_count
 logger = None
 
 def main():
+
+    # 株価キャッシュ初期化
+    clear_stock_price_cache()
+
     # 作業ディレクトリを表示
     logger.info(f"プロジェクトルート: {BASE_DIR}")
 
@@ -63,6 +68,9 @@ def main():
 
     # === スキップ一覧表示（最後）===
     log_skip_summary(logger, skipped_files)
+
+    # ZipFile 後始末を終了前に前倒し
+    gc.collect()
 
 if __name__ == "__main__":
     logger = setup_logger(log_level=LOG_LEVEL)

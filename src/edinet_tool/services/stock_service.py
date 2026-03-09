@@ -6,9 +6,9 @@ import openpyxl
 from io import StringIO
 from datetime import datetime, timedelta
 
-
 # requests session を1回だけ作って使い回す
 _YF_SESSION = None
+_STOCK_PRICE_MAP_CACHE = {}
 
 
 def _get_yf_session():
@@ -31,9 +31,10 @@ def _to_stooq_symbol(stock_code: str) -> str:
     return f"{code}.JP"
 
 
-def get_stock_price_map(stock_code, date_pairs, buffer_days=3):
+def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=3):
     """
     stooq から日足CSVを1回だけ取得し、必要期間の Date->Close 辞書を返す
+    同一実行中は stock_code ごとにキャッシュする
     """
     if not date_pairs:
         return {}
@@ -50,6 +51,15 @@ def get_stock_price_map(stock_code, date_pairs, buffer_days=3):
         if item.get("target_date")
     ) + timedelta(days=1)
 
+    cache_key = (stock_code, start_date.isoformat(), end_date.isoformat())
+    if cache_key in _STOCK_PRICE_MAP_CACHE:
+        if logger:
+            logger.debug(f"[stock cache hit] code={stock_code} range={start_date}..{end_date}")
+        return _STOCK_PRICE_MAP_CACHE[cache_key]
+
+    if logger:
+        logger.debug(f"[stock cache miss] code={stock_code} range={start_date}..{end_date}")
+
     symbol = _to_stooq_symbol(stock_code)
     url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
 
@@ -58,15 +68,18 @@ def get_stock_price_map(stock_code, date_pairs, buffer_days=3):
 
     df = pd.read_csv(StringIO(r.text))
     if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+        _STOCK_PRICE_MAP_CACHE[cache_key] = {}
         return {}
 
     df["Date"] = pd.to_datetime(df["Date"]).dt.date
     df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
     if df.empty:
+        _STOCK_PRICE_MAP_CACHE[cache_key] = {}
         return {}
 
-    return dict(zip(df["Date"], df["Close"]))
-
+    close_map = dict(zip(df["Date"], df["Close"]))
+    _STOCK_PRICE_MAP_CACHE[cache_key] = close_map
+    return close_map
 
 def _find_price_from_map(close_map, target_date, backup_date, buffer_days=3):
     """
@@ -141,7 +154,7 @@ def write_stock_data_to_workbook(workbook, stock_code, date_pairs, logger):
     }
 
     try:
-        close_map = get_stock_price_map(stock_code, date_pairs)
+        close_map = get_stock_price_map(stock_code, date_pairs, logger=logger)
     except Exception:
         logger.exception(f"株価一覧取得で想定外エラー（続行） code={stock_code}")
         result["errors"] += len(date_pairs)
@@ -223,7 +236,7 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
     }
 
     try:
-        close_map = get_stock_price_map(stock_code, date_pairs)
+        close_map = get_stock_price_map(stock_code, date_pairs, logger=logger)
     except Exception:
         logger.exception(f"株価一覧取得で想定外エラー（続行） code={stock_code}")
         result["errors"] += len(date_pairs)
@@ -291,3 +304,6 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
 
     finally:
         workbook.close()
+
+def clear_stock_price_cache():
+    _STOCK_PRICE_MAP_CACHE.clear()

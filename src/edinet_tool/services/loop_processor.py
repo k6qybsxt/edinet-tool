@@ -19,6 +19,7 @@ from edinet_tool.domain.raw_builder import RAW_COLS
 from edinet_tool.domain.output_buffer import OutputBuffer
 
 import os
+import gc
 from datetime import datetime
 from time import perf_counter
 
@@ -210,6 +211,8 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         logger=logger,
     )
 
+    wb = None
+
     wb = openpyxl.load_workbook(
         excel_file_path,
         keep_vba=excel_file_path.lower().endswith(".xlsm")
@@ -252,7 +255,11 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         wb.save(excel_file_path)
 
     finally:
-        wb.close()
+        if wb is not None:
+            wb.close()
+            wb = None
+
+    gc.collect()
 
     write_loop_summary(
         loop_event=loop_event,

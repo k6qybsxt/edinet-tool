@@ -1,7 +1,10 @@
+AI_README.md（更新版）
 1. プロジェクト目的
 
 EDINETのXBRLから決算データを抽出し、
-Excel決算分析テンプレートへ自動入力する。
+Excel決算分析テンプレートへ自動入力するPythonツール。 
+
+AI_README
 
 目的
 
@@ -62,9 +65,7 @@ Prior2
 Prior3
 Prior4
 4. 取得メトリクス
-
 Duration
-
 NetSales
 CostOfSales
 GrossProfit
@@ -75,9 +76,7 @@ ProfitLoss
 OperatingCash
 InvestmentCash
 FinancingCash
-
 Instant
-
 TotalAssets
 NetAssets
 CashAndCashEquivalents
@@ -109,13 +108,35 @@ Excel書き込みは
 
 excel_service.py
 
-で行う。
+で実行。
 
-7. 数値単位変換
+7. Excelテンプレート
 
-XBRL unitRefを解析し変換。
+テンプレート形式
 
-XBRL unit	Excel
+.xlsm
+
+理由
+
+VBAマクロ使用
+
+更新ボタンによる列更新
+
+マクロ例
+
+Sub 更新()
+
+Pythonは
+
+値のみ書き込み
+
+を行う。
+
+8. 数値単位変換
+
+XBRL unitRefを解析し変換
+
+XBRL	Excel
 JPY	百万円
 shares	千株
 
@@ -124,9 +145,9 @@ shares	千株
 331129000000 → 331129
 63664400 → 63664
 
-四捨五入処理。
+四捨五入。
 
-8. rawデータ
+9. rawデータ
 
 rawデータは
 
@@ -134,7 +155,7 @@ sheet = raw_edinet
 
 へ出力。
 
-raw目的
+用途
 
 XBRL解析検証
 
@@ -142,7 +163,7 @@ XBRL解析検証
 
 データ監査
 
-9. プログラム構造
+10. プログラム構造
 src/edinet_tool/
 
 parser/
@@ -153,6 +174,7 @@ services/
     loop_processor.py
     excel_service.py
     raw_service.py
+    stock_service.py
 
 domain/
     raw_builder.py
@@ -164,7 +186,7 @@ config/
 
 logging/
     logger.py
-10. 処理フロー
+11. 処理フロー
 XBRL
  ↓
 xbrl_parser
@@ -186,13 +208,52 @@ raw_builder
 raw_service
  ↓
 dedupe
-11. 重複処理
+12. 株価取得
+
+株価取得は
+
+stock_service.py
+
+で実行。
+
+取得方法
+
+yfinance
+
+取得データ
+
+Prior4
+Prior3
+Prior2
+Prior1
+Q1
+Q2
+Q3
+Q4
+
+高速化設計
+
+株価キャッシュ方式
+
+一度取得したデータは
+
+cache dict
+
+に保存。
+
+同一銘柄の複数日取得を
+
+1回のAPI取得
+
+にまとめる。
+
+13. 重複処理
 
 rawデータは
 
 raw_key
 
-で重複判定。
+で重複判定
 
 キー
 
@@ -206,7 +267,7 @@ period_kind
 重複処理
 
 dedupe_raw_rows_keep_best()
-12. ログ
+14. ログ
 
 主要ログ
 
@@ -220,58 +281,89 @@ dedupe_raw_rows_keep_best()
 [parse debug]
 [buffer debug]
 
-DEBUGレベルのみ表示。
+DEBUGレベルのみ表示
 
-13. パフォーマンス設計
+15. ZipFile警告
 
-将来目標
+Python3.14 + openpyxl + xlsm環境で
 
-10〜50倍高速化
+ZipFile.__del__ warning
 
-予定機能
+が発生する場合がある。
 
-XBRL解析キャッシュ
-14. 開発ルール
+例
+
+Exception ignored while calling deallocator ZipFile.__del__
+
+現状
+
+出力成功
+
+Excel書き込み成功
+
+のため
+
+致命エラーではない
+
+運用上は
+
+警告は無視可能
+16. 開発ルール
 
 AIが修正する場合
 
 必ず
 
 関数単位で修正
-
 副作用を出さない
-
 ログ形式を維持
-
 NamedRange仕様を壊さない
+17. AIへ相談する方法
 
-15. 相談ログの提示方法
-
-AIへ相談する際は
+必ず提示
 
 問題
 ログ
 関係ファイル
 
-を提示。
-
 例
 
 raw dup still が発生
+
 ログ
 ...
+
 raw_service.py を確認
-16. 今後の設計
+18. 今後の設計
 
 予定
+
 EXCELファイルリネーム
-XBRL読み込み方法の見直し
+XBRL読み込み方法見直し
 IFRS対応
 50社一括解析
 XBRL parse cache
 並列処理
+19. 次の開発タスク
 
+現在の優先
 
+file1〜50探索ログ削減
+
+理由
+
+現在
+
+[1] file1
+[2] file1
+...
+[50] file1
+
+が DEBUGログに大量出力される。
+
+目的
+
+ログ可読性改善
+ログサイズ削減
 目標
-
-決算分析ツール完全自動化
+EDINET決算分析ツール完全自動化
