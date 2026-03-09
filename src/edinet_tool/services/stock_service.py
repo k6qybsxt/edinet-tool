@@ -31,12 +31,24 @@ def _to_stooq_symbol(stock_code: str) -> str:
     return f"{code}.JP"
 
 
-def get_stock_price(stock_code, target_date, backup_date, buffer_days=3):
+def get_stock_price_map(stock_code, date_pairs, buffer_days=3):
     """
-    stooq から日足CSVを取得して、target_date→見つからなければ過去に遡ってCloseを返す
+    stooq から日足CSVを1回だけ取得し、必要期間の Date->Close 辞書を返す
     """
-    start_date = (datetime.strptime(backup_date, "%Y-%m-%d") - timedelta(days=buffer_days)).date()
-    end_date = (datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)).date()
+    if not date_pairs:
+        return {}
+
+    start_date = min(
+        datetime.strptime(item["backup_date"], "%Y-%m-%d").date()
+        for item in date_pairs
+        if item.get("backup_date")
+    ) - timedelta(days=buffer_days)
+
+    end_date = max(
+        datetime.strptime(item["target_date"], "%Y-%m-%d").date()
+        for item in date_pairs
+        if item.get("target_date")
+    ) + timedelta(days=1)
 
     symbol = _to_stooq_symbol(stock_code)
     url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
@@ -46,17 +58,25 @@ def get_stock_price(stock_code, target_date, backup_date, buffer_days=3):
 
     df = pd.read_csv(StringIO(r.text))
     if df.empty or "Date" not in df.columns or "Close" not in df.columns:
-        return None
+        return {}
 
     df["Date"] = pd.to_datetime(df["Date"]).dt.date
     df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
     if df.empty:
+        return {}
+
+    return dict(zip(df["Date"], df["Close"]))
+
+
+def _find_price_from_map(close_map, target_date, backup_date, buffer_days=3):
+    """
+    target_date から backup_date-buffer_days まで遡って価格を探す
+    """
+    if not close_map:
         return None
 
     check = datetime.strptime(target_date, "%Y-%m-%d").date()
-    start = start_date
-
-    close_map = dict(zip(df["Date"], df["Close"]))
+    start = datetime.strptime(backup_date, "%Y-%m-%d").date() - timedelta(days=buffer_days)
 
     while check >= start:
         if check in close_map and pd.notna(close_map[check]):
@@ -64,7 +84,6 @@ def get_stock_price(stock_code, target_date, backup_date, buffer_days=3):
         check -= timedelta(days=1)
 
     return None
-
 
 def validate_stock_date_pairs(date_pairs):
     """
@@ -121,6 +140,13 @@ def write_stock_data_to_workbook(workbook, stock_code, date_pairs, logger):
         "bad_input": 0,
     }
 
+    try:
+        close_map = get_stock_price_map(stock_code, date_pairs)
+    except Exception:
+        logger.exception(f"株価一覧取得で想定外エラー（続行） code={stock_code}")
+        result["errors"] += len(date_pairs)
+        return result
+
     for item in date_pairs:
         name = item.get("name")
         target_date = item.get("target_date")
@@ -132,10 +158,10 @@ def write_stock_data_to_workbook(workbook, stock_code, date_pairs, logger):
             continue
 
         try:
-            price = get_stock_price(stock_code, target_date, backup_date)
+            price = _find_price_from_map(close_map, target_date, backup_date)
         except Exception:
             logger.exception(
-                f"株価取得で想定外エラー（続行） "
+                f"株価探索で想定外エラー（続行） "
                 f"code={stock_code} target={target_date} backup={backup_date}"
             )
             result["errors"] += 1
@@ -149,6 +175,7 @@ def write_stock_data_to_workbook(workbook, stock_code, date_pairs, logger):
         v = float(price)
 
         wrote = _set_value_to_namedrange(workbook, name, v)
+
         if not wrote:
             logger.warning(f"NamedRangeが見つからず書けませんでした: {name} ({target_date})")
             result["missing_name"] += 1
@@ -196,6 +223,14 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
     }
 
     try:
+        close_map = get_stock_price_map(stock_code, date_pairs)
+    except Exception:
+        logger.exception(f"株価一覧取得で想定外エラー（続行） code={stock_code}")
+        result["errors"] += len(date_pairs)
+        workbook.save(excel_file)
+        return result
+
+    try:
         for item in date_pairs:
             name = item.get("name")
             target_date = item.get("target_date")
@@ -207,10 +242,10 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
                 continue
 
             try:
-                price = get_stock_price(stock_code, target_date, backup_date)
+                price = _find_price_from_map(close_map, target_date, backup_date)
             except Exception:
                 logger.exception(
-                    f"株価取得で想定外エラー（続行） "
+                    f"株価探索で想定外エラー（続行） "
                     f"code={stock_code} target={target_date} backup={backup_date}"
                 )
                 result["errors"] += 1
