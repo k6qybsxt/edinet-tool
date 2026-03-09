@@ -5,7 +5,7 @@ from edinet_tool.services.excel_service import find_available_excel_file
 
 
 def prepare_workbook(loop, run_id, logger):
-    excel_base_name = os.path.basename(loop["excel_file_path"]).replace(".xlsx", "")
+    excel_base_name = os.path.basename(loop["excel_file_path"]).replace(".xlsm", "")
     excel_directory = os.path.dirname(loop["excel_file_path"])
 
     selected_file = find_available_excel_file(excel_directory, excel_base_name, logger)

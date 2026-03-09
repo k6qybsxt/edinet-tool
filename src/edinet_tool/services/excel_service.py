@@ -21,7 +21,7 @@ def safe_filename(s: str) -> str:
 
 def rename_excel_file(original_path, security_code, company_name, period_end_date, logger):
     """
-    original_path を「<code>_<name>_<date>.xlsx」にリネームし、パスを返す。
+    original_path を「<code>_<name>_<date>.xlsm」にリネームし、パスを返す。
     同名があれば _1, _2... を付ける。
     """
     dir_path = os.path.dirname(original_path)
@@ -34,11 +34,11 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
     if not base_name:
         raise ValueError("リネーム用の情報が不足しています（code/name/date が空です）。")
 
-    new_file_path = os.path.join(dir_path, f"{base_name}.xlsx")
+    new_file_path = os.path.join(dir_path, f"{base_name}.xlsm")
 
     counter = 1
     while os.path.exists(new_file_path):
-        new_file_path = os.path.join(dir_path, f"{base_name}_{counter}.xlsx")
+        new_file_path = os.path.join(dir_path, f"{base_name}_{counter}.xlsm")
         counter += 1
 
     try:
@@ -272,10 +272,82 @@ def write_data_to_excel_namedranges(
             cell.value = value
             result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
 
-    if not dry_run:
-        wb.save(excel_file)
+    try:
+        if not dry_run:
+            wb.save(excel_file)
+        return result
+    finally:
+        wb.close()
+
+def write_data_to_workbook_namedranges(
+    wb,
+    data: dict,
+    *,
+    display_unit: str = "百万円",
+    transform_keys: bool = True,
+    skip_if_formula: bool = False,
+    skip_values=("データなし", "", None),
+):
+    result = {"written": [], "skipped": [], "missing": []}
+
+    payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
+    payload = _apply_excel_scaling(payload, display_unit)
+
+    if "決算入力" in wb.sheetnames:
+        wb["決算入力"]["J2"] = display_unit
+
+    for name, value in payload.items():
+        if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):
+            result["skipped"].append((name, "empty"))
+            continue
+
+        cells = list(_iter_namedrange_cells(wb, name))
+        if not cells:
+            result["missing"].append(name)
+            continue
+
+        for cell in cells:
+            if skip_if_formula and isinstance(cell.value, str) and cell.value.startswith("="):
+                result["skipped"].append((name, f"formula@{cell.coordinate}"))
+                continue
+            cell.value = value
+            result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
 
     return result
+
+
+def write_rows_to_raw_sheet_workbook(wb, rows: list[dict], raw_cols: list[str], *, sheet_name: str = "raw_edinet"):
+    import datetime as _dt
+
+    def _to_excel_date(v):
+        if isinstance(v, _dt.datetime):
+            return v.date()
+        if isinstance(v, _dt.date):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            try:
+                return _dt.datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception:
+                return v
+        return v
+
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"sheet not found: {sheet_name}")
+
+    ws = wb[sheet_name]
+
+    if ws.max_row >= 2:
+        ws.delete_rows(2, ws.max_row - 1)
+
+    r = 2
+    for row in rows:
+        for c, col in enumerate(raw_cols, start=1):
+            v = row.get(col)
+            if col in ("period_start", "period_end"):
+                v = _to_excel_date(v)
+            ws.cell(row=r, column=c).value = v
+        r += 1
 
 
 def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], raw_cols: list[str], *, sheet_name: str = "raw_edinet"):
@@ -318,4 +390,8 @@ def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], raw_cols: list[st
             ws.cell(row=r, column=c).value = v
         r += 1
 
-    wb.save(excel_file)
+    try:
+        wb.save(excel_file)
+    finally:
+        wb.close()
+

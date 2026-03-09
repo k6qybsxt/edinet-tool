@@ -109,13 +109,10 @@ def _set_value_to_namedrange(workbook, range_name: str, value) -> bool:
                     cell.value = value
     return True
 
-
-def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
+def write_stock_data_to_workbook(workbook, stock_code, date_pairs, logger):
     """
-    株価は NamedRange 専用。
+    株価は NamedRange 専用。Workbookを外から受け取る版。
     """
-    workbook = openpyxl.load_workbook(excel_file)
-
     result = {
         "written": 0,
         "miss": 0,
@@ -179,5 +176,83 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
             f"(code={stock_code})"
         )
 
-    workbook.save(excel_file)
     return result
+
+def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
+    """
+    株価は NamedRange 専用。
+    """
+    workbook = openpyxl.load_workbook(
+        excel_file,
+        keep_vba=excel_file.lower().endswith(".xlsm")
+    )
+
+    result = {
+        "written": 0,
+        "miss": 0,
+        "errors": 0,
+        "missing_name": 0,
+        "bad_input": 0,
+    }
+
+    try:
+        for item in date_pairs:
+            name = item.get("name")
+            target_date = item.get("target_date")
+            backup_date = item.get("backup_date")
+
+            if not name or not target_date or not backup_date:
+                logger.warning(f"[WARNING] 株価date_pairsの要素が不完全なのでスキップ: {item}")
+                result["bad_input"] += 1
+                continue
+
+            try:
+                price = get_stock_price(stock_code, target_date, backup_date)
+            except Exception:
+                logger.exception(
+                    f"株価取得で想定外エラー（続行） "
+                    f"code={stock_code} target={target_date} backup={backup_date}"
+                )
+                result["errors"] += 1
+                continue
+
+            if price is None:
+                logger.warning(f"{target_date} の株価が取得できませんでした（続行）: name={name} code={stock_code}")
+                result["miss"] += 1
+                continue
+
+            v = float(price)
+
+            wrote = _set_value_to_namedrange(workbook, name, v)
+            if not wrote:
+                logger.warning(f"NamedRangeが見つからず書けませんでした: {name} ({target_date})")
+                result["missing_name"] += 1
+                continue
+
+            result["written"] += 1
+            logger.debug(f"{target_date} の株価を書き込みました: {name}")
+
+        logger.info(
+            f"[stock summary] "
+            f"written={result['written']} "
+            f"miss={result['miss']} "
+            f"errors={result['errors']} "
+            f"missing_name={result['missing_name']} "
+            f"bad_input={result['bad_input']} "
+            f"(code={stock_code})"
+        )
+
+        if result["errors"] > 0 or result["missing_name"] > 0 or result["bad_input"] > 0:
+            logger.warning(
+                f"[stock warning] issues detected "
+                f"errors={result['errors']} "
+                f"missing_name={result['missing_name']} "
+                f"bad_input={result['bad_input']} "
+                f"(code={stock_code})"
+            )
+
+        workbook.save(excel_file)
+        return result
+
+    finally:
+        workbook.close()

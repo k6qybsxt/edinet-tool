@@ -26,7 +26,7 @@ def build_loops(base_dir, template_dir, max_n=50, logger=None):
             logger.debug(f"[{n}] file2: {file2}")
             logger.debug(f"[{n}] file3: {file3}")
 
-        excel_file_path = os.path.join(template_dir, f"決算分析シート_{n}.xlsx")
+        excel_file_path = os.path.join(template_dir, f"決算分析シート_{n}.xlsm")
 
         loops.append({
             "xbrl_file_paths": {"file1": file1, "file2": file2, "file3": file3},

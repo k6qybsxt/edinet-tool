@@ -1,8 +1,9 @@
 from edinet_tool.services.excel_service import (
-    write_data_to_excel_namedranges,
-    write_rows_to_raw_sheet,
+    write_data_to_workbook_namedranges,
+    write_rows_to_raw_sheet_workbook,
 )
-from edinet_tool.services.stock_write_service import write_stock_if_possible
+from edinet_tool.services.stock_service import write_stock_data_to_workbook
+import openpyxl
 from edinet_tool.services.workbook_service import prepare_workbook
 from edinet_tool.services.parse_service import (
     parse_half_doc,
@@ -183,8 +184,6 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
             logger.debug(" overwrite: %s  %s -> %s (winner=%s)", k, old_src, new_src, winner)
 
     if out_buffer:
-        t = perf_counter()
-
         out_buffer_dict = out_buffer.to_dict()
 
         if not use_half:
@@ -200,29 +199,60 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
             display_unit = x2["DocumentDisplayUnit"]
 
         logger.info(f"[excel display unit] {display_unit}")
-
-        write_data_to_excel_namedranges(
-            excel_file_path,
-            out_buffer_dict,
-            display_unit=display_unit,
-        )
-
-        loop_event["phases"]["excel_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
-        logger.info(f"[excel write] ranges={len(out_buffer_dict)}")
     else:
         out_buffer_dict = {}
-        loop_event["phases"]["excel_write"] = {"ok": True, "sec": 0.0}
+        display_unit = "百万円"
 
     raw_rows = build_raw_rows_all_docs(
-    parsed_docs=parsed_docs,
-    security_code=security_code,
-    run_id=run_id,
-    logger=logger,
-)
+        parsed_docs=parsed_docs,
+        security_code=security_code,
+        run_id=run_id,
+        logger=logger,
+    )
 
-    # === ANCHOR: BEFORE_RAW_WRITE ===
-    write_rows_to_raw_sheet(excel_file_path, raw_rows, RAW_COLS, sheet_name="raw_edinet")
-    logger.info(f"[raw] written rows={len(raw_rows)} sheet=raw_edinet")
+    wb = openpyxl.load_workbook(
+        excel_file_path,
+        keep_vba=excel_file_path.lower().endswith(".xlsm")
+    )
+
+    try:
+        if out_buffer_dict:
+            t = perf_counter()
+
+            write_data_to_workbook_namedranges(
+                wb,
+                out_buffer_dict,
+                display_unit=display_unit,
+            )
+
+            loop_event["phases"]["excel_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            logger.info(f"[excel write] ranges={len(out_buffer_dict)}")
+        else:
+            loop_event["phases"]["excel_write"] = {"ok": True, "sec": 0.0}
+
+        write_rows_to_raw_sheet_workbook(
+            wb,
+            raw_rows,
+            RAW_COLS,
+            sheet_name="raw_edinet",
+        )
+        logger.info(f"[raw] written rows={len(raw_rows)} sheet=raw_edinet")
+
+        stock_code = f"{security_code}.T" if security_code else None
+        logger.debug(f"[stock check] security_code={security_code} stock_code={stock_code}")
+
+        if stock_code:
+            write_stock_data_to_workbook(
+                wb,
+                stock_code,
+                date_pairs,
+                logger,
+            )
+
+        wb.save(excel_file_path)
+
+    finally:
+        wb.close()
 
     write_loop_summary(
         loop_event=loop_event,
@@ -233,14 +263,5 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         loop=loop,
         t0=t0,
         perf_counter=perf_counter,
-        logger=logger,
-    )
-
-    write_stock_if_possible(
-        excel_file_path=excel_file_path,
-        security_code=security_code,
-        date_pairs=date_pairs,
-        skipped_files=skipped_files,
-        loop=loop,
         logger=logger,
     )
