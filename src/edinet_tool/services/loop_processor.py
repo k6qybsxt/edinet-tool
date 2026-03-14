@@ -24,7 +24,7 @@ from datetime import datetime
 from time import perf_counter
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
-def process_one_loop(loop, date_pairs, skipped_files, logger):
+def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
     
     # === ANCHOR: LOOP_START === 
     parsed_docs = []   # ★ここに file1/2/3 の parse結果を溜める（raw書込は最後に1回）
@@ -80,6 +80,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         loop_event=loop_event,
         logger=logger,
         perf_counter=perf_counter,
+        parse_cache=parse_cache,
     )
 
     if (not use_half) and x1 is not None:
@@ -137,6 +138,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         out_buffer=out_buffer,
         logger=logger,
         perf_counter=perf_counter,
+        parse_cache=parse_cache,
     )
 
     # -------------------------
@@ -155,6 +157,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger):
         out_buffer=out_buffer,
         logger=logger,
         perf_counter=perf_counter,
+        parse_cache=parse_cache,
     )
 
     # -------------------------

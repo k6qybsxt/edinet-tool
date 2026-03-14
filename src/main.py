@@ -11,6 +11,7 @@ from edinet_tool.services.loop_processor import process_one_loop
 from edinet_tool.services.loop_builder import build_loops
 from edinet_tool.logging_utils.logger import setup_logger
 from edinet_tool.cli.prompts import choose_file_count
+from edinet_tool.services.parse_cache import XbrlParseCache
 
 logger = None
 
@@ -37,6 +38,8 @@ def main():
     # === スキップ一覧（ローカル）===
     skipped_files = []
 
+    parse_cache = XbrlParseCache(logger=logger)
+
     # === loops生成 ===
     loops = build_loops(base_dir, template_dir, max_n=50, logger=logger)
 
@@ -59,8 +62,15 @@ def main():
 
     # === ★ここが必要：1件ずつ処理する（呼び出し）===
     for i in range(min(file_count, len(loops))):
+        loop = loops[i]
         try:
-            process_one_loop(loops[i], date_pairs, skipped_files, logger)
+            process_one_loop(
+                loop,
+                date_pairs,
+                skipped_files,
+                logger,
+                parse_cache=parse_cache,
+            )
         except SystemExit:
             raise
         except Exception:

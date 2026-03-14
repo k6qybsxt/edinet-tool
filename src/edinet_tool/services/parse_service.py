@@ -15,7 +15,7 @@ from edinet_tool.domain.year_shift import (
 )
 
 
-def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, logger, perf_counter):
+def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, logger, perf_counter, parse_cache=None):
     x1 = None
     base_year = None
 
@@ -30,11 +30,43 @@ def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_
             t = perf_counter()
 
             if is_half_doc:
-                x1, sc1, meta1 = parse_xbrl_file(path1, mode="half", logger=logger)
+                if parse_cache is not None:
+                    _cache_doc = parse_cache.get_or_create(
+                        path1,
+                        parser_func=lambda p: {
+                            "facts": [],
+                            "contexts": {},
+                            "units": {},
+                            "nsmap": {},
+                            "dei_data": {},
+                            "meta": {},
+                            "__legacy_result__": parse_xbrl_file(p, mode="half", logger=logger),
+                        },
+                    )
+                    x1, sc1, meta1 = _cache_doc.local_cache.get("__legacy_result__")
+                else:
+                    x1, sc1, meta1 = parse_xbrl_file(path1, mode="half", logger=logger)
+
                 doc_type = "half"
                 phase_name = "file1_parse"
             else:
-                x1, sc1, meta1 = parse_xbrl_file(path1, mode="full", logger=logger)
+                if parse_cache is not None:
+                    _cache_doc = parse_cache.get_or_create(
+                        path1,
+                        parser_func=lambda p: {
+                            "facts": [],
+                            "contexts": {},
+                            "units": {},
+                            "nsmap": {},
+                            "dei_data": {},
+                            "meta": {},
+                            "__legacy_result__": parse_xbrl_file(p, mode="full", logger=logger),
+                        },
+                    )
+                    x1, sc1, meta1 = _cache_doc.local_cache.get("__legacy_result__")
+                else:
+                    x1, sc1, meta1 = parse_xbrl_file(path1, mode="full", logger=logger)
+
                 doc_type = "annual"
                 phase_name = "file1_parse"
 
@@ -75,7 +107,7 @@ def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_
 
     return x1, base_year, use_half
 
-def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, use_half, base_year, out_buffer, logger, perf_counter):
+def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, use_half, base_year, out_buffer, logger, perf_counter, parse_cache=None):
     x2 = None
     meta2 = None
     path2 = None
@@ -86,7 +118,23 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
             t = perf_counter()
 
             path2 = xbrl_file_paths["file2"][0]
-            x2, parsed_security_code, meta2 = parse_xbrl_file(path2, mode="full", logger=logger)
+
+            if parse_cache is not None:
+                _cache_doc = parse_cache.get_or_create(
+                    path2,
+                    parser_func=lambda p: {
+                        "facts": [],
+                        "contexts": {},
+                        "units": {},
+                        "nsmap": {},
+                        "dei_data": {},
+                        "meta": {},
+                        "__legacy_result__": parse_xbrl_file(p, mode="full", logger=logger),
+                    },
+                )
+                x2, parsed_security_code, meta2 = _cache_doc.local_cache.get("__legacy_result__")
+            else:
+                x2, parsed_security_code, meta2 = parse_xbrl_file(path2, mode="full", logger=logger)
 
             parsed_docs.append({
                 "doc_id": os.path.basename(path2),
@@ -161,13 +209,29 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
     return x2, meta2, path2, security_code, base_year
 
 
-def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, security_code, base_year, out_buffer, logger, perf_counter):
+def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, security_code, base_year, out_buffer, logger, perf_counter, parse_cache=None):
     if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
         try:
             t = perf_counter()
 
             path3 = xbrl_file_paths["file3"][0]
-            x3, sc3, meta3 = parse_xbrl_file(path3, mode="full", logger=logger)
+
+            if parse_cache is not None:
+                _cache_doc = parse_cache.get_or_create(
+                    path3,
+                    parser_func=lambda p: {
+                        "facts": [],
+                        "contexts": {},
+                        "units": {},
+                        "nsmap": {},
+                        "dei_data": {},
+                        "meta": {},
+                        "__legacy_result__": parse_xbrl_file(p, mode="full", logger=logger),
+                    },
+                )
+                x3, sc3, meta3 = _cache_doc.local_cache.get("__legacy_result__")
+            else:
+                x3, sc3, meta3 = parse_xbrl_file(path3, mode="full", logger=logger)
 
             parsed_docs.append({
                 "doc_id": os.path.basename(path3),
