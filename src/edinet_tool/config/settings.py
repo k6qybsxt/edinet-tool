@@ -10,7 +10,7 @@ def load_config(file_path):
         return json.load(f)
     
 # === logging settings ===
-LOG_LEVEL = "DEBUG"          # 普段: "INFO" / 調査時: "DEBUG"
+LOG_LEVEL = "INFO"          # 普段: "INFO" / 調査時: "DEBUG"
 LOG_DIR = "logs"
 LOG_MAX_BYTES = 2_000_000
 LOG_BACKUP_COUNT = 5

@@ -22,6 +22,24 @@ DURATION_METRIC_KEYS = [
     "FinancingCash",
 ]
 
+ALLOWED_RAW_FACT_TAGS = {
+    "NetSales",
+    "CostOfSales",
+    "GrossProfit",
+    "SellingExpenses",
+    "OperatingIncome",
+    "OrdinaryIncome",
+    "ProfitLoss",
+    "OperatingCash",
+    "InvestmentCash",
+    "FinancingCash",
+    "TotalAssets",
+    "NetAssets",
+    "CashAndCashEquivalents",
+    "IssuedShares",
+    "TreasuryShares",
+    "TotalNumber",
+}
 
 def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
     raw_rows = []
@@ -37,7 +55,36 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
     company_code_for_raw = company_code_for_raw or ""
 
     for d in parsed_docs:
-        doc_rows = build_raw_rows_from_out(
+        if d.get("facts"):
+            doc_rows = []
+            for f in d["facts"]:
+                tag = f.get("tag")
+                if tag not in ALLOWED_RAW_FACT_TAGS:
+                    continue
+                if f.get("value") in (None, ""):
+                    continue
+
+                if not f.get("period_kind"):
+                    continue
+                row = {
+                    "company_code": company_code_for_raw,
+                    "doc_id": d["doc_id"],
+                    "doc_type": d["doc_type"],
+                    "consolidation": "Consolidated" if f.get("is_consolidated") else "NonConsolidated",
+                    "metric_key": tag,
+                    "time_slot": "YTD" if f.get("period_kind") == "duration" else "Quarter",
+                    "period_start": f.get("start_date"),
+                    "period_end": f.get("end_date"),
+                    "period_kind": f.get("period_kind"),
+                    "value": f.get("value"),
+                    "unit": f.get("unit_ref"),
+                    "tag_used": tag,
+                    "tag_rank": 0,
+                    "status": "parsed",
+                }
+                doc_rows.append(row)
+        else:
+            doc_rows = build_raw_rows_from_out(
             company_code=company_code_for_raw,
             doc_id=d["doc_id"],
             doc_type=d["doc_type"],

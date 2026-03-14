@@ -201,7 +201,7 @@ METRICS = {
 
 
 # XBRLデータの解析（完成版）
-def parse_xbrl_file(xbrl_file, mode="full", logger=None):
+def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
 
     def _attr_any(el, *names):
         """
@@ -898,6 +898,205 @@ def parse_xbrl_file(xbrl_file, mode="full", logger=None):
 
     return out, security_code, out_meta
 
+def _detect_accounting_standard(nsmap):
+    if "jpigp_cor" in nsmap:
+        return "ifrs"
+    return "jpgaap"
+
+
+def _extract_dei_data_from_out(out):
+    keys = [
+        "CurrentFiscalYearStartDateDEI",
+        "CurrentPeriodEndDateDEI",
+        "TypeOfCurrentPeriodDEI",
+        "CurrentFiscalYearEndDateDEI",
+        "SecurityCodeDEI",
+        "CompanyNameCoverPage",
+        "HalfPeriodEndDateDEI",
+        "DocumentDisplayUnit",
+    ]
+    return {k: out.get(k) for k in keys if k in out}
+
+def _read_nsmap_from_xbrl(xbrl_file):
+    nsmap = {}
+    for _, el in etree.iterparse(xbrl_file, events=("start",), recover=True, huge_tree=True):
+        nsmap = dict(el.nsmap or {})
+        break
+    return nsmap
+
+def _read_contexts_from_xbrl(xbrl_file):
+    contexts = {}
+
+    for _, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
+        local = el.tag.split("}")[-1]
+
+        if local != "context":
+            continue
+
+        ctx_id = (el.get("id") or "").strip()
+        if not ctx_id:
+            el.clear()
+            continue
+
+        start_s = None
+        end_s = None
+        instant_s = None
+        members = []
+
+        for p in el.iter():
+            pl = p.tag.split("}")[-1]
+
+            if pl == "startDate":
+                start_s = (p.text or "").strip() or None
+            elif pl == "endDate":
+                end_s = (p.text or "").strip() or None
+            elif pl == "instant":
+                instant_s = (p.text or "").strip() or None
+            elif pl == "explicitMember":
+                t = (p.text or "").strip()
+                if t:
+                    members.append(t)
+
+        is_noncon = any("NonConsolidatedMember" in t for t in members)
+
+        contexts[ctx_id] = {
+            "period_kind": "instant" if instant_s else "duration",
+            "start_date": start_s,
+            "end_date": end_s,
+            "instant_date": instant_s,
+            "is_consolidated": not is_noncon,
+            "members": members,
+        }
+
+        el.clear()
+
+    return contexts
+
+def _read_units_from_xbrl(xbrl_file):
+    units = {}
+
+    for _, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
+        local = el.tag.split("}")[-1]
+
+        if local != "unit":
+            continue
+
+        unit_id = (el.get("id") or "").strip()
+        if not unit_id:
+            el.clear()
+            continue
+
+        measures = []
+        numerator = []
+        denominator = []
+
+        for p in el.iter():
+            pl = p.tag.split("}")[-1]
+            txt = (p.text or "").strip()
+
+            if not txt:
+                continue
+
+            if pl == "measure":
+                measures.append(txt)
+            elif pl == "unitNumerator":
+                numerator.append(txt)
+            elif pl == "unitDenominator":
+                denominator.append(txt)
+
+        units[unit_id] = {
+            "measures": measures,
+            "numerator": numerator,
+            "denominator": denominator,
+        }
+
+        el.clear()
+
+    return units
+
+def _safe_local(tag):
+    return str(tag).split("}")[-1]
+
+
+def _safe_text(v):
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _safe_num(v):
+    if v is None:
+        return None
+    try:
+        return float(str(v).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _read_facts_from_xbrl(xbrl_file, contexts):
+    facts = []
+
+    for _, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
+        local = _safe_local(el.tag)
+
+        if local in {
+            "context",
+            "unit",
+            "schemaRef",
+            "roleRef",
+            "arcroleRef",
+            "measure",
+            "unitNumerator",
+            "unitDenominator",
+            "divide",
+            "identifier",
+            "period",
+            "scenario",
+            "segment",
+            "startDate",
+            "endDate",
+            "instant",
+            "explicitMember",
+        }:
+            el.clear()
+            continue
+
+        ctxref = _safe_text(el.get("contextRef"))
+        unitref = _safe_text(el.get("unitRef"))
+        decimals = _safe_text(el.get("decimals"))
+        precision = _safe_text(el.get("precision"))
+        text = _safe_text(el.text)
+
+        if not ctxref:
+            el.clear()
+            continue
+
+        ctx = contexts.get(ctxref, {})
+        qname = str(el.tag)
+        value = _safe_num(text)
+
+        facts.append({
+            "tag": local,
+            "qname": qname,
+            "text": text,
+            "value": value,
+            "context_ref": ctxref,
+            "unit_ref": unitref,
+            "decimals": decimals,
+            "precision": precision,
+            "period_kind": ctx.get("period_kind"),
+            "start_date": ctx.get("start_date"),
+            "end_date": ctx.get("end_date"),
+            "instant_date": ctx.get("instant_date"),
+            "is_consolidated": ctx.get("is_consolidated"),
+            "members": ctx.get("members", []),
+        })
+
+        el.clear()
+
+    return facts
+
 def trim_value(v, unit):
     if v is None:
         return None
@@ -910,19 +1109,43 @@ def trim_value(v, unit):
     except Exception:
         return None
 
-# --- 以下、main.py から移す補助関数群 ---
+def parse_xbrl_file_raw(xbrl_file, mode="full", logger=None):
+    nsmap = _read_nsmap_from_xbrl(xbrl_file)
+    contexts = _read_contexts_from_xbrl(xbrl_file)
+    units = _read_units_from_xbrl(xbrl_file)
+    facts = _read_facts_from_xbrl(xbrl_file, contexts)
 
-# def _get_nsmap(...):
-#     ...
+    out, security_code, out_meta = parse_xbrl_file_legacy(
+        xbrl_file,
+        mode=mode,
+        logger=logger,
+    )
 
-# def _pick_contexts(...):
-#     ...
+    dei_data = _extract_dei_data_from_out(out)
+    accounting_standard = _detect_accounting_standard(nsmap)
 
-# def _extract_dei(...):
-#     ...
+    meta = {
+        "path": str(xbrl_file),
+        "basename": os.path.basename(str(xbrl_file)),
+        "mode": mode,
+        "security_code": security_code,
+        "accounting_standard": accounting_standard,
+        "parser_version": "raw-v2",
+        "document_display_unit": out.get("DocumentDisplayUnit"),
+    }
 
-# def _extract_security_code(...):
-#     ...
+    return {
+        "facts": facts,
+        "contexts": contexts,
+        "units": units,
+        "nsmap": nsmap,
+        "dei_data": dei_data,
+        "meta": meta,
+        "out": out,
+        "out_meta": out_meta,
+        "security_code": security_code,
+    }
 
-# def _build_rows(...):
-#     ...
+def parse_xbrl_file(xbrl_file, mode="full", logger=None):
+    out, security_code, out_meta = parse_xbrl_file_legacy(xbrl_file, mode=mode, logger=logger)
+    return out, security_code, out_meta

@@ -2,7 +2,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-
 @dataclass
 class ParsedXbrlDocument:
     path: str
@@ -13,7 +12,11 @@ class ParsedXbrlDocument:
     nsmap: dict = field(default_factory=dict)
     dei_data: dict = field(default_factory=dict)
     meta: dict = field(default_factory=dict)
-    local_cache: dict[str, Any] = field(default_factory=dict)
+    out: dict = field(default_factory=dict)
+    out_meta: dict = field(default_factory=dict)
+    security_code: Any = None
+    accounting_standard: str = "jpgaap"
+    document_display_unit: Any = None
 
 
 def make_xbrl_cache_key(path: str) -> str:
@@ -66,8 +69,12 @@ class XbrlParseCache:
             nsmap=parsed.get("nsmap", {}),
             dei_data=parsed.get("dei_data", {}),
             meta=parsed.get("meta", {}),
+            out=parsed.get("out", {}),
+            out_meta=parsed.get("out_meta", {}),
+            security_code=parsed.get("security_code"),
+            accounting_standard=parsed.get("meta", {}).get("accounting_standard", "jpgaap"),
+            document_display_unit=parsed.get("meta", {}).get("document_display_unit"),
         )
-        doc.local_cache["__legacy_result__"] = parsed.get("__legacy_result__")
 
         self.put(doc)
         

@@ -13,6 +13,7 @@ from edinet_tool.services.parse_service import (
 )
 from edinet_tool.services.summary_service import write_loop_summary
 from edinet_tool.services.raw_service import build_raw_rows_all_docs
+from edinet_tool.services.xbrl_parser import parse_xbrl_file_raw
 
 from edinet_tool.domain.skip import SkipCode, add_skip
 from edinet_tool.domain.raw_builder import RAW_COLS
@@ -197,10 +198,39 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
             }
 
         display_unit = "百万円"
-        if x1 is not None and x1.get("DocumentDisplayUnit") in ("百万円", "千円"):
+
+        if parse_cache is not None and x1 is not None:
+            file1_list = xbrl_file_paths.get("file1") or []
+            if file1_list:
+                _doc1 = parse_cache.get_or_create(
+                    file1_list[0],
+                    parser_func=lambda p: parse_xbrl_file_raw(
+                        p,
+                        mode="half" if use_half else "full",
+                        logger=logger,
+                    ),
+                )
+                if _doc1.document_display_unit in ("百万円", "千円"):
+                    display_unit = _doc1.document_display_unit
+        elif x1 is not None and x1.get("DocumentDisplayUnit") in ("百万円", "千円"):
             display_unit = x1["DocumentDisplayUnit"]
-        elif x2 is not None and x2.get("DocumentDisplayUnit") in ("百万円", "千円"):
-            display_unit = x2["DocumentDisplayUnit"]
+
+        if display_unit == "百万円":
+            if parse_cache is not None and x2 is not None:
+                file2_list = xbrl_file_paths.get("file2") or []
+                if file2_list:
+                    _doc2 = parse_cache.get_or_create(
+                        file2_list[0],
+                        parser_func=lambda p: parse_xbrl_file_raw(
+                            p,
+                            mode="full",
+                            logger=logger,
+                        ),
+                    )
+                    if _doc2.document_display_unit in ("百万円", "千円"):
+                        display_unit = _doc2.document_display_unit
+            elif x2 is not None and x2.get("DocumentDisplayUnit") in ("百万円", "千円"):
+                display_unit = x2["DocumentDisplayUnit"]
 
         logger.info(f"[excel display unit] {display_unit}")
     else:
