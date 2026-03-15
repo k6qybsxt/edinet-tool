@@ -53,6 +53,15 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
                 if not metric_key:
                     continue
 
+                if metric_key == "ProfitLoss" and f.get("members"):
+                    continue
+
+                if metric_key in ("IssuedShares", "TreasuryShares") and f.get("members"):
+                    continue
+
+                if metric_key in ("IssuedShares", "TreasuryShares") and f.get("period_kind") != "instant":
+                    continue
+
                 if f.get("value") in (None, ""):
                     continue
 

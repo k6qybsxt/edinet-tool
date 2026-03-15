@@ -74,6 +74,14 @@ METRICS = {
         "kind": "duration",
         "unit": "millions",
     },
+    "FinancialBusinessCost": {
+        "tags": [
+            "jpigp_cor:CostOfFinancingOperationsIFRS",
+            "jpigp_cor:FinanceCostsIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
         "OperatingIncome": {
         "tags": [
             "jppfs_cor:OperatingIncome",
@@ -919,6 +927,39 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
             "unit": "millions",
             "consolidation": net_meta.get("consolidation") or cost_meta.get("consolidation"),
             "tag_used": "CALC(NetSales-CostOfSales)",
+            "tag_rank": 0,
+            "status": "OK",
+        }
+
+    # === SellingExpenses 計算（金融事業に係る金融費用 + 販売費及び一般管理費） ===
+    selling_exp_suffixes = ["YTD", "Current", "Prior1", "Prior2", "Prior3", "Prior4"]
+
+    for suffix in selling_exp_suffixes:
+        se_key = f"SellingExpenses{suffix}"
+
+        sga_value = out.get(se_key)
+        finance_cost_value = out.get(f"FinancialBusinessCost{suffix}")
+
+        if sga_value in (None, "") or finance_cost_value in (None, ""):
+            continue
+
+        try:
+            selling_exp_value = int(sga_value) + int(finance_cost_value)
+        except Exception:
+            continue
+
+        out[se_key] = selling_exp_value
+
+        sga_meta = out_meta.get(se_key, {}) or {}
+        finance_meta = out_meta.get(f"FinancialBusinessCost{suffix}", {}) or {}
+
+        out_meta[se_key] = {
+            "period_start": sga_meta.get("period_start") or finance_meta.get("period_start"),
+            "period_end": sga_meta.get("period_end") or finance_meta.get("period_end"),
+            "period_kind": sga_meta.get("period_kind") or finance_meta.get("period_kind") or "duration",
+            "unit": "millions",
+            "consolidation": sga_meta.get("consolidation") or finance_meta.get("consolidation"),
+            "tag_used": "CALC(FinancialBusinessCost+SellingExpenses)",
             "tag_rank": 0,
             "status": "OK",
         }
