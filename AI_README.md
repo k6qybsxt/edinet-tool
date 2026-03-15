@@ -1,369 +1,467 @@
-AI_README.md（更新版）
-1. プロジェクト目的
+# AI_README.md
 
-EDINETのXBRLから決算データを抽出し、
-Excel決算分析テンプレートへ自動入力するPythonツール。 
+EDINETツール 開発引き継ぎドキュメント（ChatGPT用）
 
-AI_README
+---
 
-目的
+# 1. プロジェクト概要
 
-決算データ取得自動化
+## プロジェクト名
 
-Excel分析テンプレ更新自動化
+edinet-tool
+GitHub: https://github.com/k6qybsxt/edinet-tool
 
-企業分析効率化
+## 目的
 
-2. 入力データ
+EDINETのXBRLを解析し、決算分析Excelテンプレートへ自動入力するツール。
 
-EDINET XBRL
+対象
 
-対象書類
+* 有価証券報告書
+* 四半期報告書
 
-有価証券報告書
+解析対象
 
-四半期報告書
+* 売上
+* 利益
+* CF
+* BS
+* 株式数
+* DEI
+* 株価
 
-入力ファイル構成
+---
 
-file1 = 四半期報告書 (存在する場合)
-file2 = 最新有価証券報告書
-file3 = 過去有価証券報告書
-3. モード
-halfモード
+# 2. 現在の開発フェーズ
 
-四半期報告書が存在する場合
+現在は **高速化のための設計刷新フェーズ**
 
-mode = half
+大目標
 
-取得対象
+```
+EDINETツールを10〜50倍高速化する
+```
 
-YTD
-Quarter
-Prior1
-Prior2
-Prior3
-Prior4
+そのための設計変更を段階的に実施している。
 
-特徴
+---
 
-Current列は四半期データを優先
+# 3. 完了した設計
 
-通期Currentは書き込まない
+## XBRL読み込み方法見直し　10／10（完了）
 
-fullモード
+旧設計
 
-四半期報告書が存在しない場合
-
-mode = full
-
-取得対象
-
-Current
-Prior1
-Prior2
-Prior3
-Prior4
-4. 取得メトリクス
-Duration
-NetSales
-CostOfSales
-GrossProfit
-SellingExpenses
-OperatingIncome
-OrdinaryIncome
-ProfitLoss
-OperatingCash
-InvestmentCash
-FinancingCash
-Instant
-TotalAssets
-NetAssets
-CashAndCashEquivalents
-IssuedShares
-TreasuryShares
-TotalNumber
-5. TotalNumber計算
-TotalNumber = IssuedShares - TreasuryShares
-
-suffix別に計算
-
-例
-
-IssuedSharesPrior1
-TreasurySharesPrior1
-→ TotalNumberPrior1
-6. Excel出力
-
-NamedRange方式
-
-例
-
-NetSales_Current
-OperatingIncome_Prior2
-TotalAssets_Prior3
-TotalNumber_Quarter
-
-Excel書き込みは
-
-excel_service.py
-
-で実行。
-
-7. Excelテンプレート
-
-テンプレート形式
-
-.xlsm
-
-理由
-
-VBAマクロ使用
-
-更新ボタンによる列更新
-
-マクロ例
-
-Sub 更新()
-
-Pythonは
-
-値のみ書き込み
-
-を行う。
-
-8. 数値単位変換
-
-XBRL unitRefを解析し変換
-
-XBRL	Excel
-JPY	百万円
-shares	千株
-
-例
-
-331129000000 → 331129
-63664400 → 63664
-
-四捨五入。
-
-9. rawデータ
-
-rawデータは
-
-sheet = raw_edinet
-
-へ出力。
-
-用途
-
-XBRL解析検証
-
-デバッグ
-
-データ監査
-
-10. プログラム構造
-src/edinet_tool/
-
-parser/
-    xbrl_parser.py
-
-services/
-    parse_service.py
-    loop_processor.py
-    excel_service.py
-    raw_service.py
-    stock_service.py
-
-domain/
-    raw_builder.py
-    dedupe.py
-    output_buffer.py
-
-config/
-    settings.py
-
-logging/
-    logger.py
-11. 処理フロー
-XBRL
- ↓
-xbrl_parser
- ↓
-parse_service
- ↓
-loop_processor
- ↓
-output_buffer
- ↓
-excel_service
- ↓
+```
+parse_xbrl_file
+  ↓
+out
+  ↓
 Excel
-
-raw処理
-
-raw_builder
- ↓
-raw_service
- ↓
-dedupe
-12. 株価取得
-
-株価取得は
-
-stock_service.py
-
-で実行。
-
-取得方法
-
-yfinance
-
-取得データ
-
-Prior4
-Prior3
-Prior2
-Prior1
-Q1
-Q2
-Q3
-Q4
-
-高速化設計
-
-株価キャッシュ方式
-
-一度取得したデータは
-
-cache dict
-
-に保存。
-
-同一銘柄の複数日取得を
-
-1回のAPI取得
-
-にまとめる。
-
-13. 重複処理
-
-rawデータは
-
-raw_key
-
-で重複判定
-
-キー
-
-company_code
-doc_type
-consolidation
-metric_key
-time_slot
-period_kind
-
-重複処理
-
-dedupe_raw_rows_keep_best()
-14. ログ
-
-主要ログ
-
-[excel write]
-[raw]
-[loop summary]
-[stock summary]
-
-デバッグログ
-
-[parse debug]
-[buffer debug]
-
-DEBUGレベルのみ表示
-
-15. ZipFile警告
-
-Python3.14 + openpyxl + xlsm環境で
-
-ZipFile.__del__ warning
-
-が発生する場合がある。
-
-例
-
-Exception ignored while calling deallocator ZipFile.__del__
-
-現状
-
-出力成功
-
-Excel書き込み成功
-
-のため
-
-致命エラーではない
-
-運用上は
-
-警告は無視可能
-16. 開発ルール
-
-AIが修正する場合
-
-必ず
-
-関数単位で修正
-副作用を出さない
-ログ形式を維持
-NamedRange仕様を壊さない
-17. AIへ相談する方法
-
-必ず提示
+```
 
 問題
+
+* XBRL構造を破棄
+* 再解析が必要
+* IFRS対応困難
+* 拡張性が低い
+
+---
+
+## 新設計
+
+```
+XBRL
+ ↓
+parse_xbrl_file_raw
+ ↓
+ParsedXbrlDocument
+ ├ facts
+ ├ contexts
+ ├ units
+ ├ nsmap
+ ├ dei_data
+ └ meta
+ ↓
+parse_cache
+ ↓
+各処理
+```
+
+---
+
+## ParsedXbrlDocument構造
+
+```
+ParsedXbrlDocument
+ ├ facts
+ ├ contexts
+ ├ units
+ ├ nsmap
+ ├ dei_data
+ ├ accounting_standard
+ └ document_display_unit
+```
+
+---
+
+## facts構造
+
+```
+fact
+ ├ tag
+ ├ qname
+ ├ value
+ ├ context_ref
+ ├ unit_ref
+ ├ decimals
+ ├ precision
+ ├ period_kind
+ ├ start_date
+ ├ end_date
+ ├ instant_date
+ ├ is_consolidated
+ └ members
+```
+
+---
+
+## contexts構造
+
+```
+context
+ ├ period_kind
+ ├ start_date
+ ├ end_date
+ ├ instant_date
+ ├ is_consolidated
+ └ members
+```
+
+---
+
+## units構造
+
+```
+unit
+ ├ measures
+ ├ numerator
+ └ denominator
+```
+
+---
+
+# 4. parse cache
+
+XBRLは1回だけ解析される。
+
+```
+parse_cache
+```
+
 ログ
-関係ファイル
 
-例
+```
+[xbrl cache hit]
+[xbrl cache miss]
+```
 
-raw dup still が発生
+---
 
-ログ
-...
+# 5. raw生成
 
-raw_service.py を確認
-18. 今後の設計
+現在は
 
-予定
+```
+facts
+↓
+raw_service
+↓
+raw_rows
+```
 
-EXCELファイルリネーム
-XBRL読み込み方法見直し
-IFRS対応
-50社一括解析
-XBRL parse cache
-並列処理
-19. 次の開発タスク
+タグ制限
 
-現在の優先
+```
+ALLOWED_RAW_FACT_TAGS
+```
 
-file1〜50探索ログ削減
+raw rows
 
-理由
+```
+raw_rows ≈ 27
+```
+
+---
+
+# 6. 現在のパフォーマンス
+
+1社解析
+
+```
+約7秒
+```
+
+高速化予定
+
+```
+1社 0.2〜0.5秒
+```
+
+---
+
+# 7. 次の開発フェーズ
+
+次は
+
+```
+IFRS対応　1／10
+```
+
+---
+
+# 8. IFRS対応の目的
 
 現在
 
-[1] file1
-[2] file1
-...
-[50] file1
+```
+jpcrp_cor
+jppfs_cor
+```
 
-が DEBUGログに大量出力される。
+のみ。
 
-目的
+IFRS企業
 
-ログ可読性改善
-ログサイズ削減
-目標
-EDINET決算分析ツール完全自動化
+```
+ifrs-full
+```
+
+が必要。
+
+---
+
+## IFRS対応で実装する内容
+
+1
+
+```
+accounting_standard判定
+```
+
+2
+
+```
+IFRSタグ追加
+```
+
+3
+
+```
+タグマッピング
+```
+
+4
+
+```
+raw_builder対応
+```
+
+5
+
+```
+Excel出力対応
+```
+
+---
+
+# 9. 今後のロードマップ
+
+高速化ロードマップ
+
+```
+1 XBRL parse cache
+2 Excel rename高速化
+3 XBRL読み込み見直し   ← 完了
+4 IFRS対応              ← 次
+5 50社一括解析
+6 XBRL parse cache強化
+7 並列処理
+```
+
+---
+
+# 10. 開発ルール（重要）
+
+ユーザーはPython初心者。
+
+回答ルール
+
+```
+解説不要
+指示のみ
+```
+
+コード修正指示
+
+```
+〇行目〜〇行目を置換
+関数を丸ごと置換
+```
+
+の形式。
+
+---
+
+# 11. 開発環境
+
+OS
+
+```
+Windows
+```
+
+Python
+
+```
+3.14
+```
+
+主要ライブラリ
+
+```
+lxml
+pandas
+openpyxl
+yfinance
+```
+
+---
+
+# 12. プロジェクト構造
+
+```
+src/edinet_tool
+
+cli
+config
+domain
+services
+logging_utils
+```
+
+重要ディレクトリ
+
+```
+services
+```
+
+---
+
+## services
+
+```
+file_indexer.py
+loop_builder.py
+loop_processor.py
+parse_service.py
+parse_cache.py
+xbrl_parser.py
+raw_service.py
+excel_service.py
+```
+
+---
+
+# 13. 現在の主要処理フロー
+
+```
+main
+ ↓
+loop_builder
+ ↓
+loop_processor
+ ↓
+parse_service
+ ↓
+parse_cache
+ ↓
+xbrl_parser
+ ↓
+raw_service
+ ↓
+excel_service
+```
+
+---
+
+# 14. 注意事項
+
+次の開発では
+
+```
+parse_xbrl_file
+```
+
+の依存を
+
+```
+parse_xbrl_file_raw
+```
+
+へ徐々に移行する。
+
+---
+
+# 15. 現在の課題
+
+ログに以下が出る
+
+```
+ZipFile.__del__
+ValueError: I/O operation on closed file
+```
+
+これは
+
+```
+openpyxl
+```
+
+由来の警告であり、
+現在の開発タスクには含めない。
+
+---
+
+# 16. 次のチャット開始時の指示
+
+次のAIは以下から開始する。
+
+```
+IFRS対応　1／10
+```
+
+作業対象
+
+```
+xbrl_parser
+raw_service
+tag mapping
+```
+
+---
+
+# 17. 最重要目標
+
+最終的に実現すること
+
+```
+EDINETツール
+50社解析
+10〜50倍高速化
+```
+
+---
+
+END

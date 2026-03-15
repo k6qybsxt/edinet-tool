@@ -142,6 +142,7 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
 
             security_code = ensure_security_code(x2, parsed_security_code, x1)
             loop_event["accounting_standard"] = _cache_doc.accounting_standard if parse_cache is not None else "jpgaap"
+            logger.info(f"[accounting standard] xbrl={os.path.basename(path2)} standard={loop_event['accounting_standard']}")
 
             if base_year is None:
                 base_year = get_fy_end_year(x2)

@@ -28,6 +28,8 @@ METRICS = {
             "jppfs_cor:NetSales",
             # 保険（売上相当）
             "jpcrp_cor:RevenuesFromExternalCustomers",
+            # IFRS サマリー / KeyFinancialData
+            "jpcrp_cor:OperatingRevenuesIFRSKeyFinancialData",
             # IFRS
             "jpigp_cor:RevenueIFRS",
             "jpigp_cor:NetSalesIFRS",
@@ -36,25 +38,52 @@ METRICS = {
         "unit": "millions",
     },
     "CostOfSales": {
-        "tags": ["jppfs_cor:CostOfSales", "jpigp_cor:CostOfSalesIFRS"],
+        "tags": [
+            "jppfs_cor:CostOfSales",
+            "jpcrp_cor:CostOfRevenueIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:CostOfOperatingRevenueIFRSSummaryOfBusinessResults",
+            "jpigp_cor:CostOfSalesIFRS",
+            "jpigp_cor:CostOfRevenueIFRS",
+            "jpigp_cor:CostOfOperatingRevenueIFRS",
+            "jpigp_cor:OperatingCostsIFRS",
+        ],
         "kind": "duration",
         "unit": "millions",
     },
     "GrossProfit": {
-        "tags": ["jppfs_cor:GrossProfit", "jpigp_cor:GrossProfitIFRS"],
+        "tags": [
+            "jppfs_cor:GrossProfit",
+            "jpcrp_cor:GrossProfitIFRSSummaryOfBusinessResults",
+            "jpigp_cor:GrossProfitIFRS",
+        ],
         "kind": "duration",
         "unit": "millions",
     },
     "SellingExpenses": {
         "tags": [
             "jppfs_cor:SellingGeneralAndAdministrativeExpenses",
+            "jpcrp_cor:SellingGeneralAndAdministrativeExpensesIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:AdministrativeExpensesIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:DistributionCostsIFRSSummaryOfBusinessResults",
             "jpigp_cor:SellingGeneralAndAdministrativeExpensesIFRS",
+            "jpigp_cor:SellingExpensesAndGeneralAdministrativeExpensesIFRS",
+            "jpigp_cor:AdministrativeExpensesIFRS",
+            "jpigp_cor:DistributionCostsIFRS",
+            "jpigp_cor:SalesAndMarketingExpensesIFRS",
         ],
         "kind": "duration",
         "unit": "millions",
     },
-    "OperatingIncome": {
-        "tags": ["jppfs_cor:OperatingIncome", "jpigp_cor:OperatingProfitLossIFRS"],
+        "OperatingIncome": {
+        "tags": [
+            "jppfs_cor:OperatingIncome",
+            "jpcrp_cor:OperatingIncomeIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:OperatingProfitIFRSSummaryOfBusinessResults",
+            "jpigp_cor:OperatingProfitLossIFRS",
+            "jpigp_cor:OperatingProfitIFRS",
+            "jpigp_cor:OperatingLossIFRS",
+            "jpigp_cor:OperatingIncomeIFRS",
+        ],
         "kind": "duration",
         "unit": "millions",
     },
@@ -62,11 +91,20 @@ METRICS = {
         "tags": [
             # ★半期サマリー（最優先）
             "jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults",
+
             # J-GAAP
             "jppfs_cor:OrdinaryIncome",
-            # IFRS（経常相当）
+
+            # IFRS サマリー / KeyFinancialData
+            "jpcrp_cor:ProfitLossBeforeTaxIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:ProfitBeforeIncomeTaxesFromContinuingIFRSKeyFinancialData",
+
+            # IFRS / 別名対策
+            "jpigp_cor:ProfitBeforeTaxIFRS",
             "jpigp_cor:ProfitLossBeforeTaxIFRS",
             "jpigp_cor:ProfitLossBeforeIncomeTaxesIFRS",
+            "jpigp_cor:IncomeBeforeIncomeTaxesIFRS",
+            "jpigp_cor:ProfitBeforeIncomeTaxesIFRS",
         ],
         "kind": "duration",
         "unit": "millions",
@@ -149,8 +187,9 @@ METRICS = {
     "CashAndCashEquivalents": {
         "tags": [
             "jppfs_cor:CashAndCashEquivalents",
-            "jpigp_cor:CashAndCashEquivalentsIFRS",
             "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
+            "jpcrp_cor:CashAndCashEquivalentsIFRSSummaryOfBusinessResults",
+            "jpigp_cor:CashAndCashEquivalentsIFRS",
         ],
         "kind": "instant_num",
         "unit": "millions",
@@ -851,6 +890,39 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
                         "status": "OK",
                     }
 
+    # === GrossProfit 計算（常に NetSales - CostOfSales を優先） ===
+    gross_profit_suffixes = ["YTD", "Current", "Prior1", "Prior2", "Prior3", "Prior4"]
+
+    for suffix in gross_profit_suffixes:
+        gp_key = f"GrossProfit{suffix}"
+
+        net_sales = out.get(f"NetSales{suffix}")
+        cost_of_sales = out.get(f"CostOfSales{suffix}")
+
+        if net_sales in (None, "") or cost_of_sales in (None, ""):
+            continue
+
+        try:
+            gross_profit_value = int(net_sales) - int(cost_of_sales)
+        except Exception:
+            continue
+
+        out[gp_key] = gross_profit_value
+
+        net_meta = out_meta.get(f"NetSales{suffix}", {}) or {}
+        cost_meta = out_meta.get(f"CostOfSales{suffix}", {}) or {}
+
+        out_meta[gp_key] = {
+            "period_start": net_meta.get("period_start") or cost_meta.get("period_start"),
+            "period_end": net_meta.get("period_end") or cost_meta.get("period_end"),
+            "period_kind": net_meta.get("period_kind") or cost_meta.get("period_kind") or "duration",
+            "unit": "millions",
+            "consolidation": net_meta.get("consolidation") or cost_meta.get("consolidation"),
+            "tag_used": "CALC(NetSales-CostOfSales)",
+            "tag_rank": 0,
+            "status": "OK",
+        }
+
     # === TotalNumber 計算 ===
     suffixes = [
         "Current",
@@ -899,10 +971,14 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
     return out, security_code, out_meta
 
 def _detect_accounting_standard(nsmap):
+
+    if "ifrs-full" in nsmap:
+        return "ifrs"
+
     if "jpigp_cor" in nsmap:
         return "ifrs"
-    return "jpgaap"
 
+    return "jpgaap"
 
 def _extract_dei_data_from_out(out):
     keys = [

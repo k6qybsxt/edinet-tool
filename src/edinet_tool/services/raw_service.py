@@ -8,6 +8,7 @@ from edinet_tool.domain.dedupe import (
     find_duplicate_template_keys,
     raw_key_for_template,
 )
+from edinet_tool.domain.tag_alias import normalize_tag_to_metric, allowed_raw_fact_tags
 
 DURATION_METRIC_KEYS = [
     "NetSales",
@@ -22,24 +23,7 @@ DURATION_METRIC_KEYS = [
     "FinancingCash",
 ]
 
-ALLOWED_RAW_FACT_TAGS = {
-    "NetSales",
-    "CostOfSales",
-    "GrossProfit",
-    "SellingExpenses",
-    "OperatingIncome",
-    "OrdinaryIncome",
-    "ProfitLoss",
-    "OperatingCash",
-    "InvestmentCash",
-    "FinancingCash",
-    "TotalAssets",
-    "NetAssets",
-    "CashAndCashEquivalents",
-    "IssuedShares",
-    "TreasuryShares",
-    "TotalNumber",
-}
+ALLOWED_RAW_FACT_TAGS = allowed_raw_fact_tags()
 
 def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
     raw_rows = []
@@ -55,27 +39,39 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
     company_code_for_raw = company_code_for_raw or ""
 
     for d in parsed_docs:
-        if d.get("facts"):
+        if d.get("facts") is not None:
             doc_rows = []
+            metric_counter = {}
+            
+
             for f in d["facts"]:
                 tag = f.get("tag")
                 if tag not in ALLOWED_RAW_FACT_TAGS:
                     continue
+
+                metric_key = normalize_tag_to_metric(tag)
+                if not metric_key:
+                    continue
+
                 if f.get("value") in (None, ""):
                     continue
 
                 if not f.get("period_kind"):
                     continue
+
+                period_kind = f.get("period_kind")
+                period_end = f.get("end_date") if period_kind == "duration" else f.get("instant_date")
+
                 row = {
                     "company_code": company_code_for_raw,
                     "doc_id": d["doc_id"],
                     "doc_type": d["doc_type"],
                     "consolidation": "Consolidated" if f.get("is_consolidated") else "NonConsolidated",
-                    "metric_key": tag,
-                    "time_slot": "YTD" if f.get("period_kind") == "duration" else "Quarter",
+                    "metric_key": metric_key,
+                    "time_slot": "YTD" if period_kind == "duration" else "Quarter",
                     "period_start": f.get("start_date"),
-                    "period_end": f.get("end_date"),
-                    "period_kind": f.get("period_kind"),
+                    "period_end": period_end,
+                    "period_kind": period_kind,
                     "value": f.get("value"),
                     "unit": f.get("unit_ref"),
                     "tag_used": tag,
@@ -83,6 +79,15 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
                     "status": "parsed",
                 }
                 doc_rows.append(row)
+                metric_counter[metric_key] = metric_counter.get(metric_key, 0) + 1
+
+            if metric_counter:
+                logger.info(
+                    "[raw metric map] doc=%s metrics=%s",
+                    d["doc_id"],
+                    dict(sorted(metric_counter.items()))
+                )
+
         else:
             doc_rows = build_raw_rows_from_out(
             company_code=company_code_for_raw,
