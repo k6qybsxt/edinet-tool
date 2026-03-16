@@ -6,6 +6,11 @@ TAG_ALIAS = {
     "OperatingRevenuesIFRSKeyFinancialData": "NetSales",
     "RevenueIFRS": "NetSales",
     "NetSalesIFRS": "NetSales",
+    "Revenue": "NetSales",
+    "RevenueFromContractsWithCustomersIFRS": "NetSales",
+    "OperatingRevenue": "NetSales",
+    "OperatingRevenueIFRS": "NetSales",
+    "OperatingRevenues": "NetSales",
 
     # CostOfSales
     "CostOfSales": "CostOfSales",
@@ -16,6 +21,9 @@ TAG_ALIAS = {
     "CostOfOperatingRevenueIFRS": "CostOfSales",
     "OperatingCosts": "CostOfSales",
     "OperatingCostsIFRS": "CostOfSales",
+    "CostOfRevenueFromContractsWithCustomersIFRS": "CostOfSales",
+    "CostOfGoodsSold": "CostOfSales",
+    "CostOfGoodsSoldIFRS": "CostOfSales",
 
     # SellingExpenses
     "SellingGeneralAndAdministrativeExpenses": "SellingExpenses",
@@ -28,6 +36,10 @@ TAG_ALIAS = {
     "DistributionCostsIFRS": "SellingExpenses",
     "SalesAndMarketingExpenses": "SellingExpenses",
     "SalesAndMarketingExpensesIFRS": "SellingExpenses",
+    "GeneralAndAdministrativeExpensesIFRS": "SellingExpenses",
+    "SellingGeneralAndAdministrativeExpense": "SellingExpenses",
+    "GeneralAndAdministrativeExpenses": "SellingExpenses",
+    "SellingGeneralAdministrativeExpenses": "SellingExpenses",
 
     # OperatingIncome
     "OperatingIncome": "OperatingIncome",
@@ -36,6 +48,10 @@ TAG_ALIAS = {
     "OperatingProfitIFRS": "OperatingIncome",
     "OperatingLossIFRS": "OperatingIncome",
     "OperatingIncomeIFRS": "OperatingIncome",
+    "OperatingIncomeLoss": "OperatingIncome",
+    "OperatingIncomeLossIFRS": "OperatingIncome",
+    "OperatingProfitLoss": "OperatingIncome",
+    "OperatingIncomeLossSummaryOfBusinessResults": "OperatingIncome",
 
     # OrdinaryIncome
     "OrdinaryIncomeLossSummaryOfBusinessResults": "OrdinaryIncome",
@@ -52,6 +68,10 @@ TAG_ALIAS = {
     "IncomeBeforeIncomeTaxesIFRS": "OrdinaryIncome",
     "ProfitBeforeIncomeTaxes": "OrdinaryIncome",
     "ProfitBeforeIncomeTaxesIFRS": "OrdinaryIncome",
+    "ProfitBeforeTaxFromContinuingOperationsIFRS": "OrdinaryIncome",
+    "ProfitBeforeTaxFromContinuingOperations": "OrdinaryIncome",
+    "IncomeBeforeIncomeTaxes": "OrdinaryIncome",
+    "ProfitBeforeIncomeTaxes": "OrdinaryIncome",
 
     # ProfitLoss
     "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults": "ProfitLoss",
@@ -59,6 +79,7 @@ TAG_ALIAS = {
     "ProfitLoss": "ProfitLoss",
     "ProfitLossAttributableToOwnersOfParentIFRS": "ProfitLoss",
     "ProfitLossIFRS": "ProfitLoss",
+    "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResultsIFRS": "ProfitLoss",
 
     # CF
     "NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults": "OperatingCash",
@@ -78,10 +99,13 @@ TAG_ALIAS = {
     "TotalAssetsSummaryOfBusinessResults": "TotalAssets",
     "TotalAssetsIFRSSummaryOfBusinessResults": "TotalAssets",
     "AssetsIFRS": "TotalAssets",
+    "TotalAssets": "TotalAssets",
+    "TotalAssetsIFRS": "TotalAssets",
 
     "NetAssetsSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRS": "NetAssets",
+    "NetAssets": "NetAssets",
 
     "CashAndCashEquivalents": "CashAndCashEquivalents",
     "CashAndCashEquivalentsSummaryOfBusinessResults": "CashAndCashEquivalents",

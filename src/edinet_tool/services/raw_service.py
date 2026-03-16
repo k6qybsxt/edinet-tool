@@ -43,17 +43,82 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
             doc_rows = []
             metric_counter = {}
             
+            profitloss_parent_tags = {
+                "ProfitLossAttributableToOwnersOfParent",
+                "ProfitLossAttributableToOwnersOfParentIFRS",
+                "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
+                "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResultsIFRS",
+            }
+
+            netsales_preferred_tags = {
+                "OperatingRevenuesIFRSKeyFinancialData",
+                "RevenueIFRS",
+                "NetSalesIFRS",
+                "NetSales",
+                "Revenue",
+                "OperatingRevenue",
+                "OperatingRevenues",
+            }
+
+            ordinary_preferred_tags = {
+                "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults",
+                "ProfitBeforeIncomeTaxesFromContinuingIFRSKeyFinancialData",
+                "ProfitBeforeTaxIFRS",
+                "ProfitLossBeforeTaxIFRS",
+                "ProfitBeforeTax",
+                "ProfitLossBeforeTax",
+                "OrdinaryIncome",
+                "OrdinaryIncomeLossSummaryOfBusinessResults",
+            }
+
+            has_netsales_preferred = any(
+                str(x.get("tag", "")).split(":")[-1] in netsales_preferred_tags
+                for x in d["facts"]
+            )
+
+            has_ordinary_preferred = any(
+                str(x.get("tag", "")).split(":")[-1] in ordinary_preferred_tags
+                for x in d["facts"]
+            )
+
+            has_profitloss_parent = any(
+                str(x.get("tag", "")).split(":")[-1] in profitloss_parent_tags
+                for x in d["facts"]
+            )
 
             for f in d["facts"]:
                 tag = f.get("tag")
-                if tag not in ALLOWED_RAW_FACT_TAGS:
+                local_tag = str(tag).split(":")[-1] if tag else ""
+
+                if local_tag not in ALLOWED_RAW_FACT_TAGS:
                     continue
 
-                metric_key = normalize_tag_to_metric(tag)
+                metric_key = normalize_tag_to_metric(local_tag)
+
                 if not metric_key:
                     continue
 
                 if metric_key == "ProfitLoss" and f.get("members"):
+                    continue
+
+                if metric_key == "ProfitLoss":
+                    local = str(f.get("tag", "")).split(":")[-1]
+                    if has_profitloss_parent and local not in profitloss_parent_tags:
+                        continue
+
+                if metric_key == "ProfitLoss" and f.get("period_kind") != "duration":
+                    continue
+
+                if metric_key == "ProfitLoss" and not f.get("is_consolidated"):
+                    continue
+
+                if metric_key == "OperatingIncome" and f.get("members"):
+                    continue
+
+                if metric_key == "OperatingIncome" and f.get("period_kind") != "duration":
+                    continue
+
+                if metric_key == "OperatingIncome" and not f.get("is_consolidated"):
                     continue
 
                 if metric_key in ("IssuedShares", "TreasuryShares") and f.get("members"):
@@ -61,6 +126,34 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
 
                 if metric_key in ("IssuedShares", "TreasuryShares") and f.get("period_kind") != "instant":
                     continue
+
+                if metric_key in ("NetAssets", "TotalAssets", "CashAndCashEquivalents") and f.get("members"):
+                    continue
+
+                if metric_key in ("NetAssets", "TotalAssets", "CashAndCashEquivalents") and f.get("period_kind") != "instant":
+                    continue
+
+                if metric_key in ("NetAssets", "TotalAssets", "CashAndCashEquivalents") and not f.get("is_consolidated"):
+                    continue
+
+                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "OrdinaryIncome") and f.get("members"):
+                    continue
+
+                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "OrdinaryIncome") and f.get("period_kind") != "duration":
+                    continue
+
+                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "OrdinaryIncome") and not f.get("is_consolidated"):
+                    continue
+
+                if metric_key == "NetSales":
+                    local = str(f.get("tag", "")).split(":")[-1]
+                    if has_netsales_preferred and local not in netsales_preferred_tags:
+                        continue
+
+                if metric_key == "OrdinaryIncome":
+                    local = str(f.get("tag", "")).split(":")[-1]
+                    if has_ordinary_preferred and local not in ordinary_preferred_tags:
+                        continue
 
                 if f.get("value") in (None, ""):
                     continue

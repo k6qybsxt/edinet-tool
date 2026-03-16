@@ -1,77 +1,69 @@
 # AI_README.md
 
-EDINETツール 開発引き継ぎドキュメント（ChatGPT用）
+# EDINETツール 開発引き継ぎドキュメント（ChatGPT用）
 
----
+## 1. プロジェクト概要
 
-# 1. プロジェクト概要
-
-## プロジェクト名
-
+### プロジェクト名
 edinet-tool
-GitHub: https://github.com/k6qybsxt/edinet-tool
 
-## 目的
+### GitHub
+https://github.com/k6qybsxt/edinet-tool
 
+### 目的
 EDINETのXBRLを解析し、決算分析Excelテンプレートへ自動入力するツール。
 
-対象
+### 対象
+- 有価証券報告書
+- 半期報告書
 
-* 有価証券報告書
-* 四半期報告書
-
-解析対象
-
-* 売上
-* 利益
-* CF
-* BS
-* 株式数
-* DEI
-* 株価
+### 解析対象
+- 売上
+- 利益
+- CF
+- BS
+- 株式数
+- DEI
+- 株価
 
 ---
 
-# 2. 現在の開発フェーズ
+## 2. 現在の開発フェーズ
 
-現在は **高速化のための設計刷新フェーズ**
+現在は **IFRS対応と指標正規化の実装フェーズ**
 
-大目標
-
-```
-EDINETツールを10〜50倍高速化する
-```
-
-そのための設計変更を段階的に実施している。
+### 大目標
+- EDINETツールを10〜50倍高速化する
+- 日本基準 / IFRS の両対応を安定させる
+- Excelテンプレへ投資家目線で自然な値を書き込む
 
 ---
 
-# 3. 完了した設計
+## 3. 完了した設計
 
-## XBRL読み込み方法見直し　10／10（完了）
+### 3-1. XBRL読み込み方法見直し（完了）
 
 旧設計
 
-```
+```text
 parse_xbrl_file
   ↓
 out
   ↓
 Excel
-```
 
 問題
 
-* XBRL構造を破棄
-* 再解析が必要
-* IFRS対応困難
-* 拡張性が低い
+XBRL構造を破棄
 
----
+再解析が必要
 
-## 新設計
+IFRS対応困難
 
-```
+拡張性が低い
+
+新設計
+
 XBRL
  ↓
 parse_xbrl_file_raw
@@ -87,13 +79,7 @@ ParsedXbrlDocument
 parse_cache
  ↓
 各処理
-```
-
----
-
-## ParsedXbrlDocument構造
-
-```
+3-2. ParsedXbrlDocument構造
 ParsedXbrlDocument
  ├ facts
  ├ contexts
@@ -102,13 +88,7 @@ ParsedXbrlDocument
  ├ dei_data
  ├ accounting_standard
  └ document_display_unit
-```
-
----
-
-## facts構造
-
-```
+3-3. facts構造
 fact
  ├ tag
  ├ qname
@@ -123,13 +103,7 @@ fact
  ├ instant_date
  ├ is_consolidated
  └ members
-```
-
----
-
-## contexts構造
-
-```
+3-4. contexts構造
 context
  ├ period_kind
  ├ start_date
@@ -137,246 +111,224 @@ context
  ├ instant_date
  ├ is_consolidated
  └ members
-```
-
----
-
-## units構造
-
-```
+3-5. units構造
 unit
  ├ measures
  ├ numerator
  └ denominator
-```
-
----
-
-# 4. parse cache
+4. parse cache
 
 XBRLは1回だけ解析される。
 
-```
 parse_cache
-```
 
-ログ
-
-```
 [xbrl cache hit]
+
 [xbrl cache miss]
-```
 
----
-
-# 5. raw生成
+5. raw生成
 
 現在は
 
-```
 facts
 ↓
 raw_service
 ↓
 raw_rows
-```
+tags制限
 
-タグ制限
+normalize_tag_to_metric(tag) ベースで raw 化
 
-```
-ALLOWED_RAW_FACT_TAGS
-```
+raw 側で metric ごとの絞り込みあり
 
-raw rows
+現在のraw最適化
 
-```
-raw_rows ≈ 27
-```
+ProfitLoss: member付きfact除外
 
----
+IssuedShares / TreasuryShares:
 
-# 6. 現在のパフォーマンス
+member付きfact除外
 
+instant以外除外
+
+rawログ
+
+[raw metric map]
+
+[raw optimize] skipped_doc_overlap ...
+
+6. 現在のパフォーマンス
 1社解析
 
-```
-約7秒
-```
+約 3.8〜4.0 秒
+（株価取得込み）
 
-高速化予定
+XBRL解析部
 
-```
-1社 0.2〜0.5秒
-```
+0.03〜0.16 秒程度 / 1ファイル
 
----
+高速化目標
 
-# 7. 次の開発フェーズ
+1社 0.2〜0.5 秒
 
-次は
+7. IFRS対応の進捗
+当初予定
 
-```
-IFRS対応　1／10
-```
-
----
-
-# 8. IFRS対応の目的
+IFRS対応 1/4
 
 現在
 
-```
-jpcrp_cor
-jppfs_cor
-```
+IFRS対応 実装かなり進行済み
 
-のみ。
+対応済み内容
 
-IFRS企業
+accounting_standard 判定
 
-```
-ifrs-full
-```
-
-が必要。
-
----
-
-## IFRS対応で実装する内容
-
-1
-
-```
-accounting_standard判定
-```
-
-2
-
-```
 IFRSタグ追加
-```
 
-3
+tag mapping 拡張
 
-```
-タグマッピング
-```
+raw_builder 対応
 
-4
-
-```
-raw_builder対応
-```
-
-5
-
-```
 Excel出力対応
-```
 
----
+半期IFRS確認
 
-# 9. 今後のロードマップ
+指標計算の投資家目線調整
 
-高速化ロードマップ
+8. 現在の重要仕様
+8-1. NetAssets
 
-```
-1 XBRL parse cache
-2 Excel rename高速化
-3 XBRL読み込み見直し   ← 完了
-4 IFRS対応              ← 次
-5 50社一括解析
-6 XBRL parse cache強化
-7 並列処理
-```
+NetAssets_〇〇 には
+親会社の所有者に帰属する持ち分合計 を入れる方針。
 
----
+理由
 
-# 10. 開発ルール（重要）
+ProfitLoss が親会社帰属利益ベースのため整合性が高い
 
-ユーザーはPython初心者。
+投資家目線で自然
 
-回答ルール
+8-2. GrossProfit
 
-```
-解説不要
-指示のみ
-```
+常に以下で計算する。
 
-コード修正指示
+GrossProfit = NetSales - CostOfSales
 
-```
-〇行目〜〇行目を置換
-関数を丸ごと置換
-```
+IFRSで売上総利益タグが無くても、この計算値を GrossProfit_〇〇 系へ入れる。
 
-の形式。
+8-3. SellingExpenses
 
----
+常に以下で扱う。
 
-# 11. 開発環境
+SellingExpenses
+= 販売費及び一般管理費
++ 金融事業に係る金融費用
 
-OS
+金融事業に係る金融費用が無い場合は、
+販売費及び一般管理費の値をそのまま使う。
 
-```
-Windows
-```
+8-4. TotalNumber
 
-Python
+従来どおり以下で計算する。
 
-```
-3.14
-```
+TotalNumber = IssuedShares - TreasuryShares
+9. 現在追加済みの主要IFRSタグ
+9-1. NetSales系
 
-主要ライブラリ
+jpcrp_cor:OperatingRevenuesIFRSKeyFinancialData
 
-```
-lxml
-pandas
-openpyxl
-yfinance
-```
+9-2. OrdinaryIncome系
 
----
+jpcrp_cor:ProfitLossBeforeTaxIFRSSummaryOfBusinessResults
+などを利用中
 
-# 12. プロジェクト構造
+9-3. NetAssets系
 
-```
-src/edinet_tool
+jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults
 
-cli
-config
-domain
-services
-logging_utils
-```
+9-4. TotalAssets系
 
-重要ディレクトリ
+jpcrp_cor:TotalAssetsIFRSSummaryOfBusinessResults
 
-```
-services
-```
+9-5. 金融事業に係る金融費用
 
----
+FinancialBusinessCost として保持
 
-## services
+現在の tags:
 
-```
-file_indexer.py
-loop_builder.py
-loop_processor.py
-parse_service.py
-parse_cache.py
-xbrl_parser.py
-raw_service.py
-excel_service.py
-```
+jpigp_cor:CostOfFinancingOperationsIFRS
 
----
+jpigp_cor:FinanceCostsIFRS
 
-# 13. 現在の主要処理フロー
+10. 直近で実装した重要改善
+10-1. CostOfSales 別名タグ対策
 
-```
+実装済み
+
+10-2. SellingExpenses 別名タグ対策
+
+実装済み
+
+10-3. OperatingIncome 別名タグ対策
+
+実装済み
+
+10-4. OrdinaryIncome 別名タグ強化
+
+実装済み
+
+10-5. ProfitLoss の絞り込み
+
+member付きfact除外を実装済み
+
+10-6. IssuedShares / TreasuryShares の絞り込み
+
+member付きfact除外
+
+instant以外除外
+
+10-7. 金融事業に係る金融費用対応
+
+FinancialBusinessCost を追加し、
+SellingExpenses = SG&A + FinancialBusinessCost を実装済み
+
+10-8. 半期IFRS確認
+
+トヨタの半期報告書で確認済み
+Excel目視でも問題なし
+
+11. 現在のログで確認できていること
+年間IFRS
+
+FinancialBusinessCostCurrent
+
+FinancialBusinessCostPrior1
+
+FinancialBusinessCostPrior2
+
+FinancialBusinessCostPrior3
+
+FinancialBusinessCostPrior4
+
+が取得できている。
+
+半期IFRS
+
+FinancialBusinessCostYTD
+
+SellingExpensesYTD
+
+GrossProfitYTD
+
+OperatingIncomeYTD
+
+OrdinaryIncomeYTD
+
+ProfitLossYTD
+
+が取得できている。
+
+12. 現在の主要処理フロー
 main
  ↓
 loop_builder
@@ -392,76 +344,179 @@ xbrl_parser
 raw_service
  ↓
 excel_service
-```
+13. 重要ディレクトリ
+src/edinet_tool
 
----
+cli
 
-# 14. 注意事項
+config
 
-次の開発では
+domain
 
-```
-parse_xbrl_file
-```
+services
 
-の依存を
+logging_utils
 
-```
-parse_xbrl_file_raw
-```
+重要ファイル
 
-へ徐々に移行する。
+src/edinet_tool/services/xbrl_parser.py
 
----
+src/edinet_tool/services/raw_service.py
 
-# 15. 現在の課題
+src/edinet_tool/services/parse_service.py
 
-ログに以下が出る
+src/edinet_tool/services/parse_cache.py
 
-```
+src/edinet_tool/services/excel_service.py
+
+src/edinet_tool/services/loop_processor.py
+
+14. 現在の課題
+14-1. ZipFile.del 警告
+
+ログに以下が出る。
+
 ZipFile.__del__
 ValueError: I/O operation on closed file
-```
 
-これは
+これは openpyxl 由来の警告。
+現在の主タスクでは触らない。
 
-```
+14-2. 株価取得の未来日
+
+未来日の株価は取得できない。
+例: 2026-03-31 の株価。
+不具合ではない。
+
+15. 次の優先タスク候補
+
+優先候補
+
+IFRSタグの追加整理
+
+OperatingIncome のIFRS別名タグさらに整理
+
+raw側の不要タグ除外をさらに強化
+
+README / AI_README を都度更新
+
+50社一括解析に向けた安定化
+
+その後、高速化フェーズに戻る
+
+16. 今後のロードマップ
+高速化ロードマップ
+
+XBRL parse cache
+
+Excel rename高速化
+
+XBRL読み込み見直し ← 完了
+
+IFRS対応 ← 進行中だがかなり進んだ
+
+50社一括解析
+
+XBRL parse cache強化
+
+並列処理
+
+17. 開発ルール（重要）
+
+ユーザーはPython初心者。
+
+回答ルール
+
+解説不要
+
+指示のみ
+
+必要な時だけ区切る
+
+無理に10回に分けない
+
+プロのプログラマーとして「ここでログを見たい」と思うタイミングで止める
+
+コード修正指示方法
+
+〇行目〜〇行目を置換してください
+
+関数を丸ごと置換してください
+
+注意
+
+中身を把握していないファイルがある場合は回答しない
+
+必要ならアップロードを促す
+
+把握済みファイルに基づいて修正案を出す
+
+18. 開発環境
+OS
+
+Windows
+
+Python
+
+3.14
+
+主要ライブラリ
+
+lxml
+
+pandas
+
 openpyxl
-```
 
-由来の警告であり、
-現在の開発タスクには含めない。
+yfinance
 
----
+19. 現在の判断
 
-# 16. 次のチャット開始時の指示
+現在のIFRS対応は、
+年間IFRS / 半期IFRS ともに、Excel目視で大きな問題なし。
+
+特に以下は通っている。
+
+GrossProfit
+
+SellingExpenses
+
+NetAssets
+
+TotalNumber
+
+ProfitLoss 絞り込み
+
+IssuedShares / TreasuryShares 絞り込み
+
+FinancialBusinessCost 対応
+
+20. 次チャット開始時の指示
 
 次のAIは以下から開始する。
 
-```
-IFRS対応　1／10
-```
+開始ポイント
 
-作業対象
+AI_README.md を踏まえて、次の優先タスクを1つ選んで進める。
 
-```
-xbrl_parser
-raw_service
-tag mapping
-```
+有力候補
 
----
+OperatingIncome のIFRS別名タグ整理
 
-# 17. 最重要目標
+IFRSタグ追加の残件整理
+
+raw最適化の追加
+
+21. 最重要目標
 
 最終的に実現すること
 
-```
 EDINETツール
-50社解析
-10〜50倍高速化
-```
 
----
+50社解析
+
+10〜50倍高速化
+
+日本基準 / IFRS 両対応の安定運用
 
 END
