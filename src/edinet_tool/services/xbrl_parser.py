@@ -1227,13 +1227,15 @@ def trim_value(v, unit):
         return None
 
 def parse_xbrl_file_raw(xbrl_file, mode="full", logger=None):
-    nsmap = _read_nsmap_from_xbrl(xbrl_file)
-    contexts = _read_contexts_from_xbrl(xbrl_file)
-    units = _read_units_from_xbrl(xbrl_file)
-    facts = _read_facts_from_xbrl(xbrl_file, contexts)
+    xbrl_path = str(xbrl_file)
+
+    nsmap = _read_nsmap_from_xbrl(xbrl_path)
+    contexts = _read_contexts_from_xbrl(xbrl_path)
+    units = _read_units_from_xbrl(xbrl_path)
+    facts = _read_facts_from_xbrl(xbrl_path, contexts)
 
     out, security_code, out_meta = parse_xbrl_file_legacy(
-        xbrl_file,
+        xbrl_path,
         mode=mode,
         logger=logger,
     )
@@ -1242,8 +1244,8 @@ def parse_xbrl_file_raw(xbrl_file, mode="full", logger=None):
     accounting_standard = _detect_accounting_standard(nsmap)
 
     meta = {
-        "path": str(xbrl_file),
-        "basename": os.path.basename(str(xbrl_file)),
+        "path": xbrl_path,
+        "basename": os.path.basename(xbrl_path),
         "mode": mode,
         "security_code": security_code,
         "accounting_standard": accounting_standard,
@@ -1264,5 +1266,11 @@ def parse_xbrl_file_raw(xbrl_file, mode="full", logger=None):
     }
 
 def parse_xbrl_file(xbrl_file, mode="full", logger=None):
-    out, security_code, out_meta = parse_xbrl_file_legacy(xbrl_file, mode=mode, logger=logger)
+
+    out, security_code, out_meta = parse_xbrl_file_legacy(
+        xbrl_file,
+        mode=mode,
+        logger=logger,
+    )
+
     return out, security_code, out_meta

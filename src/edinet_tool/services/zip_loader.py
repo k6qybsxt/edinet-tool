@@ -26,19 +26,19 @@ def collect_xbrl_from_zip(zip_dir: str, extract_dir: str):
                 if not lower.endswith(".xbrl"):
                     continue
 
-                # 監査報告書などは除外
                 if "/auditdoc/" in lower or "\\auditdoc\\" in lower:
                     continue
 
-                # 財務本体だけ対象
                 if "jpcrp030000-asr" not in lower and "jpcrp040300" not in lower:
                     continue
 
                 out_name = Path(name).name
                 out_path = extract_dir / out_name
 
-                with z.open(name) as src, open(out_path, "wb") as dst:
-                    dst.write(src.read())
+                data = z.read(name)
+                with open(out_path, "wb") as dst:
+                    dst.write(data)
+                    dst.flush()
 
                 results.append(str(out_path))
 
