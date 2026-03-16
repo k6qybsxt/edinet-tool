@@ -1,10 +1,10 @@
+from openpyxl import load_workbook
 from edinet_tool.services.excel_service import (
     write_data_to_workbook_namedranges,
     write_rows_to_raw_sheet_workbook,
     rename_excel_file,
 )
 from edinet_tool.services.stock_service import write_stock_data_to_workbook
-import openpyxl
 from edinet_tool.services.workbook_service import prepare_workbook
 from edinet_tool.services.parse_service import (
     parse_half_doc,
@@ -21,7 +21,6 @@ from edinet_tool.domain.raw_builder import RAW_COLS
 from edinet_tool.domain.output_buffer import OutputBuffer
 
 import os
-import gc
 from datetime import datetime
 from time import perf_counter
 
@@ -229,13 +228,15 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
         perf_counter=perf_counter,
     )
 
+    out_buffer_dict_for_log = out_buffer.to_dict()
+
     logger.info(
         f"[company parsed] slot={loop.get('slot')} "
         f"code={company_code_from_job or security_code} "
         f"name={company_name_from_job} "
         f"mode={'half' if use_half else 'full'} "
-        f"buffer_keys={len(out_buffer.to_dict())}"
-    )
+        f"buffer_keys={len(out_buffer_dict_for_log)}"
+    )   
 
     collisions = out_buffer.collisions()
     if collisions:
@@ -245,7 +246,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
             logger.debug(" overwrite: %s  %s -> %s (winner=%s)", k, old_src, new_src, winner)
 
     if out_buffer:
-        out_buffer_dict = out_buffer.to_dict()
+        out_buffer_dict = out_buffer_dict_for_log
 
         if not use_half and isinstance(x1, dict):
             fy_end = x1.get("CurrentFiscalYearEndDateDEI")
@@ -317,7 +318,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
         logger=logger,
     )
 
-    wb = openpyxl.load_workbook(
+    wb = load_workbook(
         excel_file_path,
         keep_vba=excel_file_path.lower().endswith(".xlsm")
     )
@@ -410,7 +411,6 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
                 pass
 
             wb = None
-            gc.collect()
 
     period_end_date = _pick_period_end(x1, x2, meta2)
     final_security_code = security_code or company_code_from_job or ""
@@ -429,7 +429,6 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
             final_excel_file_path = os.path.join(output_excel_dir, f"{safe_name}_{counter}.xlsm")
             counter += 1
 
-        gc.collect()
         os.replace(excel_file_path, final_excel_file_path)
         logger.info(f"Excelファイルが移動されました: {final_excel_file_path}")
     else:
@@ -444,8 +443,6 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
     loop["final_excel_file_path"] = final_excel_file_path
     loop_event["excel"] = os.path.basename(final_excel_file_path)
     loop_event["company_name"] = final_company_name
-
-    gc.collect()
 
     write_loop_summary(
         loop_event=loop_event,

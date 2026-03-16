@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from collections import OrderedDict
 
 @dataclass
 class ParsedXbrlDocument:
@@ -26,15 +27,32 @@ def make_xbrl_cache_key(path: str) -> str:
 
 
 class XbrlParseCache:
-    def __init__(self, logger=None):
-        self._docs: dict[str, ParsedXbrlDocument] = {}
+
+    def stats(self) -> dict:
+        return {
+            "size": len(self._docs),
+            "max_items": self.max_items,
+            "keys": list(self._docs.keys())[-5:],
+        }
+
+    def __init__(self, logger=None, max_items=32):
+        self._docs = OrderedDict()
         self.logger = logger
+        self.max_items = max_items
 
     def get(self, cache_key: str) -> ParsedXbrlDocument | None:
-        return self._docs.get(cache_key)
+        doc = self._docs.get(cache_key)
+        if doc is not None:
+            self._docs.move_to_end(cache_key)
+        return doc
 
     def put(self, doc: ParsedXbrlDocument) -> None:
+
         self._docs[doc.cache_key] = doc
+        self._docs.move_to_end(doc.cache_key)
+
+        if len(self._docs) > self.max_items:
+            self._docs.popitem(last=False)
 
     def clear(self) -> None:
         self._docs.clear()
@@ -45,17 +63,19 @@ class XbrlParseCache:
     def get_or_create(
         self,
         path: str,
-        parser_func: Callable[[str], dict],
+        parser_func,
     ) -> ParsedXbrlDocument:
+
         cache_key = make_xbrl_cache_key(path)
+
         cached = self.get(cache_key)
 
         if cached is not None:
-            if self.logger is not None:
+            if self.logger:
                 self.logger.debug(f"[xbrl cache hit] {os.path.basename(path)}")
             return cached
 
-        if self.logger is not None:
+        if self.logger:
             self.logger.debug(f"[xbrl cache miss] {os.path.basename(path)}")
 
         parsed = parser_func(path)
@@ -77,5 +97,5 @@ class XbrlParseCache:
         )
 
         self.put(doc)
-        
+
         return doc

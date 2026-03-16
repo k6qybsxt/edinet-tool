@@ -1,522 +1,267 @@
-# AI_README.md
+AI_README — EDINET XBRL 決算自動分析システム
+目的
 
-# EDINETツール 開発引き継ぎドキュメント（ChatGPT用）
+EDINETのXBRLを解析し
+決算分析Excelテンプレートへ自動入力するPythonバッチシステム。
 
-## 1. プロジェクト概要
+対応機能
 
-### プロジェクト名
-edinet-tool
+EDINET ZIP投入
 
-### GitHub
-https://github.com/k6qybsxt/edinet-tool
+XBRL自動抽出
 
-### 目的
-EDINETのXBRLを解析し、決算分析Excelテンプレートへ自動入力するツール。
+半期あり / 半期なし自動判定
 
-### 対象
-- 有価証券報告書
-- 半期報告書
+5年分データ取得
 
-### 解析対象
-- 売上
-- 利益
-- CF
-- BS
-- 株式数
-- DEI
-- 株価
+Excelテンプレート自動入力
 
----
+株価取得
 
-## 2. 現在の開発フェーズ
+複数社一括処理
 
-現在は **IFRS対応と指標正規化の実装フェーズ**
-
-### 大目標
-- EDINETツールを10〜50倍高速化する
-- 日本基準 / IFRS の両対応を安定させる
-- Excelテンプレへ投資家目線で自然な値を書き込む
-
----
-
-## 3. 完了した設計
-
-### 3-1. XBRL読み込み方法見直し（完了）
-
-旧設計
-
-```text
-parse_xbrl_file
-  ↓
-out
-  ↓
-Excel
-
-問題
-
-XBRL構造を破棄
-
-再解析が必要
-
-IFRS対応困難
-
-拡張性が低い
-
-新設計
-
-XBRL
- ↓
-parse_xbrl_file_raw
- ↓
-ParsedXbrlDocument
- ├ facts
- ├ contexts
- ├ units
- ├ nsmap
- ├ dei_data
- └ meta
- ↓
-parse_cache
- ↓
-各処理
-3-2. ParsedXbrlDocument構造
-ParsedXbrlDocument
- ├ facts
- ├ contexts
- ├ units
- ├ nsmap
- ├ dei_data
- ├ accounting_standard
- └ document_display_unit
-3-3. facts構造
-fact
- ├ tag
- ├ qname
- ├ value
- ├ context_ref
- ├ unit_ref
- ├ decimals
- ├ precision
- ├ period_kind
- ├ start_date
- ├ end_date
- ├ instant_date
- ├ is_consolidated
- └ members
-3-4. contexts構造
-context
- ├ period_kind
- ├ start_date
- ├ end_date
- ├ instant_date
- ├ is_consolidated
- └ members
-3-5. units構造
-unit
- ├ measures
- ├ numerator
- └ denominator
-4. parse cache
-
-XBRLは1回だけ解析される。
-
-parse_cache
-
-[xbrl cache hit]
-
-[xbrl cache miss]
-
-5. raw生成
-
-現在は
-
-facts
-↓
-raw_service
-↓
-raw_rows
-tags制限
-
-normalize_tag_to_metric(tag) ベースで raw 化
-
-raw 側で metric ごとの絞り込みあり
-
-現在のraw最適化
-
-ProfitLoss: member付きfact除外
-
-IssuedShares / TreasuryShares:
-
-member付きfact除外
-
-instant以外除外
-
-rawログ
-
-[raw metric map]
-
-[raw optimize] skipped_doc_overlap ...
-
-6. 現在のパフォーマンス
-1社解析
-
-約 3.8〜4.0 秒
-（株価取得込み）
-
-XBRL解析部
-
-0.03〜0.16 秒程度 / 1ファイル
-
-高速化目標
-
-1社 0.2〜0.5 秒
-
-7. IFRS対応の進捗
-当初予定
-
-IFRS対応 1/4
+並列処理（ProcessPool）
 
 現在
+50社運用可能な基礎システム完成
 
-IFRS対応 実装かなり進行済み
+回答ルール（重要）
 
-対応済み内容
+ユーザーはPython初心者のため
 
-accounting_standard 判定
-
-IFRSタグ追加
-
-tag mapping 拡張
-
-raw_builder 対応
-
-Excel出力対応
-
-半期IFRS確認
-
-指標計算の投資家目線調整
-
-8. 現在の重要仕様
-8-1. NetAssets
-
-NetAssets_〇〇 には
-親会社の所有者に帰属する持ち分合計 を入れる方針。
-
-理由
-
-ProfitLoss が親会社帰属利益ベースのため整合性が高い
-
-投資家目線で自然
-
-8-2. GrossProfit
-
-常に以下で計算する。
-
-GrossProfit = NetSales - CostOfSales
-
-IFRSで売上総利益タグが無くても、この計算値を GrossProfit_〇〇 系へ入れる。
-
-8-3. SellingExpenses
-
-常に以下で扱う。
-
-SellingExpenses
-= 販売費及び一般管理費
-+ 金融事業に係る金融費用
-
-金融事業に係る金融費用が無い場合は、
-販売費及び一般管理費の値をそのまま使う。
-
-8-4. TotalNumber
-
-従来どおり以下で計算する。
-
-TotalNumber = IssuedShares - TreasuryShares
-9. 現在追加済みの主要IFRSタグ
-9-1. NetSales系
-
-jpcrp_cor:OperatingRevenuesIFRSKeyFinancialData
-
-9-2. OrdinaryIncome系
-
-jpcrp_cor:ProfitLossBeforeTaxIFRSSummaryOfBusinessResults
-などを利用中
-
-9-3. NetAssets系
-
-jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults
-
-9-4. TotalAssets系
-
-jpcrp_cor:TotalAssetsIFRSSummaryOfBusinessResults
-
-9-5. 金融事業に係る金融費用
-
-FinancialBusinessCost として保持
-
-現在の tags:
-
-jpigp_cor:CostOfFinancingOperationsIFRS
-
-jpigp_cor:FinanceCostsIFRS
-
-10. 直近で実装した重要改善
-10-1. CostOfSales 別名タグ対策
-
-実装済み
-
-10-2. SellingExpenses 別名タグ対策
-
-実装済み
-
-10-3. OperatingIncome 別名タグ対策
-
-実装済み
-
-10-4. OrdinaryIncome 別名タグ強化
-
-実装済み
-
-10-5. ProfitLoss の絞り込み
-
-member付きfact除外を実装済み
-
-10-6. IssuedShares / TreasuryShares の絞り込み
-
-member付きfact除外
-
-instant以外除外
-
-10-7. 金融事業に係る金融費用対応
-
-FinancialBusinessCost を追加し、
-SellingExpenses = SG&A + FinancialBusinessCost を実装済み
-
-10-8. 半期IFRS確認
-
-トヨタの半期報告書で確認済み
-Excel目視でも問題なし
-
-11. 現在のログで確認できていること
-年間IFRS
-
-FinancialBusinessCostCurrent
-
-FinancialBusinessCostPrior1
-
-FinancialBusinessCostPrior2
-
-FinancialBusinessCostPrior3
-
-FinancialBusinessCostPrior4
-
-が取得できている。
-
-半期IFRS
-
-FinancialBusinessCostYTD
-
-SellingExpensesYTD
-
-GrossProfitYTD
-
-OperatingIncomeYTD
-
-OrdinaryIncomeYTD
-
-ProfitLossYTD
-
-が取得できている。
-
-12. 現在の主要処理フロー
-main
- ↓
-loop_builder
- ↓
-loop_processor
- ↓
-parse_service
- ↓
-parse_cache
- ↓
-xbrl_parser
- ↓
-raw_service
- ↓
-excel_service
-13. 重要ディレクトリ
-src/edinet_tool
-
-cli
-
-config
-
-domain
-
-services
-
-logging_utils
-
-重要ファイル
-
-src/edinet_tool/services/xbrl_parser.py
-
-src/edinet_tool/services/raw_service.py
-
-src/edinet_tool/services/parse_service.py
-
-src/edinet_tool/services/parse_cache.py
-
-src/edinet_tool/services/excel_service.py
-
-src/edinet_tool/services/loop_processor.py
-
-14. 現在の課題
-14-1. ZipFile.del 警告
-
-ログに以下が出る。
-
-ZipFile.__del__
-ValueError: I/O operation on closed file
-
-これは openpyxl 由来の警告。
-現在の主タスクでは触らない。
-
-14-2. 株価取得の未来日
-
-未来日の株価は取得できない。
-例: 2026-03-31 の株価。
-不具合ではない。
-
-15. 次の優先タスク候補
-
-優先候補
-
-IFRSタグの追加整理
-
-OperatingIncome のIFRS別名タグさらに整理
-
-raw側の不要タグ除外をさらに強化
-
-README / AI_README を都度更新
-
-50社一括解析に向けた安定化
-
-その後、高速化フェーズに戻る
-
-16. 今後のロードマップ
-高速化ロードマップ
-
-XBRL parse cache
-
-Excel rename高速化
-
-XBRL読み込み見直し ← 完了
-
-IFRS対応 ← 進行中だがかなり進んだ
-
-50社一括解析
-
-XBRL parse cache強化
-
-並列処理
-
-17. 開発ルール（重要）
-
-ユーザーはPython初心者。
-
-回答ルール
+回答は 必ず修正指示のみ
 
 解説不要
 
-指示のみ
+修正指示は次の形式
 
-必要な時だけ区切る
+○行目〜○行目を置き換え
 
-無理に10回に分けない
+または
 
-プロのプログラマーとして「ここでログを見たい」と思うタイミングで止める
+関数○○を丸ごと置き換え
 
-コード修正指示方法
+必要な情報があれば質問すること。
 
-〇行目〜〇行目を置換してください
+現在の処理フロー
+ZIP投入
+↓
+ZIPからXBRL抽出
+↓
+company_jobs生成
+↓
+ProcessPool並列処理
+↓
+company_runner_worker
+↓
+company_runner
+↓
+loop_processor
+↓
+parse_service
+↓
+excel_service
+↓
+stock_service
+↓
+Excel出力
+↓
+batch_summary.csv生成
+入力
+data/input/zip
 
-関数を丸ごと置換してください
+EDINETからダウンロードしたZIP
 
-注意
+例
 
-中身を把握していないファイルがある場合は回答しない
+121_Xbrl_Search_xxxx.zip
+122ki_half_Xbrl_Search_xxxx.zip
+出力
+data/output/{timestamp}/
 
-必要ならアップロードを促す
+excel/
+reports/
 
-把握済みファイルに基づいて修正案を出す
+company_jobs.csv
+batch_summary.csv
+failed_jobs.csv
+現在のフォルダ構造
+src/
 
-18. 開発環境
-OS
+main.py
 
-Windows
+edinet_tool/
 
-Python
+ cli/
 
-3.14
+ config/
 
-主要ライブラリ
+ domain/
 
-lxml
+ logging_utils/
 
-pandas
+ services/
 
-openpyxl
+  batch_input_service.py
+  company_runner.py
+  company_runner_worker.py
+  excel_service.py
+  file_indexer.py
+  loop_builder.py
+  loop_processor.py
+  parse_cache.py
+  parse_service.py
+  raw_service.py
+  stock_service.py
+  stock_write_service.py
+  summary_service.py
+  workbook_service.py
+  xbrl_parser.py
+  xbrl_zip_reader.py
+  zip_loader.py
 
-yfinance
+runtime.py
+並列処理
+ProcessPoolExecutor
 
-19. 現在の判断
+worker
 
-現在のIFRS対応は、
-年間IFRS / 半期IFRS ともに、Excel目視で大きな問題なし。
+company_runner_worker.py
 
-特に以下は通っている。
+並列設定
 
-GrossProfit
+runtime.py
+use_process_pool = True
+max_workers = auto
 
-SellingExpenses
+CPU数から自動決定
 
-NetAssets
+min(8, cpu_count-1)
+パフォーマンス
 
-TotalNumber
+現在
 
-ProfitLoss 絞り込み
+4社
+約14秒
 
-IssuedShares / TreasuryShares 絞り込み
+推定
 
-FinancialBusinessCost 対応
+50社
+約4〜5分
+parse_cache
 
-20. 次チャット開始時の指示
+XBRL解析キャッシュ
 
-次のAIは以下から開始する。
+XbrlParseCache
 
-開始ポイント
+現在
 
-AI_README.md を踏まえて、次の優先タスクを1つ選んで進める。
+max_items = 16
+解決済み問題
+1 ZIP削除エラー
+PermissionError
+_zip_extracted
 
-有力候補
+原因
 
-OperatingIncome のIFRS別名タグ整理
+ZipFileハンドル残存
 
-IFRSタグ追加の残件整理
+解決
 
-raw最適化の追加
+with ZipFile()
+2 並列処理 Pathエラー
+TypeError
+unsupported operand type(s) for /
 
-21. 最重要目標
+原因
 
-最終的に実現すること
+ProcessPoolでPathがstr化
 
-EDINETツール
+解決
 
-50社解析
+template_dir = Path(template_dir)
+output_root = Path(output_root)
+3 workerログ爆発
+
+解決
+
+SilentLogger
+現在のログ
+[process pool] workers=6
+[company start]
+[batch summary]
+
+のみ
+
+出力確認
+batch_summary.csv
+
+例
+
+slot company_code company_name status stock_status
+1 2206 success success
+2 4613 success success
+3 6857 success success
+4 7203 success success
+Git運用
+
+ユーザーは以下で管理
+
+git add .
+git commit -m "message"
+git push
+次の開発フェーズ
+
+高速化
+
+予定
+
+① XBRLストリーム解析
+
+現在
+
+lxml parse
+
+予定
+
+iterparse
+
+効果
+
+10〜20倍高速化
+② ZIPメモリ展開
+
+現在
+
+ZIP → disk展開
+
+予定
+
+ZIP → memory
+③ Excel書き込み最適化
+
+現在
+
+セル単位書き込み
+
+予定
+
+range batch write
+最終目標
+50社
+30〜40秒処理
+AIへの依頼
+
+このシステムを
 
 10〜50倍高速化
 
-日本基準 / IFRS 両対応の安定運用
+する設計を提示してほしい。
 
-END
+ただし
+
+回答は
+
+修正指示のみ
+
+でお願いします。
