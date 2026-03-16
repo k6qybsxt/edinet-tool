@@ -2,40 +2,44 @@ import zipfile
 from pathlib import Path
 
 
-def collect_xbrl_from_zip(zip_dir: str):
+def collect_xbrl_from_zip(zip_dir: str, extract_dir: str):
     """
-    zipフォルダからXBRLを抽出して一覧を返す
+    zipフォルダから対象XBRLを抽出し、抽出後のファイルパス一覧を返す
     return:
         [
-            {
-                "zip_path": "...",
-                "xbrl_name": "...",
-                "xbrl_bytes": bytes
-            }
+            "C:/.../data/input/_zip_extracted/xxx.xbrl",
+            ...
         ]
     """
 
+    zip_dir = Path(zip_dir)
+    extract_dir = Path(extract_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
     results = []
 
-    zip_dir = Path(zip_dir)
-
     for zip_path in zip_dir.glob("*.zip"):
-
         with zipfile.ZipFile(zip_path, "r") as z:
-
             for name in z.namelist():
+                lower = name.lower()
 
-                if not name.lower().endswith(".xbrl"):
+                if not lower.endswith(".xbrl"):
                     continue
 
-                data = z.read(name)
+                # 監査報告書などは除外
+                if "/auditdoc/" in lower or "\\auditdoc\\" in lower:
+                    continue
 
-                results.append(
-                    {
-                        "zip_path": str(zip_path),
-                        "xbrl_name": name,
-                        "xbrl_bytes": data,
-                    }
-                )
+                # 財務本体だけ対象
+                if "jpcrp030000-asr" not in lower and "jpcrp040300" not in lower:
+                    continue
 
-    return results
+                out_name = Path(name).name
+                out_path = extract_dir / out_name
+
+                with z.open(name) as src, open(out_path, "wb") as dst:
+                    dst.write(src.read())
+
+                results.append(str(out_path))
+
+    return sorted(results)

@@ -24,7 +24,8 @@ def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_
     if xbrl_file_paths.get("file1") and xbrl_file_paths["file1"]:
         path1 = xbrl_file_paths["file1"][0]
 
-    is_half_doc = bool(path1 and os.path.basename(path1).startswith(f"{loop.get('slot')}-2"))
+    name1 = os.path.basename(path1).lower() if path1 else ""
+    is_half_doc = bool(path1 and "jpcrp040300" in name1)
 
     if path1:
         try:
