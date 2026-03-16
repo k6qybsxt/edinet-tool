@@ -23,11 +23,11 @@ def main():
     # 作業ディレクトリを表示
     logger.info(f"プロジェクトルート: {BASE_DIR}")
 
-    # === XBRLフォルダ設定 ===
-    base_dir = str(BASE_DIR / "data" / "input" / "XBRL")
+    # === ZIPフォルダ設定 ===
+    base_dir = str(BASE_DIR / "data" / "input" / "zip")
     template_dir = str(BASE_DIR / "templates")
 
-    logger.info(f"XBRLフォルダ（固定）: {base_dir}")
+    logger.info(f"ZIPフォルダ（固定）: {base_dir}")
     if not os.path.isdir(base_dir):
         logger.critical(f"base_dir が存在しません。パスを確認してください: {base_dir}")
         raise SystemExit(1)
