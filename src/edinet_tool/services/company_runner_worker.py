@@ -1,26 +1,9 @@
 from dataclasses import asdict
 import traceback
-
+from edinet_tool.logging_utils.logger import setup_logger
 from edinet_tool.services.company_runner import run_company_job
 from edinet_tool.services.parse_cache import XbrlParseCache
 from edinet_tool.services.company_task_result import CompanyTaskResult
-
-
-class _SilentLogger:
-    def debug(self, *args, **kwargs):
-        pass
-
-    def info(self, *args, **kwargs):
-        pass
-
-    def warning(self, *args, **kwargs):
-        pass
-
-    def error(self, *args, **kwargs):
-        pass
-
-    def exception(self, *args, **kwargs):
-        pass
 
 
 def run_company_job_worker(
@@ -30,7 +13,7 @@ def run_company_job_worker(
     template_dir,
     log_level,
 ):
-    logger = _SilentLogger()
+    logger = setup_logger(log_level=log_level)
     skipped_files = []
     parse_cache = XbrlParseCache(logger=logger, max_items=8)
 

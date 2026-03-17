@@ -10,6 +10,7 @@ from typing import Any
 from datetime import datetime, timedelta
 from lxml import etree
 from collections import defaultdict, deque
+from io import BytesIO
 
 # ここに、main.py から移す「解析専用定数」を置く
 # 例:
@@ -248,7 +249,24 @@ METRICS = {
 
 
 # XBRLデータの解析（完成版）
-def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
+def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None, pre_parsed=None):
+
+    if logger is None:
+        class _DummyLogger:
+            def debug(self, *args, **kwargs): pass
+            def info(self, *args, **kwargs): pass
+            def warning(self, *args, **kwargs): pass
+            def error(self, *args, **kwargs): pass
+        logger = _DummyLogger()
+
+    if pre_parsed:
+        contexts = pre_parsed.get("contexts", {})
+        nsmap = pre_parsed.get("nsmap", {})
+        dei_data = pre_parsed.get("dei_data", {})
+    else:
+        contexts = {}
+        nsmap = {}
+        dei_data = {}
 
     def _attr_any(el, *names):
         """
@@ -312,11 +330,6 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
     out_meta = {}
 
     # ===== nsmap -> QName helper =====
-    nsmap = {}
-    for ev, el0 in etree.iterparse(xbrl_file, events=("start",), recover=True, huge_tree=True):
-        nsmap = dict(el0.nsmap or {})
-        break
-
     def _qname(tag_prefixed: str) -> str:
         pref, local = tag_prefixed.split(":", 1)
         uri = nsmap.get(pref)
@@ -342,9 +355,43 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
     }
     DEI_Q = {_qname(k): v for k, v in DEI_TAGS.items()}
 
-    # ===== state =====
-    contexts = {}  # ctx_id -> {start,end,instant,dim}
+    if pre_parsed and dei_data:
+        for raw_tag, v in dei_data.items():
+            local_tag = str(raw_tag).split("}")[-1]
 
+            if local_tag == "CurrentFiscalYearStartDateDEI":
+                out["CurrentFiscalYearStartDateDEI"] = v
+                fy_start_dei = v
+
+            elif local_tag == "CurrentPeriodEndDateDEI":
+                out["CurrentPeriodEndDateDEI"] = v
+                period_end_dei = v
+
+            elif local_tag == "TypeOfCurrentPeriodDEI":
+                out["TypeOfCurrentPeriodDEI"] = v
+                period_type = v
+
+            elif local_tag == "CurrentFiscalYearEndDateDEI":
+                out["CurrentFiscalYearEndDateDEI"] = v
+
+            elif local_tag == "SecurityCodeDEI":
+                if str(v).isdigit() and len(str(v)) >= 2:
+                    security_code = str(v)[:-1]
+                    out["SecurityCodeDEI"] = security_code
+
+            elif local_tag in ("FilerNameInJapaneseDEI", "FilerNameDEI"):
+                if "CompanyNameCoverPage" not in out:
+                    out["CompanyNameCoverPage"] = v
+
+            elif local_tag == "DocumentDisplayUnitDEI":
+                out["DocumentDisplayUnit"] = v
+
+    fy_start_dei = out.get("CurrentFiscalYearStartDateDEI")
+    period_end_dei = out.get("CurrentPeriodEndDateDEI")
+    period_type = out.get("TypeOfCurrentPeriodDEI")
+    security_code = out.get("SecurityCodeDEI")
+
+    # ===== state =====
     ctxref_missing = 0
     ctxref_notfound = 0
     ctxref_found = 0
@@ -362,11 +409,6 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
     dur_ends_by_metric_months = defaultdict(set)  # (metric, months) -> set(end)
     inst_ends_by_metric = defaultdict(set)        # metric -> set(end)
 
-    fy_start_dei = None
-    period_end_dei = None
-    period_type = None
-    security_code = None
-
     metric_hit = 0
     metric_hit_nonempty = 0
     metric_hit_sample = []
@@ -378,141 +420,257 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
 
 
     # ===== 1-pass iterparse =====
-    for event, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
-        local = el.tag.split("}")[-1]
+    if not pre_parsed:
+        for event, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
+            local = el.tag.split("}")[-1]
 
-        # context の子要素は parent(context) を読むまで clear しない
-        if local in {
-            "startDate",
-            "endDate",
-            "instant",
-            "explicitMember",
-            "entity",
-            "identifier",
-            "period",
-            "scenario",
-            "segment",
-        }:
-            continue
+            # context の子要素は parent(context) を読むまで clear しない
+            if local in {
+                "startDate",
+                "endDate",
+                "instant",
+                "explicitMember",
+                "entity",
+                "identifier",
+                "period",
+                "scenario",
+                "segment",
+            }:
+                continue
 
-        if len(seen_local_sample) < 10 and local not in seen_locals:
-            seen_locals.add(local)
-            seen_local_sample.append(local)
+            if len(seen_local_sample) < 10 and local not in seen_locals:
+                seen_locals.add(local)
+                seen_local_sample.append(local)
 
-        # --- context ---
-        if local == "context":
-            ctx_id = (el.get("id") or "").strip() or None
-            if ctx_id:
-                start_s = end_s = inst_s = None
+            # --- context ---
+            if local == "context":
+                ctx_id = (el.get("id") or "").strip() or None
+                if ctx_id:
+                    start_s = end_s = inst_s = None
 
-                for p in el.iter():
-                    pl = p.tag.split("}")[-1]
-                    if pl == "startDate":
-                        start_s = (p.text or "").strip() or None
-                    elif pl == "endDate":
-                        end_s = (p.text or "").strip() or None
-                    elif pl == "instant":
-                        inst_s = (p.text or "").strip() or None
+                    for p in el.iter():
+                        pl = p.tag.split("}")[-1]
+                        if pl == "startDate":
+                            start_s = (p.text or "").strip() or None
+                        elif pl == "endDate":
+                            end_s = (p.text or "").strip() or None
+                        elif pl == "instant":
+                            inst_s = (p.text or "").strip() or None
 
-                members = []
-                for m in el.iter():
-                    if m.tag.split("}")[-1] == "explicitMember":
-                        t = (m.text or "").strip()
-                        if t:
-                            members.append(t)
+                    members = []
+                    for m in el.iter():
+                        if m.tag.split("}")[-1] == "explicitMember":
+                            t = (m.text or "").strip()
+                            if t:
+                                members.append(t)
 
-                is_noncon = any("NonConsolidatedMember" in t for t in members)
-                dim = "NonConsolidated" if is_noncon else "Consolidated"
+                    is_noncon = any("NonConsolidatedMember" in t for t in members)
+                    dim = "NonConsolidated" if is_noncon else "Consolidated"
 
-                ctx = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
-                contexts[ctx_id] = ctx
+                    ctx = {"start": start_s, "end": end_s, "instant": inst_s, "dim": dim}
+                    contexts[ctx_id] = ctx
 
-                if ctx_id in pending:
-                    for finfo in pending.pop(ctx_id):
-                        metric, tag_priority, kind, unit, tag_used, txt = finfo
+                    if ctx_id in pending:
+                        for finfo in pending.pop(ctx_id):
+                            metric, tag_priority, kind, unit, tag_used, txt = finfo
 
-                        if kind == "duration":
-                            if ctx["start"] and ctx["end"]:
-                                months = duration_bucket_months(ctx["start"], ctx["end"])
-                                if months in (6, 12):
-                                    end_date = ctx["end"]
+                            if kind == "duration":
+                                if ctx["start"] and ctx["end"]:
+                                    months = duration_bucket_months(ctx["start"], ctx["end"])
+                                    if months in (6, 12):
+                                        end_date = ctx["end"]
+
+                                        cand = {
+                                            "value": txt,
+                                            "start": ctx["start"],
+                                            "end": end_date,
+                                            "months": months,
+                                            "dim": ctx["dim"],
+                                            "tag_priority": tag_priority,
+                                            "tag_used": tag_used,
+                                        }
+
+                                        best_update(dur_best, (metric, end_date, months), cand)
+                                        dur_ends_by_metric_months[(metric, months)].add(end_date)
+
+                                        if months == 12 and parse_ymd(end_date):
+                                            fy_end_candidates.add(end_date)
+
+                            else:
+                                if ctx["instant"]:
+                                    end_date = ctx["instant"]
 
                                     cand = {
                                         "value": txt,
-                                        "start": ctx["start"],
+                                        "start": None,
                                         "end": end_date,
-                                        "months": months,
                                         "dim": ctx["dim"],
                                         "tag_priority": tag_priority,
                                         "tag_used": tag_used,
                                     }
 
-                                    best_update(dur_best, (metric, end_date, months), cand)
-                                    dur_ends_by_metric_months[(metric, months)].add(end_date)
+                                    best_update(inst_best, (metric, end_date), cand)
+                                    inst_ends_by_metric[metric].add(end_date)
 
-                                    if months == 12 and parse_ymd(end_date):
-                                        fy_end_candidates.add(end_date)
+                el.clear()
+                continue
+
+            # --- DEI ---
+            k = DEI_Q.get(el.tag)
+
+            if k:
+                v = (el.text or "").strip()
+
+                if v:
+                    if k == "CompanyNameCoverPage":
+                        if "CompanyNameCoverPage" not in out:
+                            out["CompanyNameCoverPage"] = v
+                    else:
+                        out[k] = v
+
+                    if k == "CurrentFiscalYearStartDateDEI":
+                        fy_start_dei = v
+
+                    elif k == "CurrentPeriodEndDateDEI":
+                        period_end_dei = v
+
+                    elif k == "TypeOfCurrentPeriodDEI":
+                        period_type = v
+
+                    elif k == "SecurityCodeDEI":
+                        if v.isdigit() and len(v) >= 2:
+                            security_code = v[:-1]
+                            out["SecurityCodeDEI"] = security_code
+
+                el.clear()
+                continue
+
+            # --- FACT ---
+            info = METRIC_L.get(local)
+
+            if info:
+
+                metric, tag_priority, kind, unit, tag_used = info
+
+                metric_hit += 1
+
+                txt = (el.text or "").strip()
+
+                unit_ref = (el.get("unitRef") or "").strip()
+                decimals = (el.get("decimals") or "").strip()
+
+                if unit_ref == "JPY":
+                    if decimals == "-6":
+                        display_unit_votes["百万円"] += 1
+                    elif decimals == "-3":
+                        display_unit_votes["千円"] += 1
+
+                if txt:
+                    metric_hit_nonempty += 1
+
+                if len(metric_hit_sample) < 8:
+                    metric_hit_sample.append((local, tag_used))
+
+                ctxref = (_attr_any(el, "contextRef") or "").strip() or None
+
+                # --- ctxrefメーター（最初の10件だけサンプル）---
+                if len(ctxref_samples) < 10:
+                    ctxref_samples.append((local, ctxref, ctxref in contexts if ctxref else None))
+
+                if not ctxref:
+                    ctxref_missing += 1
+                else:
+                    if ctxref in contexts:
+                        ctxref_found += 1
+                    else:
+                        ctxref_notfound += 1
+
+                if metric_hit <= 5:
+                    logger.debug(
+                        "[ctxref sample] local=%s ctxref=%s has_ctx=%s",
+                        local,
+                        ctxref,
+                        (ctxref in contexts) if ctxref else None
+                    )
+
+                if ctxref:
+
+                    txt = (el.text or "").strip()
+
+                    if txt:
+
+                        ctx = contexts.get(ctxref)
+
+                        if ctx is None:
+                            pending[ctxref].append(
+                                (metric, tag_priority, kind, unit, tag_used, txt)
+                            )
 
                         else:
-                            if ctx["instant"]:
-                                end_date = ctx["instant"]
 
-                                cand = {
-                                    "value": txt,
-                                    "start": None,
-                                    "end": end_date,
-                                    "dim": ctx["dim"],
-                                    "tag_priority": tag_priority,
-                                    "tag_used": tag_used,
-                                }
+                            if kind == "duration":
 
-                                best_update(inst_best, (metric, end_date), cand)
-                                inst_ends_by_metric[metric].add(end_date)
+                                if ctx["start"] and ctx["end"]:
 
+                                    months = duration_bucket_months(ctx["start"], ctx["end"])
+
+                                    if months in (6, 12):
+
+                                        end_date = ctx["end"]
+
+                                        cand = {
+                                            "value": txt,
+                                            "start": ctx["start"],
+                                            "end": end_date,
+                                            "months": months,
+                                            "dim": ctx["dim"],
+                                            "tag_priority": tag_priority,
+                                            "tag_used": tag_used,
+                                        }
+
+                                        best_update(dur_best, (metric, end_date, months), cand)
+
+                                        dur_ends_by_metric_months[(metric, months)].add(end_date)
+
+                                        if months == 12 and parse_ymd(end_date):
+                                            fy_end_candidates.add(end_date)
+
+                            else:
+
+                                if ctx["instant"]:
+
+                                    end_date = ctx["instant"]
+
+                                    cand = {
+                                        "value": txt,
+                                        "start": None,
+                                        "end": end_date,
+                                        "dim": ctx["dim"],
+                                        "tag_priority": tag_priority,
+                                        "tag_used": tag_used,
+                                    }
+
+                                    best_update(inst_best, (metric, end_date), cand)
+
+                                    inst_ends_by_metric[metric].add(end_date)
             el.clear()
-            continue
 
-        # --- DEI ---
-        k = DEI_Q.get(el.tag)
+    if pre_parsed:
+        for el in pre_parsed.get("facts", []):
+            local = el.get("local") or str(el.get("tag", "")).split("}")[-1]
 
-        if k:
-            v = (el.text or "").strip()
+            if len(seen_local_sample) < 10 and local not in seen_locals:
+                seen_locals.add(local)
+                seen_local_sample.append(local)
 
-            if v:
-                if k == "CompanyNameCoverPage":
-                    if "CompanyNameCoverPage" not in out:
-                        out["CompanyNameCoverPage"] = v
-                else:
-                    out[k] = v
-
-                if k == "CurrentFiscalYearStartDateDEI":
-                    fy_start_dei = v
-
-                elif k == "CurrentPeriodEndDateDEI":
-                    period_end_dei = v
-
-                elif k == "TypeOfCurrentPeriodDEI":
-                    period_type = v
-
-                elif k == "SecurityCodeDEI":
-                    if v.isdigit() and len(v) >= 2:
-                        security_code = v[:-1]
-                        out["SecurityCodeDEI"] = security_code
-
-            el.clear()
-            continue
-
-        # --- FACT ---
-        info = METRIC_L.get(local)
-
-        if info:
+            info = METRIC_L.get(local)
+            if not info:
+                continue
 
             metric, tag_priority, kind, unit, tag_used = info
-
             metric_hit += 1
 
-            txt = (el.text or "").strip()
-
+            txt = (el.get("text") or "").strip()
             unit_ref = (el.get("unitRef") or "").strip()
             decimals = (el.get("decimals") or "").strip()
 
@@ -528,90 +686,61 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None):
             if len(metric_hit_sample) < 8:
                 metric_hit_sample.append((local, tag_used))
 
-            ctxref = (_attr_any(el, "contextRef") or "").strip() or None
+            ctxref = (el.get("contextRef") or "").strip() or None
 
-            # --- ctxrefメーター（最初の10件だけサンプル）---
             if len(ctxref_samples) < 10:
                 ctxref_samples.append((local, ctxref, ctxref in contexts if ctxref else None))
 
             if not ctxref:
                 ctxref_missing += 1
+                continue
+
+            if ctxref in contexts:
+                ctxref_found += 1
             else:
-                if ctxref in contexts:
-                    ctxref_found += 1
-                else:
-                    ctxref_notfound += 1
+                ctxref_notfound += 1
+                continue
 
-            if metric_hit <= 5:
-                logger.debug(
-                    "[ctxref sample] local=%s ctxref=%s has_ctx=%s",
-                    local,
-                    ctxref,
-                    (ctxref in contexts) if ctxref else None
-                )
+            ctx = contexts.get(ctxref)
+            if not ctx or not txt:
+                continue
 
-            if ctxref:
+            if kind == "duration":
+                if ctx["start"] and ctx["end"]:
+                    months = duration_bucket_months(ctx["start"], ctx["end"])
+                    if months in (6, 12):
+                        end_date = ctx["end"]
 
-                txt = (el.text or "").strip()
+                        cand = {
+                            "value": txt,
+                            "start": ctx["start"],
+                            "end": end_date,
+                            "months": months,
+                            "dim": ctx["dim"],
+                            "tag_priority": tag_priority,
+                            "tag_used": tag_used,
+                        }
 
-                if txt:
+                        best_update(dur_best, (metric, end_date, months), cand)
+                        dur_ends_by_metric_months[(metric, months)].add(end_date)
 
-                    ctx = contexts.get(ctxref)
+                        if months == 12 and parse_ymd(end_date):
+                            fy_end_candidates.add(end_date)
+            else:
+                if ctx["instant"]:
+                    end_date = ctx["instant"]
 
-                    if ctx is None:
-                        pending[ctxref].append(
-                            (metric, tag_priority, kind, unit, tag_used, txt)
-                        )
+                    cand = {
+                        "value": txt,
+                        "start": None,
+                        "end": end_date,
+                        "dim": ctx["dim"],
+                        "tag_priority": tag_priority,
+                        "tag_used": tag_used,
+                    }
 
-                    else:
-
-                        if kind == "duration":
-
-                            if ctx["start"] and ctx["end"]:
-
-                                months = duration_bucket_months(ctx["start"], ctx["end"])
-
-                                if months in (6, 12):
-
-                                    end_date = ctx["end"]
-
-                                    cand = {
-                                        "value": txt,
-                                        "start": ctx["start"],
-                                        "end": end_date,
-                                        "months": months,
-                                        "dim": ctx["dim"],
-                                        "tag_priority": tag_priority,
-                                        "tag_used": tag_used,
-                                    }
-
-                                    best_update(dur_best, (metric, end_date, months), cand)
-
-                                    dur_ends_by_metric_months[(metric, months)].add(end_date)
-
-                                    if months == 12 and parse_ymd(end_date):
-                                        fy_end_candidates.add(end_date)
-
-                        else:
-
-                            if ctx["instant"]:
-
-                                end_date = ctx["instant"]
-
-                                cand = {
-                                    "value": txt,
-                                    "start": None,
-                                    "end": end_date,
-                                    "dim": ctx["dim"],
-                                    "tag_priority": tag_priority,
-                                    "tag_used": tag_used,
-                                }
-
-                                best_update(inst_best, (metric, end_date), cand)
-
-                                inst_ends_by_metric[metric].add(end_date)
-        el.clear()
-
+                    best_update(inst_best, (metric, end_date), cand)
+                    inst_ends_by_metric[metric].add(end_date)  
 
     sample_ctx = list(contexts.items())[:5]
     logger.debug("[context sample] mode=%s %s", mode, sample_ctx)
@@ -1034,103 +1163,6 @@ def _extract_dei_data_from_out(out):
     ]
     return {k: out.get(k) for k in keys if k in out}
 
-def _read_nsmap_from_xbrl(xbrl_file):
-    nsmap = {}
-    for _, el in etree.iterparse(xbrl_file, events=("start",), recover=True, huge_tree=True):
-        nsmap = dict(el.nsmap or {})
-        break
-    return nsmap
-
-def _read_contexts_from_xbrl(xbrl_file):
-    contexts = {}
-
-    for _, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
-        local = el.tag.split("}")[-1]
-
-        if local != "context":
-            continue
-
-        ctx_id = (el.get("id") or "").strip()
-        if not ctx_id:
-            el.clear()
-            continue
-
-        start_s = None
-        end_s = None
-        instant_s = None
-        members = []
-
-        for p in el.iter():
-            pl = p.tag.split("}")[-1]
-
-            if pl == "startDate":
-                start_s = (p.text or "").strip() or None
-            elif pl == "endDate":
-                end_s = (p.text or "").strip() or None
-            elif pl == "instant":
-                instant_s = (p.text or "").strip() or None
-            elif pl == "explicitMember":
-                t = (p.text or "").strip()
-                if t:
-                    members.append(t)
-
-        is_noncon = any("NonConsolidatedMember" in t for t in members)
-
-        contexts[ctx_id] = {
-            "period_kind": "instant" if instant_s else "duration",
-            "start_date": start_s,
-            "end_date": end_s,
-            "instant_date": instant_s,
-            "is_consolidated": not is_noncon,
-            "members": members,
-        }
-
-        el.clear()
-
-    return contexts
-
-def _read_units_from_xbrl(xbrl_file):
-    units = {}
-
-    for _, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
-        local = el.tag.split("}")[-1]
-
-        if local != "unit":
-            continue
-
-        unit_id = (el.get("id") or "").strip()
-        if not unit_id:
-            el.clear()
-            continue
-
-        measures = []
-        numerator = []
-        denominator = []
-
-        for p in el.iter():
-            pl = p.tag.split("}")[-1]
-            txt = (p.text or "").strip()
-
-            if not txt:
-                continue
-
-            if pl == "measure":
-                measures.append(txt)
-            elif pl == "unitNumerator":
-                numerator.append(txt)
-            elif pl == "unitDenominator":
-                denominator.append(txt)
-
-        units[unit_id] = {
-            "measures": measures,
-            "numerator": numerator,
-            "denominator": denominator,
-        }
-
-        el.clear()
-
-    return units
-
 def _safe_local(tag):
     return str(tag).split("}")[-1]
 
@@ -1150,70 +1182,6 @@ def _safe_num(v):
     except Exception:
         return None
 
-
-def _read_facts_from_xbrl(xbrl_file, contexts):
-    facts = []
-
-    for _, el in etree.iterparse(xbrl_file, events=("end",), recover=True, huge_tree=True):
-        local = _safe_local(el.tag)
-
-        if local in {
-            "context",
-            "unit",
-            "schemaRef",
-            "roleRef",
-            "arcroleRef",
-            "measure",
-            "unitNumerator",
-            "unitDenominator",
-            "divide",
-            "identifier",
-            "period",
-            "scenario",
-            "segment",
-            "startDate",
-            "endDate",
-            "instant",
-            "explicitMember",
-        }:
-            el.clear()
-            continue
-
-        ctxref = _safe_text(el.get("contextRef"))
-        unitref = _safe_text(el.get("unitRef"))
-        decimals = _safe_text(el.get("decimals"))
-        precision = _safe_text(el.get("precision"))
-        text = _safe_text(el.text)
-
-        if not ctxref:
-            el.clear()
-            continue
-
-        ctx = contexts.get(ctxref, {})
-        qname = str(el.tag)
-        value = _safe_num(text)
-
-        facts.append({
-            "tag": local,
-            "qname": qname,
-            "text": text,
-            "value": value,
-            "context_ref": ctxref,
-            "unit_ref": unitref,
-            "decimals": decimals,
-            "precision": precision,
-            "period_kind": ctx.get("period_kind"),
-            "start_date": ctx.get("start_date"),
-            "end_date": ctx.get("end_date"),
-            "instant_date": ctx.get("instant_date"),
-            "is_consolidated": ctx.get("is_consolidated"),
-            "members": ctx.get("members", []),
-        })
-
-        el.clear()
-
-    return facts
-
 def trim_value(v, unit):
     if v is None:
         return None
@@ -1226,32 +1194,140 @@ def trim_value(v, unit):
     except Exception:
         return None
 
-def parse_xbrl_file_raw(xbrl_file, mode="full", logger=None):
-    xbrl_path = str(xbrl_file)
+def parse_xbrl_file_raw(path=None, xbrl_bytes=None, mode="full", logger=None):
+    facts = []
+    contexts = {}
+    units = {}
+    nsmap = {}
+    dei_data = {}
 
-    nsmap = _read_nsmap_from_xbrl(xbrl_path)
-    contexts = _read_contexts_from_xbrl(xbrl_path)
-    units = _read_units_from_xbrl(xbrl_path)
-    facts = _read_facts_from_xbrl(xbrl_path, contexts)
+    security_code = None
+    accounting_standard = "jpgaap"
+    document_display_unit = None
 
-    out, security_code, out_meta = parse_xbrl_file_legacy(
-        xbrl_path,
+    source = BytesIO(xbrl_bytes) if xbrl_bytes else path
+
+    for event, elem in etree.iterparse(source, events=("start", "end"), recover=True, huge_tree=True):
+        tag = elem.tag
+        local = str(tag).split("}")[-1]
+
+        if event == "start" and elem.nsmap:
+            nsmap.update({k: v for k, v in elem.nsmap.items() if k})
+            continue
+
+        if event != "end":
+            continue
+
+        # context / unit の親要素を読む前に子を clear しない
+        if local in {
+            "startDate",
+            "endDate",
+            "instant",
+            "explicitMember",
+            "entity",
+            "identifier",
+            "period",
+            "scenario",
+            "segment",
+            "measure",
+        }:
+            continue
+
+        if local == "context":
+            cid = (elem.get("id") or "").strip()
+            if cid:
+                start_s = end_s = inst_s = None
+                members = []
+
+                for p in elem.iter():
+                    pl = str(p.tag).split("}")[-1]
+                    if pl == "startDate":
+                        start_s = (p.text or "").strip() or None
+                    elif pl == "endDate":
+                        end_s = (p.text or "").strip() or None
+                    elif pl == "instant":
+                        inst_s = (p.text or "").strip() or None
+                    elif pl == "explicitMember":
+                        t = (p.text or "").strip()
+                        if t:
+                            members.append(t)
+
+                is_noncon = any("NonConsolidatedMember" in t for t in members)
+                dim = "NonConsolidated" if is_noncon else "Consolidated"
+
+                contexts[cid] = {
+                    "start": start_s,
+                    "end": end_s,
+                    "instant": inst_s,
+                    "dim": dim,
+                }
+
+        elif local == "unit":
+            uid = (elem.get("id") or "").strip()
+            if uid:
+                measures = []
+                for p in elem.iter():
+                    pl = str(p.tag).split("}")[-1]
+                    if pl == "measure":
+                        t = (p.text or "").strip()
+                        if t:
+                            measures.append(t)
+                units[uid] = {"measures": measures}
+
+        else:
+            context_ref = None
+            for n in ("contextRef",):
+                v = elem.get(n)
+                if v is not None:
+                    context_ref = v
+                    break
+            if context_ref is None and elem.attrib:
+                for k, v in elem.attrib.items():
+                    if k.split("}")[-1] == "contextRef":
+                        context_ref = v
+                        break
+
+            text = (elem.text or "").strip()
+
+            if context_ref:
+                facts.append({
+                    "tag": str(tag),
+                    "local": local,
+                    "text": text,
+                    "contextRef": context_ref,
+                    "unitRef": elem.get("unitRef"),
+                    "decimals": elem.get("decimals"),
+                })
+
+            if "dei" in str(tag).lower() and text:
+                dei_data[str(tag)] = text
+
+                if "securitycode" in str(tag).lower():
+                    if text.isdigit() and len(text) >= 2:
+                        security_code = text[:-1]
+                    else:
+                        security_code = text
+
+                if "accountingstandard" in str(tag).lower():
+                    accounting_standard = text
+
+                if "documentdisplayunit" in str(tag).lower():
+                    document_display_unit = text
+
+        elem.clear()
+
+    out, security_code2, out_meta = parse_xbrl_file_legacy(
+        source,
         mode=mode,
         logger=logger,
+        pre_parsed={
+            "facts": facts,
+            "contexts": contexts,
+            "units": units,
+            "nsmap": nsmap,
+            "dei_data": dei_data,
+        },
     )
-
-    dei_data = _extract_dei_data_from_out(out)
-    accounting_standard = _detect_accounting_standard(nsmap)
-
-    meta = {
-        "path": xbrl_path,
-        "basename": os.path.basename(xbrl_path),
-        "mode": mode,
-        "security_code": security_code,
-        "accounting_standard": accounting_standard,
-        "parser_version": "raw-v2",
-        "document_display_unit": out.get("DocumentDisplayUnit"),
-    }
 
     return {
         "facts": facts,
@@ -1259,18 +1335,19 @@ def parse_xbrl_file_raw(xbrl_file, mode="full", logger=None):
         "units": units,
         "nsmap": nsmap,
         "dei_data": dei_data,
-        "meta": meta,
+        "meta": {
+            "accounting_standard": accounting_standard,
+            "document_display_unit": document_display_unit,
+        },
         "out": out,
         "out_meta": out_meta,
-        "security_code": security_code,
+        "security_code": security_code or security_code2,
     }
 
 def parse_xbrl_file(xbrl_file, mode="full", logger=None):
-
-    out, security_code, out_meta = parse_xbrl_file_legacy(
+    parsed = parse_xbrl_file_raw(
         xbrl_file,
         mode=mode,
         logger=logger,
     )
-
-    return out, security_code, out_meta
+    return parsed["out"], parsed["security_code"], parsed["out_meta"]

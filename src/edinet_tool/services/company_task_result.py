@@ -10,3 +10,4 @@ class CompanyTaskResult:
     stock_status: str | None = None
     output_excel: str | None = None
     failure_reason: str | None = None
+    error_detail: str | None = None

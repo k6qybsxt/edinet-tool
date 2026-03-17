@@ -364,7 +364,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
                 logger,
             )
 
-            if stock_result["errors"] > 0 or stock_result["missing_name"] > 0 or stock_result["bad_input"] > 0:
+            if stock_result["errors"] > 0:
                 stock_status = "partial_success"
             else:
                 stock_status = "success"
@@ -378,7 +378,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
                 f"errors={stock_result['errors']}"
             )
         else:
-            stock_status = "partial_success"
+            stock_status = "success"
 
         wb.save(excel_file_path)
 
@@ -457,8 +457,6 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
     )
 
     status = "success"
-    if stock_status == "partial_success":
-        status = "partial_success"
 
     logger.info(
         f"[company done] slot={loop.get('slot')} "

@@ -28,7 +28,7 @@ ALLOWED_RAW_FACT_TAGS = allowed_raw_fact_tags()
 def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
     raw_rows = []
     seen_template_keys = set()
-    
+
     company_code_for_raw = security_code or ""
     if not company_code_for_raw:
         for d in parsed_docs:
@@ -39,10 +39,12 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
     company_code_for_raw = company_code_for_raw or ""
 
     for d in parsed_docs:
-        if d.get("facts") is not None:
+        facts = d.get("facts") or []
+
+        if facts:
             doc_rows = []
             metric_counter = {}
-            
+
             profitloss_parent_tags = {
                 "ProfitLossAttributableToOwnersOfParent",
                 "ProfitLossAttributableToOwnersOfParentIFRS",
@@ -73,20 +75,20 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
 
             has_netsales_preferred = any(
                 str(x.get("tag", "")).split(":")[-1] in netsales_preferred_tags
-                for x in d["facts"]
+                for x in facts
             )
 
             has_ordinary_preferred = any(
                 str(x.get("tag", "")).split(":")[-1] in ordinary_preferred_tags
-                for x in d["facts"]
+                for x in facts
             )
 
             has_profitloss_parent = any(
                 str(x.get("tag", "")).split(":")[-1] in profitloss_parent_tags
-                for x in d["facts"]
+                for x in facts
             )
 
-            for f in d["facts"]:
+            for f in facts:
                 tag = f.get("tag")
                 local_tag = str(tag).split(":")[-1] if tag else ""
 
@@ -190,14 +192,28 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
                     dict(sorted(metric_counter.items()))
                 )
 
+            if not doc_rows:
+                doc_rows = build_raw_rows_from_out(
+                    company_code=company_code_for_raw,
+                    doc_id=d["doc_id"],
+                    doc_type=d["doc_type"],
+                    out=d["out"],
+                    out_meta=d["out_meta"],
+                )
+                logger.info(
+                    "[raw fallback] doc=%s rows=%d",
+                    d["doc_id"],
+                    len(doc_rows),
+                )
+
         else:
             doc_rows = build_raw_rows_from_out(
-            company_code=company_code_for_raw,
-            doc_id=d["doc_id"],
-            doc_type=d["doc_type"],
-            out=d["out"],
-            out_meta=d["out_meta"],
-        )
+                company_code=company_code_for_raw,
+                doc_id=d["doc_id"],
+                doc_type=d["doc_type"],
+                out=d["out"],
+                out_meta=d["out_meta"],
+            )
 
         skipped_doc_overlap = 0
         for row in doc_rows:

@@ -134,6 +134,22 @@ def append_missing_annual_ytd_rows(raw_rows, company_code, doc_id, out_meta, dur
 
 
 def attach_run_info(raw_rows, run_id):
-    for r in raw_rows:
-        r["run_id"] = run_id
-        r["source_file"] = r.get("doc_id")
+    for row in raw_rows:
+        company_code = row.get("company_code")
+        doc_id = row.get("doc_id")
+        doc_type = row.get("doc_type")
+        consolidation = row.get("consolidation")
+        metric_key = row.get("metric_key")
+        time_slot = row.get("time_slot")
+        period_kind = row.get("period_kind")
+
+        row["dup_key"] = (
+            company_code,
+            doc_type,
+            consolidation,
+            metric_key,
+            time_slot,
+            period_kind,
+        )
+        row["run_id"] = run_id
+        row["source_file"] = doc_id

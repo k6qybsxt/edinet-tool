@@ -231,54 +231,6 @@ def _iter_namedrange_cells(workbook: openpyxl.Workbook, range_name: str):
             for cell in row:
                 yield cell
 
-
-def write_data_to_excel_namedranges(
-    excel_file: str,
-    data: dict,
-    *,
-    display_unit: str = "百万円",
-    transform_keys: bool = True,
-    skip_if_formula: bool = False,
-    skip_values=("データなし", "", None),
-    dry_run: bool = False,
-):
-    """
-    data の key と同名の NamedRange に書き込む
-    """
-    wb = openpyxl.load_workbook(excel_file, keep_vba=excel_file.lower().endswith(".xlsm"))
-    result = {"written": [], "skipped": [], "missing": []}
-
-    payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
-
-    payload = _apply_excel_scaling(payload, display_unit)
-
-    if "決算入力" in wb.sheetnames:
-        wb["決算入力"]["J2"] = display_unit
-
-    for name, value in payload.items():
-        if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):
-            result["skipped"].append((name, "empty"))
-            continue
-
-        cells = list(_iter_namedrange_cells(wb, name))
-        if not cells:
-            result["missing"].append(name)
-            continue
-
-        for cell in cells:
-            if skip_if_formula and isinstance(cell.value, str) and cell.value.startswith("="):
-                result["skipped"].append((name, f"formula@{cell.coordinate}"))
-                continue
-            cell.value = value
-            result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
-
-    try:
-        if not dry_run:
-            wb.save(excel_file)
-        return result
-    finally:
-        wb.close()
-
 def write_data_to_workbook_namedranges(
     wb,
     data: dict,
@@ -290,18 +242,45 @@ def write_data_to_workbook_namedranges(
 ):
     result = {"written": [], "skipped": [], "missing": []}
 
+    # --- NamedRangeキャッシュ作成 ---
+    namedrange_cache = {}
+
+    dn_container = wb.defined_names
+
+    if hasattr(dn_container, "definedName"):
+        dn_iter = dn_container.definedName
+    elif hasattr(dn_container, "values"):
+        dn_iter = dn_container.values()
+    else:
+        dn_iter = []
+
+    for dn in dn_iter:
+        name = getattr(dn, "name", None)
+        attr_text = getattr(dn, "attr_text", None)
+
+        if not name or not attr_text:
+            continue
+
+        cells = list(_iter_namedrange_cells(wb, name))
+        if cells:
+            namedrange_cache[name] = cells
+
+    # --- データ整形 ---
     payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
     payload = _apply_excel_scaling(payload, display_unit)
 
     if "決算入力" in wb.sheetnames:
         wb["決算入力"]["J2"] = display_unit
 
+    # --- 書き込みキュー ---
+    write_queue = []
+
     for name, value in payload.items():
         if value in skip_values or (isinstance(value, str) and value.strip() in skip_values):
             result["skipped"].append((name, "empty"))
             continue
 
-        cells = list(_iter_namedrange_cells(wb, name))
+        cells = namedrange_cache.get(name)
         if not cells:
             result["missing"].append(name)
             continue
@@ -310,11 +289,15 @@ def write_data_to_workbook_namedranges(
             if skip_if_formula and isinstance(cell.value, str) and cell.value.startswith("="):
                 result["skipped"].append((name, f"formula@{cell.coordinate}"))
                 continue
-            cell.value = value
+
+            write_queue.append((cell, value))
             result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
 
-    return result
+    # --- 一括書き込み ---
+    for cell, value in write_queue:
+        cell.value = value
 
+    return result
 
 def write_rows_to_raw_sheet_workbook(wb, rows: list[dict], raw_cols: list[str], *, sheet_name: str = "raw_edinet"):
     import datetime as _dt

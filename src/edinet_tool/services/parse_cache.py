@@ -7,12 +7,12 @@ from collections import OrderedDict
 class ParsedXbrlDocument:
     path: str
     cache_key: str
-    facts: list = field(default_factory=list)
     contexts: dict = field(default_factory=dict)
     units: dict = field(default_factory=dict)
     nsmap: dict = field(default_factory=dict)
     dei_data: dict = field(default_factory=dict)
     meta: dict = field(default_factory=dict)
+    facts: list = field(default_factory=list)
     out: dict = field(default_factory=dict)
     out_meta: dict = field(default_factory=dict)
     security_code: Any = None
@@ -35,7 +35,7 @@ class XbrlParseCache:
             "keys": list(self._docs.keys())[-5:],
         }
 
-    def __init__(self, logger=None, max_items=32):
+    def __init__(self, logger=None, max_items=8):
         self._docs = OrderedDict()
         self.logger = logger
         self.max_items = max_items
@@ -47,6 +47,9 @@ class XbrlParseCache:
         return doc
 
     def put(self, doc: ParsedXbrlDocument) -> None:
+
+        if doc.cache_key in self._docs:
+            return
 
         self._docs[doc.cache_key] = doc
         self._docs.move_to_end(doc.cache_key)
@@ -69,7 +72,6 @@ class XbrlParseCache:
         cache_key = make_xbrl_cache_key(path)
 
         cached = self.get(cache_key)
-
         if cached is not None:
             if self.logger:
                 self.logger.debug(f"[xbrl cache hit] {os.path.basename(path)}")
@@ -80,15 +82,16 @@ class XbrlParseCache:
 
         parsed = parser_func(path)
 
+        # ★ここ追加：不要データ削減（メモリ削減＆高速化）
         doc = ParsedXbrlDocument(
             path=path,
             cache_key=cache_key,
-            facts=parsed.get("facts", []),
             contexts=parsed.get("contexts", {}),
             units=parsed.get("units", {}),
             nsmap=parsed.get("nsmap", {}),
             dei_data=parsed.get("dei_data", {}),
             meta=parsed.get("meta", {}),
+            facts=parsed.get("facts", []),
             out=parsed.get("out", {}),
             out_meta=parsed.get("out_meta", {}),
             security_code=parsed.get("security_code"),

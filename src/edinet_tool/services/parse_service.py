@@ -1,6 +1,5 @@
 import os
 
-from edinet_tool.services.xbrl_parser import parse_xbrl_file
 from edinet_tool.services.xbrl_parser import parse_xbrl_file_raw
 from edinet_tool.domain.skip import SkipCode, add_skip
 from edinet_tool.domain.security_code import ensure_security_code
@@ -31,30 +30,18 @@ def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_
         try:
             t = perf_counter()
 
-            if is_half_doc:
-                if parse_cache is not None:
-                    _cache_doc = parse_cache.get_or_create(
-                        path1,
-                        parser_func=lambda p: parse_xbrl_file_raw(p, mode="half", logger=logger),
-                    )
-                    x1, sc1, meta1 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
-                else:
-                    x1, sc1, meta1 = parse_xbrl_file(path1, mode="half", logger=logger)
+            _cache_doc = parse_cache.get_or_create(
+                path1,
+                parser_func=lambda p: parse_xbrl_file_raw(
+                    p,
+                    mode=("half" if is_half_doc else "full"),
+                    logger=logger,
+                ),
+            )
+            x1, sc1, meta1 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
 
-                doc_type = "half"
-                phase_name = "file1_parse"
-            else:
-                if parse_cache is not None:
-                    _cache_doc = parse_cache.get_or_create(
-                        path1,
-                        parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
-                    )
-                    x1, sc1, meta1 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
-                else:
-                    x1, sc1, meta1 = parse_xbrl_file(path1, mode="full", logger=logger)
-
-                doc_type = "annual"
-                phase_name = "file1_parse"
+            doc_type = "half" if is_half_doc else "annual"
+            phase_name = "file1_parse"
 
             base_year = get_fy_end_year(x1)
 
@@ -64,23 +51,26 @@ def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_
                 "out": x1,
                 "out_meta": meta1,
                 "parsed_code": sc1,
-                "facts": (_cache_doc.facts if parse_cache is not None else []),
-                "contexts": (_cache_doc.contexts if parse_cache is not None else {}),
-                "units": (_cache_doc.units if parse_cache is not None else {}),
-                "nsmap": (_cache_doc.nsmap if parse_cache is not None else {}),
-                "dei_data": (_cache_doc.dei_data if parse_cache is not None else {}),
-                "accounting_standard": (_cache_doc.accounting_standard if parse_cache is not None else "jpgaap"),
-                "document_display_unit": (_cache_doc.document_display_unit if parse_cache is not None else None),
+                "facts": _cache_doc.facts,
+                "contexts": _cache_doc.contexts,
+                "units": _cache_doc.units,
+                "nsmap": _cache_doc.nsmap,
+                "dei_data": _cache_doc.dei_data,
+                "accounting_standard": _cache_doc.accounting_standard,
+                "document_display_unit": _cache_doc.document_display_unit,
             })
+
+            logger.info(
+                f"[parse result] file1 x1_keys={len(x1)} meta1_keys={len(meta1)} "
+                f"sample_keys={list(x1.keys())[:10]}"
+            )
 
             logger.info(
                 f"[parse bench] mode={'half' if is_half_doc else 'full'} xbrl={os.path.basename(path1)} "
                 f"out={len(x1)} meta={len(meta1)} sec={round(perf_counter()-t,3)}"
             )
             loop_event["phases"][phase_name] = {"ok": True, "sec": round(perf_counter() - t, 3)}
-
-            if parse_cache is not None:
-                loop_event["accounting_standard"] = _cache_doc.accounting_standard
+            loop_event["accounting_standard"] = _cache_doc.accounting_standard
 
         except Exception as e:
             loop_event["phases"]["file1_parse"] = {"ok": False, "sec": None}
@@ -115,14 +105,11 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
 
             path2 = xbrl_file_paths["file2"][0]
 
-            if parse_cache is not None:
-                _cache_doc = parse_cache.get_or_create(
-                    path2,
-                    parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
-                )
-                x2, parsed_security_code, meta2 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
-            else:
-                x2, parsed_security_code, meta2 = parse_xbrl_file(path2, mode="full", logger=logger)
+            _cache_doc = parse_cache.get_or_create(
+                path2,
+                parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
+            )
+            x2, parsed_security_code, meta2 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
 
             parsed_docs.append({
                 "doc_id": os.path.basename(path2),
@@ -130,19 +117,24 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
                 "out": x2,
                 "out_meta": meta2,
                 "parsed_code": parsed_security_code,
-                "facts": (_cache_doc.facts if parse_cache is not None else []),
-                "contexts": (_cache_doc.contexts if parse_cache is not None else {}),
-                "units": (_cache_doc.units if parse_cache is not None else {}),
-                "nsmap": (_cache_doc.nsmap if parse_cache is not None else {}),
-                "dei_data": (_cache_doc.dei_data if parse_cache is not None else {}),
-                "accounting_standard": (_cache_doc.accounting_standard if parse_cache is not None else "jpgaap"),
-                "document_display_unit": (_cache_doc.document_display_unit if parse_cache is not None else None),
+                "facts": _cache_doc.facts,
+                "contexts": _cache_doc.contexts,
+                "units": _cache_doc.units,
+                "nsmap": _cache_doc.nsmap,
+                "dei_data": _cache_doc.dei_data,
+                "accounting_standard": _cache_doc.accounting_standard,
+                "document_display_unit": _cache_doc.document_display_unit,
             })
+
+            logger.info(
+                f"[parse result] file2 x2_keys={len(x2)} meta2_keys={len(meta2)} "
+                f"sample_keys={list(x2.keys())[:10]}"
+            )
 
             logger.info(f"[parse bench] mode=full xbrl={os.path.basename(path2)} out={len(x2)} meta={len(meta2)} sec={round(perf_counter()-t,3)}")
 
             security_code = ensure_security_code(x2, parsed_security_code, x1)
-            loop_event["accounting_standard"] = _cache_doc.accounting_standard if parse_cache is not None else "jpgaap"
+            loop_event["accounting_standard"] = _cache_doc.accounting_standard
             logger.info(f"[accounting standard] xbrl={os.path.basename(path2)} standard={loop_event['accounting_standard']}")
 
             if base_year is None:
@@ -164,13 +156,17 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
                     else:
                         out2_write = filter_for_annual(x2, use_half=False)
 
-                # 上期なしの TotalNumber は専用配置
                 for kk in list(out2_write.keys()):
                     if kk.startswith("TotalNumber"):
                         del out2_write[kk]
 
                 if x2.get("TotalNumberCurrent") not in (None, ""):
                     out2_write["TotalNumberPrior2"] = x2["TotalNumberCurrent"]
+
+            logger.info(
+                f"[filter result] file2 out2_write_keys={len(out2_write)} "
+                f"sample_keys={list(out2_write.keys())[:10]}"
+            )
 
             logger.debug(f"[buffer debug] file2_annual keys={sorted(list(out2_write.keys()))}")
             logger.debug(f"[buffer debug] file2_annual nonempty={sum(1 for v in out2_write.values() if v not in (None, ''))}")
@@ -205,7 +201,6 @@ def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs,
 
     return x2, meta2, path2, security_code, base_year
 
-
 def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, security_code, base_year, out_buffer, logger, perf_counter, parse_cache=None):
     if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
         try:
@@ -213,14 +208,11 @@ def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, sk
 
             path3 = xbrl_file_paths["file3"][0]
 
-            if parse_cache is not None:
-                _cache_doc = parse_cache.get_or_create(
-                    path3,
-                    parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
-                )
-                x3, sc3, meta3 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
-            else:
-                x3, sc3, meta3 = parse_xbrl_file(path3, mode="full", logger=logger)
+            _cache_doc = parse_cache.get_or_create(
+                path3,
+                parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
+            )
+            x3, sc3, meta3 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
 
             parsed_docs.append({
                 "doc_id": os.path.basename(path3),
@@ -228,22 +220,25 @@ def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, sk
                 "out": x3,
                 "out_meta": meta3,
                 "parsed_code": sc3,
-                "facts": (_cache_doc.facts if parse_cache is not None else []),
-                "contexts": (_cache_doc.contexts if parse_cache is not None else {}),
-                "units": (_cache_doc.units if parse_cache is not None else {}),
-                "nsmap": (_cache_doc.nsmap if parse_cache is not None else {}),
-                "dei_data": (_cache_doc.dei_data if parse_cache is not None else {}),
-                "accounting_standard": (_cache_doc.accounting_standard if parse_cache is not None else "jpgaap"),
-                "document_display_unit": (_cache_doc.document_display_unit if parse_cache is not None else None),
+                "facts": _cache_doc.facts,
+                "contexts": _cache_doc.contexts,
+                "units": _cache_doc.units,
+                "nsmap": _cache_doc.nsmap,
+                "dei_data": _cache_doc.dei_data,
+                "accounting_standard": _cache_doc.accounting_standard,
+                "document_display_unit": _cache_doc.document_display_unit,
             })
+
+            logger.info(
+                f"[parse result] file3 x3_keys={len(x3)} meta3_keys={len(meta3)} "
+                f"sample_keys={list(x3.keys())[:10]}"
+            )
 
             y3 = get_fy_end_year(x3)
             company_code = security_code or ensure_security_code(x3, sc3, x1) or ""
 
             loop_event["phases"]["file3_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
-
-            if parse_cache is not None:
-                loop_event["accounting_standard"] = _cache_doc.accounting_standard
+            loop_event["accounting_standard"] = _cache_doc.accounting_standard
 
             if y3 is None:
                 add_skip(
@@ -277,6 +272,11 @@ def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, sk
 
                     out3_write = filter_for_annual_old(x3_shifted)
 
+                    logger.info(
+                        f"[filter result] file3 out3_write_keys={len(out3_write)} "
+                        f"sample_keys={list(out3_write.keys())[:10]}"
+                    )
+
                     logger.debug(f"[buffer debug] file3_annual keys={sorted(list(out3_write.keys()))}")
 
                     skipped_overlap = 0
@@ -303,13 +303,17 @@ def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, sk
                 exc=e
             )
 
-
 def finalize_half_buffer(loop, xbrl_file_paths, excel_file_path, skipped_files, loop_event, use_half, x1, out_buffer, logger, perf_counter):
     if use_half and x1 is not None:
         try:
             t = perf_counter()
 
             out_half = filter_for_half(x1)
+
+            logger.info(
+                f"[filter result] half out_half_keys={len(out_half)} "
+                f"sample_keys={list(out_half.keys())[:10]}"
+            )
 
             logger.debug(f"[buffer debug] half_final keys={sorted(list(out_half.keys()))}")
             logger.debug(f"[buffer debug] half_final nonempty={sum(1 for v in out_half.values() if v not in (None, ''))}")
