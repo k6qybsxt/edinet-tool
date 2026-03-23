@@ -1,3 +1,4 @@
+import os
 import requests
 import certifi
 import pandas as pd
@@ -8,6 +9,10 @@ from datetime import datetime, timedelta
 
 # requests session を1回だけ作って使い回す
 _YF_SESSION = None
+
+_STOCK_CACHE_DIR = os.path.join("data", "cache", "stock")
+os.makedirs(_STOCK_CACHE_DIR, exist_ok=True)
+
 _STOCK_PRICE_MAP_CACHE = {}
 
 
@@ -33,8 +38,9 @@ def _to_stooq_symbol(stock_code: str) -> str:
 
 def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=3):
     """
-    stooq から日足CSVを1回だけ取得し、必要期間の Date->Close 辞書を返す
-    同一実行中は stock_code ごとにキャッシュする
+    stooq から日足CSVを取得し、必要期間の Date->Close 辞書を返す。
+    同一実行中は stock_code ごとにメモリキャッシュする。
+    さらに stock_code ごとにCSVをディスクキャッシュする。
     """
     if not date_pairs:
         return {}
@@ -51,27 +57,62 @@ def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=3):
         if item.get("target_date")
     ) + timedelta(days=1)
 
-    cache_key = (stock_code, start_date.isoformat(), end_date.isoformat())
+    code = stock_code.strip().upper()
+    if code.endswith(".T"):
+        code = code[:-2]
+
+    cache_key = (code, start_date.isoformat(), end_date.isoformat())
     if cache_key in _STOCK_PRICE_MAP_CACHE:
         if logger:
-            logger.debug(f"[stock cache hit] code={stock_code} range={start_date}..{end_date}")
+            logger.debug(f"[stock cache hit memory] code={code} range={start_date}..{end_date}")
         return _STOCK_PRICE_MAP_CACHE[cache_key]
 
-    if logger:
-        logger.debug(f"[stock cache miss] code={stock_code} range={start_date}..{end_date}")
+    csv_cache_path = os.path.join(_STOCK_CACHE_DIR, f"{code}.csv")
 
-    symbol = _to_stooq_symbol(stock_code)
-    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+    df = None
 
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
+    if os.path.exists(csv_cache_path):
+        try:
+            if logger:
+                logger.debug(f"[stock cache hit disk] code={code} path={csv_cache_path}")
+            df = pd.read_csv(csv_cache_path)
+        except Exception:
+            df = None
 
-    df = pd.read_csv(StringIO(r.text))
-    if df.empty or "Date" not in df.columns or "Close" not in df.columns:
-        _STOCK_PRICE_MAP_CACHE[cache_key] = {}
-        return {}
+    need_download = True
+    if df is not None and (not df.empty) and "Date" in df.columns and "Close" in df.columns:
+        try:
+            df["Date"] = pd.to_datetime(df["Date"]).dt.date
+            min_have = df["Date"].min()
+            max_have = df["Date"].max()
+            if min_have <= start_date and max_have >= end_date:
+                need_download = False
+        except Exception:
+            need_download = True
 
-    df["Date"] = pd.to_datetime(df["Date"]).dt.date
+    if need_download:
+        if logger:
+            logger.debug(f"[stock cache miss download] code={code} range={start_date}..{end_date}")
+
+        symbol = _to_stooq_symbol(code)
+        url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+
+        session = _get_yf_session()
+        r = session.get(url, timeout=20)
+        r.raise_for_status()
+
+        df = pd.read_csv(StringIO(r.text))
+        if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+            _STOCK_PRICE_MAP_CACHE[cache_key] = {}
+            return {}
+
+        try:
+            df.to_csv(csv_cache_path, index=False)
+        except Exception:
+            pass
+
+        df["Date"] = pd.to_datetime(df["Date"]).dt.date
+
     df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
     if df.empty:
         _STOCK_PRICE_MAP_CACHE[cache_key] = {}
@@ -307,3 +348,21 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
 
 def clear_stock_price_cache():
     _STOCK_PRICE_MAP_CACHE.clear()
+
+def warm_stock_price_cache(stock_codes, date_pairs, logger=None):
+    seen = set()
+
+    for stock_code in stock_codes:
+        code = str(stock_code or "").strip()
+        if not code or code in seen:
+            continue
+
+        seen.add(code)
+
+        try:
+            get_stock_price_map(code, date_pairs, logger=logger)
+            if logger:
+                logger.info(f"[stock cache warm] code={code} ok=1")
+        except Exception:
+            if logger:
+                logger.exception(f"[stock cache warm] code={code} ok=0")

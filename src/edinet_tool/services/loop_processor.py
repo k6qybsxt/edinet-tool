@@ -311,16 +311,33 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
         out_buffer_dict = {}
         display_unit = "百万円"
 
+    t = perf_counter()
+
     raw_rows = build_raw_rows_all_docs(
         parsed_docs=parsed_docs,
         security_code=security_code,
         run_id=run_id,
         logger=logger,
     )
+    loop_event["phases"]["raw_build"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+    logger.info(
+        f"[raw build] slot={loop.get('slot')} "
+        f"code={company_code_from_job or security_code} "
+        f"rows={len(raw_rows)} "
+        f"sec={round(perf_counter() - t, 3)}"
+    )
+
+    t = perf_counter()
 
     wb = load_workbook(
         excel_file_path,
         keep_vba=excel_file_path.lower().endswith(".xlsm")
+    )
+    loop_event["phases"]["workbook_open"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+    logger.info(
+        f"[workbook open] slot={loop.get('slot')} "
+        f"code={company_code_from_job or security_code} "
+        f"sec={round(perf_counter() - t, 3)}"
     )
 
     stock_result = None
@@ -347,6 +364,8 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
         else:
             loop_event["phases"]["excel_write"] = {"ok": True, "sec": 0.0}
 
+        t = perf_counter()
+
         write_rows_to_raw_sheet_workbook(
             wb,
             raw_rows,
@@ -354,14 +373,32 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
             sheet_name="raw_edinet",
         )
 
+        loop_event["phases"]["raw_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+        logger.info(
+            f"[raw write] slot={loop.get('slot')} "
+            f"code={company_code_from_job or security_code} "
+            f"rows={len(raw_rows)} "
+            f"sec={round(perf_counter() - t, 3)}"
+        )
+
         stock_code = f"{security_code}.T" if security_code else None
 
         if stock_code:
+
+            t = perf_counter()
+
             stock_result = write_stock_data_to_workbook(
                 wb,
                 stock_code,
                 date_pairs,
                 logger,
+            )
+
+            loop_event["phases"]["stock_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            logger.info(
+                f"[stock write] slot={loop.get('slot')} "
+                f"code={company_code_from_job or security_code} "
+                f"sec={round(perf_counter() - t, 3)}"
             )
 
             if stock_result["errors"] > 0:
@@ -380,7 +417,16 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
         else:
             stock_status = "success"
 
+        t = perf_counter()
+
         wb.save(excel_file_path)
+
+        loop_event["phases"]["workbook_save"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+        logger.info(
+            f"[workbook save] slot={loop.get('slot')} "
+            f"code={company_code_from_job or security_code} "
+            f"sec={round(perf_counter() - t, 3)}"
+        )
 
     finally:
         if wb is not None:
