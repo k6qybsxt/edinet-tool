@@ -9,13 +9,8 @@ from dataclasses import asdict
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
-from edinet_tool.config.settings import BASE_DIR, load_config, LOG_LEVEL
+from edinet_tool.config.settings import BASE_DIR, LOG_LEVEL
 from edinet_tool.config.runtime import RuntimeConfig
-from edinet_tool.services.stock_service import (
-    validate_stock_date_pairs,
-    clear_stock_price_cache,
-    warm_stock_price_cache,
-)
 from edinet_tool.services.parse_cache import XbrlParseCache
 from edinet_tool.services.batch_input_service import build_all_company_jobs
 from edinet_tool.services.company_task_result import CompanyTaskResult
@@ -31,8 +26,6 @@ logger = None
 def main():
 
     runtime = RuntimeConfig()
-
-    clear_stock_price_cache()
 
     logger.info(f"プロジェクトルート: {BASE_DIR}")
 
@@ -71,31 +64,15 @@ def main():
         return
 
     validate_runtime_before_batch(jobs, runtime)
-    logger.info(f"[batch detect] companies={len(jobs)}")
 
     job_inputs = []
     for i, job in enumerate(jobs):
         job["slot"] = i + 1
         job_inputs.append(job)
 
-    try:
-        config = load_config(BASE_DIR / "config" / "決算期_KANPE.json")
-        chosen_period = input("決算期を選択してください（例 25-1）: ")
-
-        if chosen_period not in config:
-            logger.critical("無効な選択です")
-            raise SystemExit(1)
-
-        date_pairs = config[chosen_period]
-        validate_stock_date_pairs(date_pairs)
-        logger.info(f"選択された決算期: {chosen_period}")
-
-        stock_codes = [job.get("company_code") for job in job_inputs if job.get("company_code")]
-        warm_stock_price_cache(stock_codes, date_pairs, logger=logger)
-
-    except Exception:
-        logger.exception("決算期設定エラー")
-        raise SystemExit(1)
+    date_pairs = None
+    logger.info("決算期の手入力は行いません")
+    logger.info(f"[batch detect] companies={len(jobs)}")
     
     if runtime.use_process_pool:
         futures = []

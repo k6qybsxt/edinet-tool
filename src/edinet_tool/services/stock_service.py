@@ -5,6 +5,7 @@ import pandas as pd
 import openpyxl
 
 from io import StringIO
+from calendar import monthrange
 from datetime import datetime, timedelta
 
 # requests session を1回だけ作って使い回す
@@ -35,20 +36,63 @@ def _to_stooq_symbol(stock_code: str) -> str:
         code = code[:-2]
     return f"{code}.JP"
 
+def _shift_years(dt, years):
+    y = dt.year + years
+    d = min(dt.day, monthrange(y, dt.month)[1])
+    return dt.replace(year=y, day=d)
 
-def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=3):
+
+def _build_quarter_end_dates(fiscal_year_end_date):
+    prev_fy_end = _shift_years(fiscal_year_end_date, -1)
+    fiscal_year_start = prev_fy_end + timedelta(days=1)
+
+    q1 = (pd.Timestamp(fiscal_year_start) + pd.DateOffset(months=3) - pd.Timedelta(days=1)).date()
+    q2 = (pd.Timestamp(fiscal_year_start) + pd.DateOffset(months=6) - pd.Timedelta(days=1)).date()
+    q3 = (pd.Timestamp(fiscal_year_start) + pd.DateOffset(months=9) - pd.Timedelta(days=1)).date()
+    q4 = fiscal_year_end_date
+
+    return [q1, q2, q3, q4]
+
+
+def build_stock_date_pairs_from_fiscal_year_end(fiscal_year_end: str):
+    fy_end = str(fiscal_year_end or "").strip().replace("/", "-")
+    if not fy_end:
+        return []
+
+    fiscal_year_end_date = datetime.strptime(fy_end, "%Y-%m-%d").date()
+
+    out = []
+
+    for years_back, name in [(4, "StockPrice_Prior4"), (3, "StockPrice_Prior3"), (2, "StockPrice_Prior2"), (1, "StockPrice_Prior1")]:
+        d = _shift_years(fiscal_year_end_date, -years_back)
+        out.append({
+            "target_date": d.isoformat(),
+            "name": name,
+        })
+
+    q_dates = _build_quarter_end_dates(fiscal_year_end_date)
+    q_names = ["StockPrice_Q1", "StockPrice_Q2", "StockPrice_Q3", "StockPrice_Q4"]
+
+    for d, name in zip(q_dates, q_names):
+        out.append({
+            "target_date": d.isoformat(),
+            "name": name,
+        })
+
+    return out
+
+def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=7):
     """
     stooq から日足CSVを取得し、必要期間の Date->Close 辞書を返す。
-    同一実行中は stock_code ごとにメモリキャッシュする。
-    さらに stock_code ごとにCSVをディスクキャッシュする。
+    target_date 以前を buffer_days 日さかのぼって使う前提。
     """
     if not date_pairs:
         return {}
 
     start_date = min(
-        datetime.strptime(item["backup_date"], "%Y-%m-%d").date()
+        datetime.strptime(item["target_date"], "%Y-%m-%d").date()
         for item in date_pairs
-        if item.get("backup_date")
+        if item.get("target_date")
     ) - timedelta(days=buffer_days)
 
     end_date = max(
@@ -122,15 +166,15 @@ def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=3):
     _STOCK_PRICE_MAP_CACHE[cache_key] = close_map
     return close_map
 
-def _find_price_from_map(close_map, target_date, backup_date, buffer_days=3):
+def _find_price_from_map(close_map, target_date, buffer_days=7):
     """
-    target_date から backup_date-buffer_days まで遡って価格を探す
+    target_date 以前を最大 buffer_days 日さかのぼって価格を探す
     """
     if not close_map:
         return None
 
     check = datetime.strptime(target_date, "%Y-%m-%d").date()
-    start = datetime.strptime(backup_date, "%Y-%m-%d").date() - timedelta(days=buffer_days)
+    start = check - timedelta(days=buffer_days)
 
     while check >= start:
         if check in close_map and pd.notna(close_map[check]):
@@ -141,7 +185,7 @@ def _find_price_from_map(close_map, target_date, backup_date, buffer_days=3):
 
 def validate_stock_date_pairs(date_pairs):
     """
-    JSONのdate_pairsが name前提になっているか検証する。
+    date_pairs が name / target_date 前提になっているか検証する。
     """
     bad = []
     for i, item in enumerate(date_pairs):
@@ -149,11 +193,11 @@ def validate_stock_date_pairs(date_pairs):
             bad.append((i, "cell_is_not_allowed", item))
             continue
 
-        if not item.get("name") or not item.get("target_date") or not item.get("backup_date"):
+        if not item.get("name") or not item.get("target_date"):
             bad.append((i, "missing_required_keys", item))
 
     if bad:
-        msg_lines = ["株価date_pairsが name前提になっていません（JSONを修正してください）。"]
+        msg_lines = ["株価date_pairsが name / target_date 前提になっていません。"]
         for i, reason, item in bad[:10]:
             msg_lines.append(f"  - index={i}, reason={reason}, item={item}")
         raise ValueError("\n".join(msg_lines))
@@ -204,25 +248,24 @@ def write_stock_data_to_workbook(workbook, stock_code, date_pairs, logger):
     for item in date_pairs:
         name = item.get("name")
         target_date = item.get("target_date")
-        backup_date = item.get("backup_date")
 
-        if not name or not target_date or not backup_date:
+        if not name or not target_date:
             logger.warning(f"[WARNING] 株価date_pairsの要素が不完全なのでスキップ: {item}")
             result["bad_input"] += 1
             continue
 
         try:
-            price = _find_price_from_map(close_map, target_date, backup_date)
+            price = _find_price_from_map(close_map, target_date)
         except Exception:
             logger.exception(
                 f"株価探索で想定外エラー（続行） "
-                f"code={stock_code} target={target_date} backup={backup_date}"
+                f"code={stock_code} target={target_date}"
             )
             result["errors"] += 1
             continue
 
         if price is None:
-            logger.warning(f"{target_date} の株価が取得できませんでした（続行）: name={name} code={stock_code}")
+            logger.warning(f"{target_date} 以前の株価が取得できませんでした（続行）: name={name} code={stock_code}")
             result["miss"] += 1
             continue
 
@@ -288,25 +331,24 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
         for item in date_pairs:
             name = item.get("name")
             target_date = item.get("target_date")
-            backup_date = item.get("backup_date")
 
-            if not name or not target_date or not backup_date:
+            if not name or not target_date:
                 logger.warning(f"[WARNING] 株価date_pairsの要素が不完全なのでスキップ: {item}")
                 result["bad_input"] += 1
                 continue
 
             try:
-                price = _find_price_from_map(close_map, target_date, backup_date)
+                price = _find_price_from_map(close_map, target_date)
             except Exception:
                 logger.exception(
                     f"株価探索で想定外エラー（続行） "
-                    f"code={stock_code} target={target_date} backup={backup_date}"
+                    f"code={stock_code} target={target_date}"
                 )
                 result["errors"] += 1
                 continue
 
             if price is None:
-                logger.warning(f"{target_date} の株価が取得できませんでした（続行）: name={name} code={stock_code}")
+                logger.warning(f"{target_date} 以前の株価が取得できませんでした（続行）: name={name} code={stock_code}")
                 result["miss"] += 1
                 continue
 
@@ -345,24 +387,3 @@ def write_stock_data_to_excel(excel_file, stock_code, date_pairs, logger):
 
     finally:
         workbook.close()
-
-def clear_stock_price_cache():
-    _STOCK_PRICE_MAP_CACHE.clear()
-
-def warm_stock_price_cache(stock_codes, date_pairs, logger=None):
-    seen = set()
-
-    for stock_code in stock_codes:
-        code = str(stock_code or "").strip()
-        if not code or code in seen:
-            continue
-
-        seen.add(code)
-
-        try:
-            get_stock_price_map(code, date_pairs, logger=logger)
-            if logger:
-                logger.info(f"[stock cache warm] code={code} ok=1")
-        except Exception:
-            if logger:
-                logger.exception(f"[stock cache warm] code={code} ok=0")

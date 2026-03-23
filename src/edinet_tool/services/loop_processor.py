@@ -4,7 +4,10 @@ from edinet_tool.services.excel_service import (
     write_rows_to_raw_sheet_workbook,
     rename_excel_file,
 )
-from edinet_tool.services.stock_service import write_stock_data_to_workbook
+from edinet_tool.services.stock_service import (
+    build_stock_date_pairs_from_fiscal_year_end,
+    write_stock_data_to_workbook,
+)
 from edinet_tool.services.workbook_service import prepare_workbook
 from edinet_tool.services.parse_service import (
     parse_half_doc,
@@ -22,6 +25,7 @@ from edinet_tool.domain.output_buffer import OutputBuffer
 
 import os
 from datetime import datetime
+from calendar import monthrange
 from time import perf_counter
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
@@ -69,6 +73,13 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
                     return str(v).strip()
 
         return ""
+    
+    def _shift_year_keep_month_end(date_str, years):
+        s = str(date_str or "").strip().replace("/", "-")
+        dt = datetime.strptime(s[:10], "%Y-%m-%d")
+        y = dt.year + years
+        d = min(dt.day, monthrange(y, dt.month)[1])
+        return dt.replace(year=y, day=d).strftime("%Y-%m-%d")
 
     company_code_from_job = loop.get("company_code")
     company_name_from_job = loop.get("company_name")
@@ -341,6 +352,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
     )
 
     stock_result = None
+    stock_date_pairs = []
     stock_status = None
 
 
@@ -381,16 +393,36 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
             f"sec={round(perf_counter() - t, 3)}"
         )
 
+        fiscal_year_end_for_stock = out_buffer_dict.get("CurrentFiscalYearEndDateDEI")
+
+        if not fiscal_year_end_for_stock and isinstance(x1, dict):
+            fiscal_year_end_for_stock = x1.get("CurrentFiscalYearEndDateDEI")
+
+        if fiscal_year_end_for_stock:
+            fiscal_year_end_for_stock = str(fiscal_year_end_for_stock).strip().replace("/", "-")
+
+            if use_half:
+                fiscal_year_end_for_stock = _shift_year_keep_month_end(
+                    fiscal_year_end_for_stock,
+                    -1,
+                )
+
+            stock_date_pairs = build_stock_date_pairs_from_fiscal_year_end(
+                fiscal_year_end_for_stock
+            )
+        else:
+            stock_date_pairs = []
+
         stock_code = f"{security_code}.T" if security_code else None
 
-        if stock_code:
+        if stock_code and stock_date_pairs:
 
             t = perf_counter()
 
             stock_result = write_stock_data_to_workbook(
                 wb,
                 stock_code,
-                date_pairs,
+                stock_date_pairs,
                 logger,
             )
 
@@ -414,6 +446,16 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
                 f"miss={stock_result['miss']} "
                 f"errors={stock_result['errors']}"
             )
+
+        elif stock_code and not stock_date_pairs:
+            logger.warning(
+                f"[company stock] slot={loop.get('slot')} "
+                f"code={company_code_from_job or security_code} "
+                f"name={company_name_from_job} "
+                f"skip_reason=no_fiscal_year_end"
+            )
+            stock_status = "success"
+
         else:
             stock_status = "success"
 
