@@ -7,6 +7,7 @@ from edinet_tool.services.company_task_result import CompanyTaskResult
 
 
 def run_company_job_worker(
+        
     job,
     date_pairs,
     output_root,

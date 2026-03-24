@@ -38,4 +38,5 @@ def run_company_job(job, date_pairs, output_root, template_dir, skipped_files, l
         stock_status=result.get("stock_status"),
         output_excel=result.get("output_excel"),
         failure_reason=result.get("failure_reason"),
+        error_detail=result.get("error_detail"),
     )

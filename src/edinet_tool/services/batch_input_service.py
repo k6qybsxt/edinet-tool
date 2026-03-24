@@ -233,3 +233,13 @@ def build_all_company_jobs(zip_dir: Path, extract_root: str | None = None) -> li
             jobs.append(job)
 
     return jobs
+
+def finalize_company_jobs(jobs, max_companies):
+    jobs = jobs[:max_companies]
+
+    job_inputs = []
+    for i, job in enumerate(jobs):
+        job["slot"] = i + 1
+        job_inputs.append(job)
+
+    return job_inputs

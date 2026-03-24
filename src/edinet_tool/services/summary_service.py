@@ -1,5 +1,7 @@
+import csv
 import json
 import os
+from pathlib import Path
 
 from edinet_tool.config.settings import BASE_DIR
 
@@ -29,4 +31,124 @@ def write_loop_summary(loop_event, security_code, raw_rows, out_buffer_dict, ski
         f"excel_ranges={loop_event['counts']['excel_ranges']} "
         f"raw_rows={loop_event['counts']['raw_rows']} "
         f"sec={loop_event['phases']['loop_total']['sec']}"
+    )
+
+
+def write_batch_reports(output_root, job_inputs, batch_results, logger):
+    reports_dir = Path(output_root) / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_csv = reports_dir / "batch_summary.csv"
+    failed_csv = reports_dir / "failed_jobs.csv"
+    jobs_csv = reports_dir / "company_jobs.csv"
+
+    result_name_map = {}
+    for row in batch_results:
+        code = row.get("company_code")
+        name = row.get("company_name")
+        if code and name:
+            result_name_map[code] = name
+
+    with open(jobs_csv, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "slot",
+                "company_code",
+                "company_name",
+                "has_half",
+                "file1",
+                "file2",
+                "file3",
+            ],
+        )
+        writer.writeheader()
+
+        for job in job_inputs:
+            writer.writerow({
+                "slot": job["slot"],
+                "company_code": job["company_code"],
+                "company_name": result_name_map.get(job["company_code"], job.get("company_name") or ""),
+                "has_half": job["has_half"],
+                "file1": os.path.basename(job["file1"]) if job.get("file1") else "",
+                "file2": os.path.basename(job["file2"]) if job.get("file2") else "",
+                "file3": os.path.basename(job["file3"]) if job.get("file3") else "",
+            })
+
+    with open(summary_csv, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "slot",
+                "company_code",
+                "company_name",
+                "status",
+                "stock_status",
+                "failure_reason",
+                "output_excel",
+            ],
+        )
+        writer.writeheader()
+        for row in batch_results:
+            writer.writerow({
+                "slot": row.get("slot"),
+                "company_code": row.get("company_code"),
+                "company_name": row.get("company_name"),
+                "status": row.get("status"),
+                "stock_status": row.get("stock_status"),
+                "failure_reason": row.get("failure_reason"),
+                "output_excel": row.get("output_excel"),
+            })
+
+    with open(failed_csv, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "slot",
+                "company_code",
+                "company_name",
+                "status",
+                "failure_reason",
+                "error_detail",
+                "output_excel",
+            ]
+        )
+        writer.writeheader()
+        for row in batch_results:
+            if row.get("status") in ("failed", "partial_success", "skipped"):
+                writer.writerow({
+                    "slot": row.get("slot"),
+                    "company_code": row.get("company_code"),
+                    "company_name": row.get("company_name"),
+                    "status": row.get("status"),
+                    "failure_reason": row.get("failure_reason"),
+                    "error_detail": row.get("error_detail"),
+                    "output_excel": row.get("output_excel"),
+                })
+
+    logger.info(f"[batch summary] total={len(batch_results)} summary_csv={summary_csv}")
+    logger.info(f"[batch summary] failed_csv={failed_csv}")
+    logger.info(f"[batch summary] jobs_csv={jobs_csv}")
+
+    return {
+        "reports_dir": reports_dir,
+        "summary_csv": summary_csv,
+        "failed_csv": failed_csv,
+        "jobs_csv": jobs_csv,
+    }
+
+
+def log_batch_result_summary(batch_results, logger):
+    success_count = sum(1 for r in batch_results if r.get("status") == "success")
+    partial_count = sum(1 for r in batch_results if r.get("status") == "partial_success")
+    failed_count = sum(1 for r in batch_results if r.get("status") == "failed")
+    skipped_count = sum(1 for r in batch_results if r.get("status") == "skipped")
+
+    logger.info(
+        "[batch result] success=%d partial=%d failed=%d skipped=%d total=%d",
+        success_count,
+        partial_count,
+        failed_count,
+        skipped_count,
+        len(batch_results),
     )
