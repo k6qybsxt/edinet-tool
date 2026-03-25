@@ -1,50 +1,48 @@
-from pathlib import Path
-import gc
 import shutil
 import time
-import subprocess
+from pathlib import Path
 
 
 def cleanup_empty_company_job_csv(output_root, logger):
-    reports_dir = Path(output_root) / "reports"
-    company_jobs_csv = reports_dir / "company_jobs.csv"
-
-    if not company_jobs_csv.exists():
+    jobs_csv = Path(output_root) / "reports" / "company_jobs.csv"
+    if not jobs_csv.exists():
         return
 
     try:
-        text = company_jobs_csv.read_text(encoding="utf-8-sig")
+        lines = jobs_csv.read_text(encoding="utf-8-sig").splitlines()
+        if len(lines) <= 1:
+            jobs_csv.unlink(missing_ok=True)
+            logger.info(f"[cleanup] removed empty company_jobs.csv: {jobs_csv}")
     except Exception:
-        text = company_jobs_csv.read_text(encoding="utf-8")
-
-    lines = [line for line in text.splitlines() if line.strip()]
-    if len(lines) <= 1:
-        company_jobs_csv.unlink(missing_ok=True)
-        logger.info(f"[cleanup] removed empty csv: {company_jobs_csv}")
+        logger.exception(f"[cleanup error] company_jobs.csv cleanup failed: {jobs_csv}")
 
 
 def cleanup_extracted_root(extracted_root, cleanup_retry_count, cleanup_retry_wait_sec, logger):
     extracted_root = Path(extracted_root)
+    if not extracted_root.exists():
+        return
 
-    gc.collect()
+    last_error = None
 
-    for _ in range(cleanup_retry_count):
+    for attempt in range(1, cleanup_retry_count + 1):
         try:
-            if extracted_root.exists():
-                shutil.rmtree(extracted_root)
-                logger.info(f"[cleanup] removed extracted_root: {extracted_root}")
-            break
-        except PermissionError:
-            time.sleep(cleanup_retry_wait_sec)
-            gc.collect()
-
-    try:
-        if extracted_root.exists():
-            subprocess.run(
-                ["cmd", "/c", "rmdir", "/s", "/q", str(extracted_root)],
-                check=False,
+            shutil.rmtree(extracted_root)
+            logger.info(f"[cleanup] removed extracted root: {extracted_root}")
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "[cleanup retry] extracted root remove failed: attempt=%d/%d path=%s error=%s",
+                attempt,
+                cleanup_retry_count,
+                extracted_root,
+                e,
             )
-            if not extracted_root.exists():
-                logger.info(f"[cleanup] removed extracted_root by cmd: {extracted_root}")
-    except Exception:
-        pass
+            if attempt < cleanup_retry_count:
+                time.sleep(cleanup_retry_wait_sec)
+
+    logger.error(
+        "[cleanup skipped] extracted root remains after retries: path=%s error=%s",
+        extracted_root,
+        last_error,
+    )

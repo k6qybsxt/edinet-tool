@@ -34,21 +34,17 @@ def write_loop_summary(loop_event, security_code, raw_rows, out_buffer_dict, ski
     )
 
 
-def write_batch_reports(output_root, job_inputs, batch_results, logger):
-    reports_dir = Path(output_root) / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-
-    summary_csv = reports_dir / "batch_summary.csv"
-    failed_csv = reports_dir / "failed_jobs.csv"
-    jobs_csv = reports_dir / "company_jobs.csv"
-
+def _build_result_name_map(batch_results):
     result_name_map = {}
     for row in batch_results:
         code = row.get("company_code")
         name = row.get("company_name")
         if code and name:
             result_name_map[code] = name
+    return result_name_map
 
+
+def _write_company_jobs_csv(jobs_csv, job_inputs, result_name_map):
     with open(jobs_csv, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(
             f,
@@ -75,6 +71,8 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
                 "file3": os.path.basename(job["file3"]) if job.get("file3") else "",
             })
 
+
+def _write_batch_summary_csv(summary_csv, batch_results):
     with open(summary_csv, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(
             f,
@@ -89,6 +87,7 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
             ],
         )
         writer.writeheader()
+
         for row in batch_results:
             writer.writerow({
                 "slot": row.get("slot"),
@@ -100,6 +99,8 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
                 "output_excel": row.get("output_excel"),
             })
 
+
+def _write_failed_jobs_csv(failed_csv, batch_results):
     with open(failed_csv, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(
             f,
@@ -114,6 +115,7 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
             ]
         )
         writer.writeheader()
+
         for row in batch_results:
             if row.get("status") in ("failed", "partial_success", "skipped"):
                 writer.writerow({
@@ -125,6 +127,31 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
                     "error_detail": row.get("error_detail"),
                     "output_excel": row.get("output_excel"),
                 })
+
+
+def write_batch_reports(output_root, job_inputs, batch_results, logger):
+    reports_dir = Path(output_root) / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_csv = reports_dir / "batch_summary.csv"
+    failed_csv = reports_dir / "failed_jobs.csv"
+    jobs_csv = reports_dir / "company_jobs.csv"
+
+    result_name_map = _build_result_name_map(batch_results)
+
+    _write_company_jobs_csv(
+        jobs_csv=jobs_csv,
+        job_inputs=job_inputs,
+        result_name_map=result_name_map,
+    )
+    _write_batch_summary_csv(
+        summary_csv=summary_csv,
+        batch_results=batch_results,
+    )
+    _write_failed_jobs_csv(
+        failed_csv=failed_csv,
+        batch_results=batch_results,
+    )
 
     logger.info(f"[batch summary] total={len(batch_results)} summary_csv={summary_csv}")
     logger.info(f"[batch summary] failed_csv={failed_csv}")

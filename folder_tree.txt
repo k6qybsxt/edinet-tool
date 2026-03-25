@@ -1,0 +1,176 @@
+Python/
+├─ config/
+│  └─ 決算期_KANPE.json
+├─ data/
+│  ├─ cache/
+│  │  └─ stock/
+│  ├─ input/
+│  │  ├─ _zip_extracted/
+│  │  ├─ zip/
+│  │  │  ├─ 116_Xbrl_Search_20260316_150957.zip
+│  │  │  ├─ 118_Xbrl_Search_20260316_150939.zip
+│  │  │  ├─ 119ki_Xbrl_Search_20260315_135043.zip
+│  │  │  ├─ 120_Xbrl_Search_20260316_150916.zip
+│  │  │  ├─ 121ki_annual_Xbrl_Search_20260315_111102.zip
+│  │  │  ├─ 122ki_half_Xbrl_Search_20260315_111000.zip
+│  │  │  ├─ 159_Xbrl_Search_20260316_150453.zip
+│  │  │  ├─ 161_Xbrl_Search_20260316_150417.zip
+│  │  │  ├─ 162half_Xbrl_Search_20260316_150329.zip
+│  │  │  ├─ 79_Xbrl_Search_20260316_143227.zip
+│  │  │  ├─ 81_Xbrl_Search_20260316_143141.zip
+│  │  │  └─ 83_Xbrl_Search_20260315_112420.zip
+│  │  └─ 企業一覧/
+│  │     ├─ 2206_江崎グリコ株式会社/
+│  │     │  ├─ 116.pdf
+│  │     │  ├─ 116_Xbrl_Search_20260316_150957.zip
+│  │     │  ├─ 118.pdf
+│  │     │  ├─ 118_Xbrl_Search_20260316_150939.zip
+│  │     │  ├─ 120(人件費p111).pdf
+│  │     │  ├─ 120_Xbrl_Search_20260316_150916.zip
+│  │     │  ├─ 121half.pdf
+│  │     │  ├─ 121half_Xbrl_Search_20260316_150850.zip
+│  │     │  └─ 2206_江崎グリコ株式会社_2025-06-30.xlsx
+│  │     ├─ 4613_関西ペイント/
+│  │     │  ├─ 157.pdf
+│  │     │  ├─ 157_Xbrl_Search_20260316_150542.zip
+│  │     │  ├─ 159.pdf
+│  │     │  ├─ 159_Xbrl_Search_20260316_150453.zip
+│  │     │  ├─ 161.pdf
+│  │     │  ├─ 161_Xbrl_Search_20260316_150417.zip
+│  │     │  ├─ 162half.pdf
+│  │     │  └─ 162half_Xbrl_Search_20260316_150329.zip
+│  │     └─ IFRS/
+│  │        ├─ 4519_中外製薬株式会社/
+│  │        │  ├─ annual_Xbrl_Search_20260315_111432.zip
+│  │        │  └─ half_Xbrl_Search_20260315_111415.zip
+│  │        ├─ 5201_AGC/
+│  │        │  ├─ annual_Xbrl_Search_20260315_111708.zip
+│  │        │  └─ half_Xbrl_Search_20260315_111656.zip
+│  │        ├─ 6702_富士通/
+│  │        │  ├─ annual_Xbrl_Search_20260315_112155.zip
+│  │        │  └─ half_Xbrl_Search_20260315_112130.zip
+│  │        ├─ 6857_アドバンテスト/
+│  │        │  ├─ 79.pdf
+│  │        │  ├─ 79_Xbrl_Search_20260316_143227.zip
+│  │        │  ├─ 81.pdf
+│  │        │  ├─ 81_Xbrl_Search_20260316_143141.zip
+│  │        │  ├─ 83.pdf
+│  │        │  ├─ 83_Xbrl_Search_20260315_112420.zip
+│  │        │  ├─ 84half.pdf
+│  │        │  └─ 84half_Xbrl_Search_20260315_112404.zip
+│  │        ├─ 7203_トヨタ自動車/
+│  │        │  ├─ 1-2_-122kihalfjpcrp040300-ssr-001_E02144-000_2025-09-30_01_2025-11-13.xbrl
+│  │        │  ├─ 1-4_121ki_jpcrp030000-asr-001_E02144-000_2025-03-31_01_2025-06-18.xbrl
+│  │        │  ├─ 1-5_119kijpcrp030000-asr-001_E02144-000_2023-03-31_01_2023-06-30.xbrl
+│  │        │  ├─ 1-6_117kijpcrp030000-asr-001_E02144-000_2021-03-31_01_2021-06-24.xbrl
+│  │        │  ├─ 117.pdf
+│  │        │  ├─ 117ki_Xbrl_Search_20260315_135044.zip
+│  │        │  ├─ 119.pdf
+│  │        │  ├─ 119ki_Xbrl_Search_20260315_135043.zip
+│  │        │  ├─ 121.pdf
+│  │        │  ├─ 121ki_annual_Xbrl_Search_20260315_111102.zip
+│  │        │  ├─ 122_half.pdf
+│  │        │  └─ 122ki_half_Xbrl_Search_20260315_111000.zip
+│  │        ├─ 8001_伊藤忠商事株式会社/
+│  │        │  ├─ 101.pdf
+│  │        │  ├─ 101_Xbrl_Search_20260315_111845.zip
+│  │        │  ├─ 102half.pdf
+│  │        │  ├─ 102half_Xbrl_Search_20260315_111830.zip
+│  │        │  ├─ 97.pdf
+│  │        │  ├─ 97_Xbrl_Search_20260316_144158.zip
+│  │        │  ├─ 99.pdf
+│  │        │  └─ 99_Xbrl_Search_20260316_144121.zip
+│  │        ├─ 8473_ＳＢＩホールディングス株式会社/
+│  │        │  ├─ 23.pdf
+│  │        │  ├─ 23_Xbrl_Search_20260316_144521.zip
+│  │        │  ├─ 25.pdf
+│  │        │  ├─ 25_Xbrl_Search_20260316_144437.zip
+│  │        │  ├─ 27.pdf
+│  │        │  ├─ 27_Xbrl_Search_20260315_111310.zip
+│  │        │  ├─ 28half.pdf
+│  │        │  └─ 28half_Xbrl_Search_20260315_111246.zip
+│  │        ├─ 9983_ファーストリテイリング/
+│  │        │  ├─ 59.pdf
+│  │        │  ├─ 59_Xbrl_Search_20260316_143841.zip
+│  │        │  ├─ 61.pdf
+│  │        │  ├─ 61_Xbrl_Search_20260316_143802.zip
+│  │        │  ├─ 63.pdf
+│  │        │  ├─ 63_Xbrl_Search_20260316_143658.zip
+│  │        │  ├─ 64half.pdf
+│  │        │  └─ 64half_Xbrl_Search_20260316_143602.zip
+│  │        └─ 9984_ソフトバンクグループ株式会社/
+│  │           ├─ annual_Xbrl_Search_20260315_111601.zip
+│  │           └─ half_Xbrl_Search_20260315_111541.zip
+│  └─ output/
+│     └─ 20260324_190816/
+│        ├─ excel/
+│        │  ├─ 2206_江崎グリコ株式会社_2024-12-31.xlsm
+│        │  ├─ 4613_関西ペイント株式会社_2025-09-30.xlsm
+│        │  ├─ 6857_株式会社アドバンテスト_2025-03-31.xlsm
+│        │  └─ 7203_トヨタ自動車株式会社_2025-09-30.xlsm
+│        ├─ reports/
+│        │  ├─ batch_summary.csv
+│        │  ├─ company_jobs.csv
+│        │  └─ failed_jobs.csv
+│        └─ work/
+├─ logs/
+│  ├─ loop_summary.jsonl
+│  ├─ run.log
+│  ├─ run.log.1
+│  ├─ run.log.5
+│  └─ 現在のログ.txt
+├─ scripts/
+│  ├─ run_KANPE.bat
+│  └─ 株価日付変更.py
+├─ src/
+│  ├─ edinet_tool/
+│  │  ├─ .vscode/
+│  │  │  └─ settings.json
+│  │  ├─ cli/
+│  │  │  └─ prompts.py
+│  │  ├─ config/
+│  │  │  ├─ runtime.py
+│  │  │  └─ settings.py
+│  │  ├─ domain/
+│  │  │  ├─ dedupe.py
+│  │  │  ├─ filters.py
+│  │  │  ├─ output_buffer.py
+│  │  │  ├─ raw_builder.py
+│  │  │  ├─ run_checks.py
+│  │  │  ├─ security_code.py
+│  │  │  ├─ skip.py
+│  │  │  ├─ tag_alias.py
+│  │  │  └─ year_shift.py
+│  │  ├─ logging_utils/
+│  │  │  └─ logger.py
+│  │  ├─ services/
+│  │  │  ├─ batch_input_service.py
+│  │  │  ├─ cleanup_service.py
+│  │  │  ├─ company_execution_service.py
+│  │  │  ├─ company_runner.py
+│  │  │  ├─ company_runner_worker.py
+│  │  │  ├─ company_task_result.py
+│  │  │  ├─ excel_service.py
+│  │  │  ├─ file_indexer.py
+│  │  │  ├─ loop_builder.py
+│  │  │  ├─ loop_processor.py
+│  │  │  ├─ main_setup_service.py
+│  │  │  ├─ parse_cache.py
+│  │  │  ├─ parse_service.py
+│  │  │  ├─ raw_service.py
+│  │  │  ├─ stock_service.py
+│  │  │  ├─ stock_write_service.py
+│  │  │  ├─ summary_service.py
+│  │  │  ├─ workbook_service.py
+│  │  │  ├─ xbrl_parser.py
+│  │  │  ├─ xbrl_zip_reader.py
+│  │  │  └─ zip_loader.py
+│  │  └─ utils/
+│  ├─ logs/
+│  │  └─ run.log
+│  └─ main.py
+├─ templates/
+│  └─ 決算分析シート_1.xlsm
+├─ .gitignore
+├─ AI_README.md
+└─ print_tree.py

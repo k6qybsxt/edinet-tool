@@ -5,10 +5,23 @@ from edinet_tool.services.parse_cache import XbrlParseCache
 def get_main_zip_dir():
     return BASE_DIR / "data" / "input" / "zip"
 
-def prepare_main_paths(runtime, timestamp):
-    output_root = BASE_DIR / "data" / "output" / timestamp
-    extracted_root = output_root / "_zip_extracted"
-    template_dir = BASE_DIR / "templates"
+
+def get_main_template_dir():
+    return BASE_DIR / "templates"
+
+
+def build_main_output_root(timestamp):
+    return BASE_DIR / "data" / "output" / timestamp
+
+
+def build_main_extracted_root(output_root):
+    return output_root / "_zip_extracted"
+
+
+def prepare_main_paths(timestamp):
+    output_root = build_main_output_root(timestamp)
+    extracted_root = build_main_extracted_root(output_root)
+    template_dir = get_main_template_dir()
 
     output_root.mkdir(parents=True, exist_ok=True)
     extracted_root.mkdir(parents=True, exist_ok=True)

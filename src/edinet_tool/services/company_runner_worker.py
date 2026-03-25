@@ -1,5 +1,12 @@
 from dataclasses import asdict
 import traceback
+
+from edinet_tool.config.settings import (
+    WORKER_LOG_LEVEL,
+    WORKER_ENABLE_STREAM_HANDLER,
+    WORKER_ENABLE_FILE_HANDLER,
+    WORKER_EMIT_INITIALIZED_LOG,
+)
 from edinet_tool.logging_utils.logger import setup_logger
 from edinet_tool.services.company_runner import run_company_job
 from edinet_tool.services.parse_cache import XbrlParseCache
@@ -7,14 +14,20 @@ from edinet_tool.services.company_task_result import CompanyTaskResult
 
 
 def run_company_job_worker(
-        
     job,
     date_pairs,
     output_root,
     template_dir,
     log_level,
 ):
-    logger = setup_logger(log_level=log_level)
+    effective_log_level = WORKER_LOG_LEVEL or log_level
+
+    logger = setup_logger(
+        log_level=effective_log_level,
+        emit_initialized_log=WORKER_EMIT_INITIALIZED_LOG,
+        enable_file_handler=WORKER_ENABLE_FILE_HANDLER,
+        enable_stream_handler=WORKER_ENABLE_STREAM_HANDLER,
+    )
     skipped_files = []
     parse_cache = XbrlParseCache(logger=logger, max_items=8)
 
