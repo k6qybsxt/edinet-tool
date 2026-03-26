@@ -11,6 +11,9 @@ TAG_ALIAS = {
     "OperatingRevenue": "NetSales",
     "OperatingRevenueIFRS": "NetSales",
     "OperatingRevenues": "NetSales",
+    "RevenueIFRSSummaryOfBusinessResults": "NetSales",
+    "Revenue2IFRS": "NetSales",
+    "RevenueFromExternalCustomers2IFRS": "NetSales",
 
     # CostOfSales
     "CostOfSales": "CostOfSales",
@@ -48,6 +51,7 @@ TAG_ALIAS = {
     "OperatingProfitIFRS": "OperatingIncome",
     "OperatingLossIFRS": "OperatingIncome",
     "OperatingIncomeIFRS": "OperatingIncome",
+    "OperatingIncomeIFRSSummaryOfBusinessResults": "OperatingIncome",
     "OperatingIncomeLoss": "OperatingIncome",
     "OperatingIncomeLossIFRS": "OperatingIncome",
     "OperatingProfitLoss": "OperatingIncome",
@@ -70,8 +74,6 @@ TAG_ALIAS = {
     "ProfitBeforeIncomeTaxesIFRS": "OrdinaryIncome",
     "ProfitBeforeTaxFromContinuingOperationsIFRS": "OrdinaryIncome",
     "ProfitBeforeTaxFromContinuingOperations": "OrdinaryIncome",
-    "IncomeBeforeIncomeTaxes": "OrdinaryIncome",
-    "ProfitBeforeIncomeTaxes": "OrdinaryIncome",
 
     # ProfitLoss
     "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults": "ProfitLoss",
@@ -80,20 +82,26 @@ TAG_ALIAS = {
     "ProfitLossAttributableToOwnersOfParentIFRS": "ProfitLoss",
     "ProfitLossIFRS": "ProfitLoss",
     "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResultsIFRS": "ProfitLoss",
+    "ProfitLossIFRSSummaryOfBusinessResults": "ProfitLoss",
+    "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "ProfitLoss",
+
 
     # CF
     "NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults": "OperatingCash",
     "NetCashProvidedByUsedInOperatingActivities": "OperatingCash",
     "NetCashProvidedByUsedInOperatingActivitiesIFRS": "OperatingCash",
+    "CashFlowsFromUsedInOperatingActivitiesIFRSSummaryOfBusinessResults": "OperatingCash",
 
     "NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults": "InvestmentCash",
     "NetCashProvidedByUsedInInvestmentActivities": "InvestmentCash",
     "NetCashProvidedByUsedInInvestingActivities": "InvestmentCash",
     "NetCashProvidedByUsedInInvestingActivitiesIFRS": "InvestmentCash",
+    "CashFlowsFromUsedInInvestingActivitiesIFRSSummaryOfBusinessResults": "InvestmentCash",
 
     "NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults": "FinancingCash",
     "NetCashProvidedByUsedInFinancingActivities": "FinancingCash",
     "NetCashProvidedByUsedInFinancingActivitiesIFRS": "FinancingCash",
+    "CashFlowsFromUsedInFinancingActivitiesIFRSSummaryOfBusinessResults": "FinancingCash",
 
     # BS
     "TotalAssetsSummaryOfBusinessResults": "TotalAssets",
@@ -102,10 +110,11 @@ TAG_ALIAS = {
     "TotalAssets": "TotalAssets",
     "TotalAssetsIFRS": "TotalAssets",
 
+    "NetAssets": "NetAssets",
     "NetAssetsSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRS": "NetAssets",
-    "NetAssets": "NetAssets",
+    "EquityIFRS": "NetAssets",
 
     "CashAndCashEquivalents": "CashAndCashEquivalents",
     "CashAndCashEquivalentsSummaryOfBusinessResults": "CashAndCashEquivalents",

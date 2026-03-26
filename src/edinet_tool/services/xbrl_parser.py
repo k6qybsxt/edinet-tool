@@ -23,21 +23,20 @@ METRICS = {
     # ---------- PL / CF（duration） ----------
     "NetSales": {
         "tags": [
-            # ★半期サマリー（最優先）
             "jpcrp_cor:NetSalesSummaryOfBusinessResults",
-            # 通常PL
             "jppfs_cor:NetSales",
-            # 保険（売上相当）
             "jpcrp_cor:RevenuesFromExternalCustomers",
-            # IFRS サマリー / KeyFinancialData
             "jpcrp_cor:OperatingRevenuesIFRSKeyFinancialData",
-            # IFRS
+            "jpcrp_cor:RevenueIFRSSummaryOfBusinessResults",
             "jpigp_cor:RevenueIFRS",
             "jpigp_cor:NetSalesIFRS",
+            "jpigp_cor:Revenue2IFRS",
+            "jpigp_cor:RevenueFromExternalCustomers2IFRS",
         ],
         "kind": "duration",
         "unit": "millions",
     },
+
     "CostOfSales": {
         "tags": [
             "jppfs_cor:CostOfSales",
@@ -51,6 +50,7 @@ METRICS = {
         "kind": "duration",
         "unit": "millions",
     },
+
     "GrossProfit": {
         "tags": [
             "jppfs_cor:GrossProfit",
@@ -60,6 +60,7 @@ METRICS = {
         "kind": "duration",
         "unit": "millions",
     },
+
     "SellingExpenses": {
         "tags": [
             "jppfs_cor:SellingGeneralAndAdministrativeExpenses",
@@ -75,6 +76,7 @@ METRICS = {
         "kind": "duration",
         "unit": "millions",
     },
+
     "FinancialBusinessCost": {
         "tags": [
             "jpigp_cor:CostOfFinancingOperationsIFRS",
@@ -83,19 +85,19 @@ METRICS = {
         "kind": "duration",
         "unit": "millions",
     },
-        "OperatingIncome": {
+
+    # IFRSでは連結営業利益が開示されない会社があるため、個別 jppfs_cor:OperatingIncome で補完しない
+    "OperatingIncome": {
         "tags": [
-            "jppfs_cor:OperatingIncome",
+            "jpcrp_cor:OperatingIncomeSummaryOfBusinessResults",
             "jpcrp_cor:OperatingIncomeIFRSSummaryOfBusinessResults",
-            "jpcrp_cor:OperatingProfitIFRSSummaryOfBusinessResults",
-            "jpigp_cor:OperatingProfitLossIFRS",
-            "jpigp_cor:OperatingProfitIFRS",
-            "jpigp_cor:OperatingLossIFRS",
+            "jppfs_cor:OperatingIncome",
             "jpigp_cor:OperatingIncomeIFRS",
         ],
         "kind": "duration",
         "unit": "millions",
     },
+
     "OrdinaryIncome": {
         "tags": [
             # ★半期サマリー（最優先）
@@ -118,56 +120,52 @@ METRICS = {
         "kind": "duration",
         "unit": "millions",
     },
+
     "ProfitLoss": {
         "tags": [
-            # ★半期サマリー（最優先）
             "jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
-            # 日本基準（半期）
+            "jpcrp_cor:ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:ProfitLossIFRSSummaryOfBusinessResults",
             "jppfs_cor:ProfitLossAttributableToOwnersOfParent",
-            # 日本基準（通期）
             "jppfs_cor:ProfitLoss",
-            # IFRS
             "jpigp_cor:ProfitLossAttributableToOwnersOfParentIFRS",
             "jpigp_cor:ProfitLossIFRS",
         ],
         "kind": "duration",
         "unit": "millions",
     },
+
     #営業CF
     "OperatingCash": {
         "tags": [
-            # ★半期サマリー（最優先）
             "jpcrp_cor:NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults",
-            # 通常CF
+            "jpcrp_cor:CashFlowsFromUsedInOperatingActivitiesIFRSSummaryOfBusinessResults",
             "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
-            # IFRS
             "jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS",
         ],
         "kind": "duration",
         "unit": "millions",
     },
+
     #投資CF
     "InvestmentCash": {
         "tags": [
-            # ★半期サマリー（最優先）
             "jpcrp_cor:NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults",
-            # 通常CF（表記ゆれ対策で2つ）
+            "jpcrp_cor:CashFlowsFromUsedInInvestingActivitiesIFRSSummaryOfBusinessResults",
             "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
             "jppfs_cor:NetCashProvidedByUsedInInvestingActivities",
-            # IFRS
             "jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS",
         ],
         "kind": "duration",
         "unit": "millions",
     },
+
     #財務CF
     "FinancingCash": {
         "tags": [
-            # ★半期サマリー（最優先）
             "jpcrp_cor:NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults",
-            # 通常CF
+            "jpcrp_cor:CashFlowsFromUsedInFinancingActivitiesIFRSSummaryOfBusinessResults",
             "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
-            # IFRS
             "jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS",
         ],
         "kind": "duration",
@@ -184,15 +182,18 @@ METRICS = {
         "kind": "instant_num",
         "unit": "millions",
     },
+
     "NetAssets": {
         "tags": [
             "jpcrp_cor:NetAssetsSummaryOfBusinessResults",
             "jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
             "jpigp_cor:EquityAttributableToOwnersOfParentIFRS",
+            "jpigp_cor:EquityIFRS",
         ],
         "kind": "instant_num",
         "unit": "millions",
     },
+
     "CashAndCashEquivalents": {
         "tags": [
             "jppfs_cor:CashAndCashEquivalents",
@@ -318,11 +319,32 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None, pre_parsed=None)
         return 0 if dim == "Consolidated" else 1
 
     def best_update(store, key, cand):
+        metric = key[0] if isinstance(key, tuple) and len(key) >= 1 else None
+
+        # IFRS企業では、連結の営業利益タグが取得できないケースがある。
+        # その場合でも、個別の jppfs_cor:OperatingIncome を代用して埋めない。
+        # 理由:
+        # - PDF/主要指標に連結営業利益が存在しない会社がある
+        # - 個別値を混ぜると、連結Excelに誤値が入る
+        # 方針:
+        # - OperatingIncome については NonConsolidated の jppfs_cor:OperatingIncome を採用しない
+        # - 連結IFRSタグが無い場合は空欄のままにする
+        if (
+            metric == "OperatingIncome"
+            and cand.get("dim") == "NonConsolidated"
+            and cand.get("tag_used") == "jppfs_cor:OperatingIncome"
+        ):
+            return
+
         cur = store.get(key)
         if cur is None:
             store[key] = cand
             return
-        if (dim_rank(cand["dim"]), cand["tag_priority"]) < (dim_rank(cur["dim"]), cur["tag_priority"]):
+
+        if (dim_rank(cand["dim"]), cand["tag_priority"]) < (
+            dim_rank(cur["dim"]),
+            cur["tag_priority"],
+        ):
             store[key] = cand
 
     # ===== outputs =====

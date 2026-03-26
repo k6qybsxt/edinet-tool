@@ -15,7 +15,7 @@ def load_config(file_path):
 #   NORMAL = 通常運用
 #   DEBUG  = 不具合調査
 # =========================================================
-LOG_MODE = "NORMAL"   # "NORMAL" or "DEBUG"
+LOG_MODE = "DEBUG"   # "NORMAL" or "DEBUG"
 
 
 if LOG_MODE == "DEBUG":
