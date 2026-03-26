@@ -1082,7 +1082,10 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None, pre_parsed=None)
             "status": "OK",
         }
 
-    # === SellingExpenses 計算（金融事業に係る金融費用 + 販売費及び一般管理費） ===
+    # === SellingExpenses 計算 ===
+    # 既に SellingExpenses が取れている場合は上書きしない
+    # FinancialBusinessCost を加算するのは SellingExpenses が空で、
+    # かつ FinancialBusinessCost だけを補助的に使う必要がある場合に限定する
     selling_exp_suffixes = ["YTD", "Current", "Prior1", "Prior2", "Prior3", "Prior4"]
 
     for suffix in selling_exp_suffixes:
@@ -1091,29 +1094,14 @@ def parse_xbrl_file_legacy(xbrl_file, mode="full", logger=None, pre_parsed=None)
         sga_value = out.get(se_key)
         finance_cost_value = out.get(f"FinancialBusinessCost{suffix}")
 
-        if sga_value in (None, "") or finance_cost_value in (None, ""):
+        # 既に SellingExpenses があるなら、その値を正として維持する
+        if sga_value not in (None, ""):
             continue
 
-        try:
-            selling_exp_value = int(sga_value) + int(finance_cost_value)
-        except Exception:
+        # SellingExpenses が無く、FinancialBusinessCost だけでも SellingExpenses は作らない
+        # （全社一律加算をやめる）
+        if finance_cost_value in (None, ""):
             continue
-
-        out[se_key] = selling_exp_value
-
-        sga_meta = out_meta.get(se_key, {}) or {}
-        finance_meta = out_meta.get(f"FinancialBusinessCost{suffix}", {}) or {}
-
-        out_meta[se_key] = {
-            "period_start": sga_meta.get("period_start") or finance_meta.get("period_start"),
-            "period_end": sga_meta.get("period_end") or finance_meta.get("period_end"),
-            "period_kind": sga_meta.get("period_kind") or finance_meta.get("period_kind") or "duration",
-            "unit": "millions",
-            "consolidation": sga_meta.get("consolidation") or finance_meta.get("consolidation"),
-            "tag_used": "CALC(FinancialBusinessCost+SellingExpenses)",
-            "tag_rank": 0,
-            "status": "OK",
-        }
 
     # === TotalNumber 計算 ===
     suffixes = [
