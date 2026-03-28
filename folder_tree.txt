@@ -1,0 +1,57 @@
+EDINET_Pipeline/
+├─ .vscode/
+│  └─ settings.json
+├─ docs/
+├─ logs/
+├─ scripts/
+│  └─ run_KANPE.bat
+├─ src/
+│  ├─ edinet_pipeline/
+│  │  ├─ cli/
+│  │  │  └─ prompts.py
+│  │  ├─ config/
+│  │  │  ├─ runtime.py
+│  │  │  └─ settings.py
+│  │  ├─ domain/
+│  │  │  ├─ dedupe.py
+│  │  │  ├─ filters.py
+│  │  │  ├─ output_buffer.py
+│  │  │  ├─ raw_builder.py
+│  │  │  ├─ run_checks.py
+│  │  │  ├─ security_code.py
+│  │  │  ├─ skip.py
+│  │  │  ├─ tag_alias.py
+│  │  │  └─ year_shift.py
+│  │  ├─ logging_utils/
+│  │  │  └─ logger.py
+│  │  └─ services/
+│  │     ├─ batch_input_service.py
+│  │     ├─ cleanup_service.py
+│  │     ├─ company_execution_service.py
+│  │     ├─ company_runner.py
+│  │     ├─ company_runner_worker.py
+│  │     ├─ company_task_result.py
+│  │     ├─ excel_service.py
+│  │     ├─ file_indexer.py
+│  │     ├─ loop_builder.py
+│  │     ├─ loop_processor.py
+│  │     ├─ main_setup_service.py
+│  │     ├─ parse_cache.py
+│  │     ├─ parse_service.py
+│  │     ├─ raw_service.py
+│  │     ├─ stock_service.py
+│  │     ├─ stock_write_service.py
+│  │     ├─ summary_service.py
+│  │     ├─ workbook_service.py
+│  │     ├─ xbrl_parser.py
+│  │     ├─ xbrl_zip_reader.py
+│  │     └─ zip_loader.py
+│  └─ main.py
+├─ templates/
+│  └─ 決算分析シート_1.xlsm
+├─ tests/
+├─ .gitignore
+├─ AI_README.md
+├─ folder_tree.txt
+├─ print_tree.py
+└─ requirements.txt

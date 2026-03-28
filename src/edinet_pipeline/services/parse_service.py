@@ -1,0 +1,348 @@
+import os
+
+from edinet_pipeline.services.xbrl_parser import parse_xbrl_file_raw
+from edinet_pipeline.domain.skip import SkipCode, add_skip
+from edinet_pipeline.domain.security_code import ensure_security_code
+from edinet_pipeline.domain.filters import (
+    filter_for_annual,
+    filter_for_annual_old,
+    filter_for_half,
+)
+from edinet_pipeline.domain.year_shift import (
+    get_fy_end_year,
+    shift_with_keep,
+    shift_out_meta_by_yeargap,
+)
+
+
+def parse_half_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, logger, perf_counter, parse_cache=None):
+    x1 = None
+    base_year = None
+
+    path1 = None
+    if xbrl_file_paths.get("file1") and xbrl_file_paths["file1"]:
+        path1 = xbrl_file_paths["file1"][0]
+
+    name1 = os.path.basename(path1).lower() if path1 else ""
+    is_half_doc = bool(path1 and "jpcrp040300" in name1)
+
+    if path1:
+        try:
+            t = perf_counter()
+
+            _cache_doc = parse_cache.get_or_create(
+                path1,
+                parser_func=lambda p: parse_xbrl_file_raw(
+                    p,
+                    mode=("half" if is_half_doc else "full"),
+                    logger=logger,
+                ),
+            )
+            x1, sc1, meta1 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
+
+            doc_type = "half" if is_half_doc else "annual"
+            phase_name = "file1_parse"
+
+            base_year = get_fy_end_year(x1)
+
+            parsed_docs.append({
+                "doc_id": os.path.basename(path1),
+                "doc_type": doc_type,
+                "out": x1,
+                "out_meta": meta1,
+                "parsed_code": sc1,
+                "facts": _cache_doc.facts,
+                "contexts": _cache_doc.contexts,
+                "units": _cache_doc.units,
+                "nsmap": _cache_doc.nsmap,
+                "dei_data": _cache_doc.dei_data,
+                "accounting_standard": _cache_doc.accounting_standard,
+                "document_display_unit": _cache_doc.document_display_unit,
+            })
+
+            logger.info(
+                f"[parse result] file1 x1_keys={len(x1)} meta1_keys={len(meta1)} "
+                f"sample_keys={list(x1.keys())[:10]}"
+            )
+
+            logger.info(
+                f"[parse bench] mode={'half' if is_half_doc else 'full'} xbrl={os.path.basename(path1)} "
+                f"out={len(x1)} meta={len(meta1)} sec={round(perf_counter()-t,3)}"
+            )
+            loop_event["phases"][phase_name] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            loop_event["accounting_standard"] = _cache_doc.accounting_standard
+
+        except Exception as e:
+            loop_event["phases"]["file1_parse"] = {"ok": False, "sec": None}
+            loop_event["errors"].append("file1_parse_error")
+
+            add_skip(
+                skipped_files,
+                code=SkipCode.FILE1_PARSE_ERROR,
+                phase="file1",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=path1,
+                message="file1 解析エラー",
+                exc=e
+            )
+            x1 = None
+            base_year = None
+
+    use_half = is_half_doc
+
+    return x1, base_year, use_half
+
+def parse_latest_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, use_half, base_year, out_buffer, logger, perf_counter, parse_cache=None):
+    x2 = None
+    meta2 = None
+    path2 = None
+    security_code = None
+
+    if xbrl_file_paths.get("file2") and xbrl_file_paths["file2"]:
+        try:
+            t = perf_counter()
+
+            path2 = xbrl_file_paths["file2"][0]
+
+            _cache_doc = parse_cache.get_or_create(
+                path2,
+                parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
+            )
+            x2, parsed_security_code, meta2 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
+
+            parsed_docs.append({
+                "doc_id": os.path.basename(path2),
+                "doc_type": "annual",
+                "out": x2,
+                "out_meta": meta2,
+                "parsed_code": parsed_security_code,
+                "facts": _cache_doc.facts,
+                "contexts": _cache_doc.contexts,
+                "units": _cache_doc.units,
+                "nsmap": _cache_doc.nsmap,
+                "dei_data": _cache_doc.dei_data,
+                "accounting_standard": _cache_doc.accounting_standard,
+                "document_display_unit": _cache_doc.document_display_unit,
+            })
+
+            logger.info(
+                f"[parse result] file2 x2_keys={len(x2)} meta2_keys={len(meta2)} "
+                f"sample_keys={list(x2.keys())[:10]}"
+            )
+
+            logger.info(f"[parse bench] mode=full xbrl={os.path.basename(path2)} out={len(x2)} meta={len(meta2)} sec={round(perf_counter()-t,3)}")
+
+            security_code = ensure_security_code(x2, parsed_security_code, x1)
+            loop_event["accounting_standard"] = _cache_doc.accounting_standard
+            logger.info(f"[accounting standard] xbrl={os.path.basename(path2)} standard={loop_event['accounting_standard']}")
+
+            if base_year is None:
+                base_year = get_fy_end_year(x2)
+
+            loop_event["phases"]["file2_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+
+            if use_half:
+                out2_write = filter_for_annual(x2, use_half=True)
+            else:
+                y2 = get_fy_end_year(x2)
+                if y2 is None or base_year is None:
+                    out2_write = filter_for_annual(x2, use_half=False)
+                else:
+                    year_gap2 = base_year - y2
+                    if year_gap2 >= 1:
+                        x2_shifted = shift_with_keep(x2, year_gap2)
+                        out2_write = filter_for_annual_old(x2_shifted)
+                    else:
+                        out2_write = filter_for_annual(x2, use_half=False)
+
+                for kk in list(out2_write.keys()):
+                    if kk.startswith("TotalNumber"):
+                        del out2_write[kk]
+
+                if x2.get("TotalNumberCurrent") not in (None, ""):
+                    out2_write["TotalNumberPrior2"] = x2["TotalNumberCurrent"]
+
+            logger.info(
+                f"[filter result] file2 out2_write_keys={len(out2_write)} "
+                f"sample_keys={list(out2_write.keys())[:10]}"
+            )
+
+            logger.debug(f"[buffer debug] file2_annual keys={sorted(list(out2_write.keys()))}")
+            logger.debug(f"[buffer debug] file2_annual nonempty={sum(1 for v in out2_write.values() if v not in (None, ''))}")
+
+            for k, v in out2_write.items():
+                out_buffer.put(k, v, "file2_annual")
+
+        except Exception as e:
+            loop_event["phases"]["file2_parse"] = {"ok": False, "sec": None}
+            loop_event["errors"].append("file2_error")
+
+            add_skip(
+                skipped_files,
+                code=SkipCode.FILE2_ERROR,
+                phase="file2",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=path2,
+                message="file2(最新有報) 解析/書込エラー",
+                exc=e
+            )
+    else:
+        add_skip(
+            skipped_files,
+            code=SkipCode.FILE2_NOT_FOUND,
+            phase="file2",
+            loop=loop,
+            excel=excel_file_path,
+            xbrl=None,
+            message="file2(最新有報) が見つからない"
+        )
+
+    return x2, meta2, path2, security_code, base_year
+
+def parse_old_annual_doc(loop, xbrl_file_paths, excel_file_path, parsed_docs, skipped_files, loop_event, x1, security_code, base_year, out_buffer, logger, perf_counter, parse_cache=None):
+    if base_year is not None and xbrl_file_paths.get("file3") and xbrl_file_paths["file3"]:
+        try:
+            t = perf_counter()
+
+            path3 = xbrl_file_paths["file3"][0]
+
+            _cache_doc = parse_cache.get_or_create(
+                path3,
+                parser_func=lambda p: parse_xbrl_file_raw(p, mode="full", logger=logger),
+            )
+            x3, sc3, meta3 = _cache_doc.out, _cache_doc.security_code, _cache_doc.out_meta
+
+            parsed_docs.append({
+                "doc_id": os.path.basename(path3),
+                "doc_type": "annual",
+                "out": x3,
+                "out_meta": meta3,
+                "parsed_code": sc3,
+                "facts": _cache_doc.facts,
+                "contexts": _cache_doc.contexts,
+                "units": _cache_doc.units,
+                "nsmap": _cache_doc.nsmap,
+                "dei_data": _cache_doc.dei_data,
+                "accounting_standard": _cache_doc.accounting_standard,
+                "document_display_unit": _cache_doc.document_display_unit,
+            })
+
+            logger.info(
+                f"[parse result] file3 x3_keys={len(x3)} meta3_keys={len(meta3)} "
+                f"sample_keys={list(x3.keys())[:10]}"
+            )
+
+            y3 = get_fy_end_year(x3)
+            company_code = security_code or ensure_security_code(x3, sc3, x1) or ""
+
+            loop_event["phases"]["file3_parse"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            loop_event["accounting_standard"] = _cache_doc.accounting_standard
+
+            if y3 is None:
+                add_skip(
+                    skipped_files,
+                    code=SkipCode.FILE3_YEAR_MISS,
+                    phase="file3",
+                    loop=loop,
+                    excel=excel_file_path,
+                    xbrl=path3,
+                    message="file3 期末年が取れない"
+                )
+            else:
+                year_gap = base_year - y3
+
+                if not (1 <= year_gap <= 4):
+                    add_skip(
+                        skipped_files,
+                        code=SkipCode.FILE3_YEAR_MISS,
+                        phase="file3",
+                        loop=loop,
+                        excel=excel_file_path,
+                        xbrl=path3,
+                        message=f"file3 year_gap abnormal base={base_year} y3={y3} gap={year_gap}"
+                    )
+                else:
+                    x3_shifted = shift_with_keep(x3, year_gap)
+                    meta3_shifted = shift_out_meta_by_yeargap(meta3, year_gap)
+
+                    parsed_docs[-1]["out"] = x3_shifted
+                    parsed_docs[-1]["out_meta"] = meta3_shifted
+
+                    out3_write = filter_for_annual_old(x3_shifted)
+
+                    logger.info(
+                        f"[filter result] file3 out3_write_keys={len(out3_write)} "
+                        f"sample_keys={list(out3_write.keys())[:10]}"
+                    )
+
+                    logger.debug(f"[buffer debug] file3_annual keys={sorted(list(out3_write.keys()))}")
+
+                    skipped_overlap = 0
+                    for k, v in out3_write.items():
+                        if out_buffer.has(k):
+                            skipped_overlap += 1
+                            continue
+                        out_buffer.put(k, v, "file3_annual")
+
+                    logger.info(f"[buffer optimize] file3 skipped overlaps={skipped_overlap}")
+
+        except Exception as e:
+            loop_event["phases"]["file3_parse"] = {"ok": False, "sec": None}
+            loop_event["errors"].append("file3_error")
+
+            add_skip(
+                skipped_files,
+                code=SkipCode.FILE3_ERROR,
+                phase="file3",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=(xbrl_file_paths["file3"][0] if xbrl_file_paths.get("file3") else None),
+                message="file3(過去有報) 解析/書込エラー",
+                exc=e
+            )
+
+def finalize_half_buffer(loop, xbrl_file_paths, excel_file_path, skipped_files, loop_event, use_half, x1, out_buffer, logger, perf_counter):
+    if use_half and x1 is not None:
+        try:
+            t = perf_counter()
+
+            out_half = filter_for_half(x1)
+
+            logger.info(
+                f"[filter result] half out_half_keys={len(out_half)} "
+                f"sample_keys={list(out_half.keys())[:10]}"
+            )
+
+            logger.debug(f"[buffer debug] half_final keys={sorted(list(out_half.keys()))}")
+            logger.debug(f"[buffer debug] half_final nonempty={sum(1 for v in out_half.values() if v not in (None, ''))}")
+
+            removed_before_put = 0
+            for k in list(out_half.keys()):
+                if out_buffer.has(k):
+                    out_buffer.pop(k)
+                    removed_before_put += 1
+
+            for k, v in out_half.items():
+                out_buffer.put(k, v, "half_final")
+
+            logger.info(f"[buffer optimize] half_final removed_before_put={removed_before_put}")
+
+            loop_event["phases"]["half_buffer"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            logger.info(f"[half finalize bench] sec={round(perf_counter()-t,3)}")
+
+        except Exception as e:
+            loop_event["phases"]["half_buffer"] = {"ok": False, "sec": None}
+            loop_event["errors"].append("half_buffer_error")
+
+            add_skip(
+                skipped_files,
+                code=SkipCode.HALF_WRITE_ERROR,
+                phase="half",
+                loop=loop,
+                excel=excel_file_path,
+                xbrl=(xbrl_file_paths["file1"][0] if xbrl_file_paths.get("file1") else None),
+                message="half(半期) 書込エラー",
+                exc=e
+            )
