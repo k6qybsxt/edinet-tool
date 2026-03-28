@@ -265,3 +265,41 @@ AIへの依頼
 修正指示のみ
 
 でお願いします。
+
+---
+
+# 安全運用ルール（2026-03-28確定）
+
+## 1. 開発場所
+- コード開発は `C:\Users\silve\EDINET_Pipeline` で行う
+- 実データは `D:\EDINET_Data` に置く
+- `D:\EDINET_Data` は Git 管理しない
+
+## 2. Git管理の対象
+Git管理するもの
+- `src/`
+- `scripts/`
+- `templates/`
+- `requirements.txt`
+- `.gitignore`
+- `AI_README.md`
+
+Git管理しないもの
+- `data/`
+- `logs/`
+- `.venv/`
+- `.vscode/`
+- `__pycache__/`
+- 実行結果ファイル
+- キャッシュファイル
+
+## 3. 基本ブランチ運用
+- 普段の作業継続元は `move-to-users-silve`
+- 新しい作業を始めるときは、毎回作業ブランチを作る
+- いきなり `main` では作業しない
+
+作業開始例
+```powershell
+git switch move-to-users-silve
+git pull
+git switch -c 作業名
