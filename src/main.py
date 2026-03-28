@@ -51,7 +51,7 @@ def main():
     setup_paths = prepare_main_paths(
         timestamp=timestamp,
     )
-    
+
     output_root = setup_paths["output_root"]
     extracted_root = setup_paths["extracted_root"]
     template_dir = setup_paths["template_dir"]

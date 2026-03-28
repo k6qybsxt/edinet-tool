@@ -1,4 +1,5 @@
 AI_README — EDINET XBRL 決算自動分析システム
+
 目的
 
 EDINETのXBRLを解析し
@@ -44,6 +45,7 @@ Excelテンプレート自動入力
 必要な情報があれば質問すること。
 
 現在の処理フロー
+
 ZIP投入
 ↓
 ZIPからXBRL抽出
@@ -67,7 +69,9 @@ stock_service
 Excel出力
 ↓
 batch_summary.csv生成
+
 入力
+
 data/input/zip
 
 EDINETからダウンロードしたZIP
@@ -76,7 +80,9 @@ EDINETからダウンロードしたZIP
 
 121_Xbrl_Search_xxxx.zip
 122ki_half_Xbrl_Search_xxxx.zip
+
 出力
+
 data/output/{timestamp}/
 
 excel/
@@ -85,7 +91,9 @@ reports/
 company_jobs.csv
 batch_summary.csv
 failed_jobs.csv
+
 現在のフォルダ構造
+
 src/
 
 main.py
@@ -121,7 +129,9 @@ edinet_tool/
   zip_loader.py
 
 runtime.py
+
 並列処理
+
 ProcessPoolExecutor
 
 worker
@@ -137,6 +147,7 @@ max_workers = auto
 CPU数から自動決定
 
 min(8, cpu_count-1)
+
 パフォーマンス
 
 現在
@@ -148,6 +159,7 @@ min(8, cpu_count-1)
 
 50社
 約4〜5分
+
 parse_cache
 
 XBRL解析キャッシュ
@@ -157,7 +169,9 @@ XbrlParseCache
 現在
 
 max_items = 16
+
 解決済み問題
+
 1 ZIP削除エラー
 PermissionError
 _zip_extracted
@@ -169,6 +183,7 @@ ZipFileハンドル残存
 解決
 
 with ZipFile()
+
 2 並列処理 Pathエラー
 TypeError
 unsupported operand type(s) for /
@@ -181,12 +196,15 @@ ProcessPoolでPathがstr化
 
 template_dir = Path(template_dir)
 output_root = Path(output_root)
+
 3 workerログ爆発
 
 解決
 
 SilentLogger
+
 現在のログ
+
 [process pool] workers=6
 [company start]
 [batch summary]
@@ -194,6 +212,7 @@ SilentLogger
 のみ
 
 出力確認
+
 batch_summary.csv
 
 例
@@ -203,6 +222,7 @@ slot company_code company_name status stock_status
 2 4613 success success
 3 6857 success success
 4 7203 success success
+
 Git運用
 
 ユーザーは以下で管理
@@ -210,6 +230,7 @@ Git運用
 git add .
 git commit -m "message"
 git push
+
 次の開発フェーズ
 
 高速化
@@ -229,6 +250,7 @@ iterparse
 効果
 
 10〜20倍高速化
+
 ② ZIPメモリ展開
 
 現在
@@ -238,6 +260,7 @@ ZIP → disk展開
 予定
 
 ZIP → memory
+
 ③ Excel書き込み最適化
 
 現在
@@ -247,9 +270,12 @@ ZIP → memory
 予定
 
 range batch write
+
 最終目標
+
 50社
 30〜40秒処理
+
 AIへの依頼
 
 このシステムを

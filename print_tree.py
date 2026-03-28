@@ -1,11 +1,13 @@
 from pathlib import Path
 
-ROOT = Path(r"C:\Program Files 2\EDINET_Pipeline")
-EXCLUDE_DIRS = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache"}
+ROOT = Path(r"C:\Users\silve\EDINET_Pipeline")
+EXCLUDE_DIRS = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".vscode"}
 EXCLUDE_FILES = set()
+
 
 def is_excluded(path: Path) -> bool:
     return any(part in EXCLUDE_DIRS for part in path.parts) or path.name in EXCLUDE_FILES
+
 
 def build_tree(path: Path, prefix=""):
     entries = [
@@ -24,6 +26,7 @@ def build_tree(path: Path, prefix=""):
             lines.extend(build_tree(entry, prefix + extension))
     return lines
 
+
 def main():
     lines = [ROOT.name + "/"]
     lines.extend(build_tree(ROOT))
@@ -33,6 +36,7 @@ def main():
     output_file.write_text(text, encoding="utf-8")
     print(text)
     print(f"\n保存先: {output_file}")
+
 
 if __name__ == "__main__":
     main()
