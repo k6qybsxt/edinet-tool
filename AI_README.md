@@ -65,6 +65,64 @@ EDINET の XBRL（有価証券報告書・半期報告書）を解析し、
 - `feature/log-debug-improve`
 - `feature/raw-edinet-check`
 
+## 毎回使うブランチ作成コマンド
+新しい作業を始めるときは、毎回この流れでブランチを切る。
+
+```bash
+git switch main
+git pull origin main
+git switch -c feature/作業名
+```
+
+### 例
+```bash
+git switch main
+git pull origin main
+git switch -c feature/ifrs-operatingincome-fix
+```
+
+## 作業後の基本コマンド
+```bash
+git add .
+git commit -m "作業内容"
+git push -u origin feature/作業名
+```
+
+### 例
+```bash
+git add .
+git commit -m "Fix IFRS operating income handling"
+git push -u origin feature/ifrs-operatingincome-fix
+```
+
+## main に取り込むときの基本コマンド
+```bash
+git switch main
+git pull origin main
+git merge feature/作業名
+git push origin main
+```
+
+### 例
+```bash
+git switch main
+git pull origin main
+git merge feature/ifrs-operatingincome-fix
+git push origin main
+```
+
+## 取り込み後にブランチを削除するとき
+```bash
+git branch -d feature/作業名
+git push origin --delete feature/作業名
+```
+
+### 例
+```bash
+git branch -d feature/ifrs-operatingincome-fix
+git push origin --delete feature/ifrs-operatingincome-fix
+```
+
 ## 重要
 AI は以下の前提で指示すること。
 - `main` で直接作業させない
