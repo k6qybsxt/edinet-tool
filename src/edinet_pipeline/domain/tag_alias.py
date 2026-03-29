@@ -1,5 +1,5 @@
 TAG_ALIAS = {
-    # NetSales
+    # NetSales　売上高
     "NetSalesSummaryOfBusinessResults": "NetSales",
     "NetSales": "NetSales",
     "RevenuesFromExternalCustomers": "NetSales",
@@ -15,7 +15,7 @@ TAG_ALIAS = {
     "Revenue2IFRS": "NetSales",
     "RevenueFromExternalCustomers2IFRS": "NetSales",
 
-    # CostOfSales
+    # CostOfSales　売上原価
     "CostOfSales": "CostOfSales",
     "CostOfSalesIFRS": "CostOfSales",
     "CostOfRevenue": "CostOfSales",
@@ -28,7 +28,7 @@ TAG_ALIAS = {
     "CostOfGoodsSold": "CostOfSales",
     "CostOfGoodsSoldIFRS": "CostOfSales",
 
-    # SellingExpenses
+    # SellingExpenses　販管費
     "SellingGeneralAndAdministrativeExpenses": "SellingExpenses",
     "SellingGeneralAndAdministrativeExpensesIFRS": "SellingExpenses",
     "SellingExpensesAndGeneralAdministrativeExpenses": "SellingExpenses",
@@ -44,7 +44,7 @@ TAG_ALIAS = {
     "GeneralAndAdministrativeExpenses": "SellingExpenses",
     "SellingGeneralAdministrativeExpenses": "SellingExpenses",
 
-    # OperatingIncome
+    # OperatingIncome　営業利益
     "OperatingIncome": "OperatingIncome",
     "OperatingProfitLossIFRS": "OperatingIncome",
     "OperatingProfit": "OperatingIncome",
@@ -57,7 +57,7 @@ TAG_ALIAS = {
     "OperatingProfitLoss": "OperatingIncome",
     "OperatingIncomeLossSummaryOfBusinessResults": "OperatingIncome",
 
-    # OrdinaryIncome
+    # OrdinaryIncome　経常利益
     "OrdinaryIncomeLossSummaryOfBusinessResults": "OrdinaryIncome",
     "OrdinaryIncome": "OrdinaryIncome",
     "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults": "OrdinaryIncome",
@@ -75,7 +75,7 @@ TAG_ALIAS = {
     "ProfitBeforeTaxFromContinuingOperationsIFRS": "OrdinaryIncome",
     "ProfitBeforeTaxFromContinuingOperations": "OrdinaryIncome",
 
-    # ProfitLoss
+    # ProfitLoss　純利益
     "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults": "ProfitLoss",
     "ProfitLossAttributableToOwnersOfParent": "ProfitLoss",
     "ProfitLoss": "ProfitLoss",
@@ -86,42 +86,46 @@ TAG_ALIAS = {
     "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "ProfitLoss",
 
 
-    # CF
+    # 営業CF
     "NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults": "OperatingCash",
     "NetCashProvidedByUsedInOperatingActivities": "OperatingCash",
     "NetCashProvidedByUsedInOperatingActivitiesIFRS": "OperatingCash",
     "CashFlowsFromUsedInOperatingActivitiesIFRSSummaryOfBusinessResults": "OperatingCash",
 
+    # 投資CF
     "NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults": "InvestmentCash",
     "NetCashProvidedByUsedInInvestmentActivities": "InvestmentCash",
     "NetCashProvidedByUsedInInvestingActivities": "InvestmentCash",
     "NetCashProvidedByUsedInInvestingActivitiesIFRS": "InvestmentCash",
     "CashFlowsFromUsedInInvestingActivitiesIFRSSummaryOfBusinessResults": "InvestmentCash",
 
+    # 財務CF
     "NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults": "FinancingCash",
     "NetCashProvidedByUsedInFinancingActivities": "FinancingCash",
     "NetCashProvidedByUsedInFinancingActivitiesIFRS": "FinancingCash",
     "CashFlowsFromUsedInFinancingActivitiesIFRSSummaryOfBusinessResults": "FinancingCash",
 
-    # BS
+    # 資産
     "TotalAssetsSummaryOfBusinessResults": "TotalAssets",
     "TotalAssetsIFRSSummaryOfBusinessResults": "TotalAssets",
     "AssetsIFRS": "TotalAssets",
     "TotalAssets": "TotalAssets",
     "TotalAssetsIFRS": "TotalAssets",
 
+    # 資本
     "NetAssets": "NetAssets",
     "NetAssetsSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRS": "NetAssets",
     "EquityIFRS": "NetAssets",
 
+    # 期末残
     "CashAndCashEquivalents": "CashAndCashEquivalents",
     "CashAndCashEquivalentsSummaryOfBusinessResults": "CashAndCashEquivalents",
     "CashAndCashEquivalentsIFRSSummaryOfBusinessResults": "CashAndCashEquivalents",
     "CashAndCashEquivalentsIFRS": "CashAndCashEquivalents",
 
-    # Shares
+    # 発行株数
     "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
@@ -129,6 +133,7 @@ TAG_ALIAS = {
     "TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
 
+    # 自己株式
     "TotalNumberOfSharesHeldTreasurySharesEtc": "TreasuryShares",
     "NumberOfSharesHeldInOwnNameTreasurySharesEtc": "TreasuryShares",
     "TotalNumberOfSharesHeldInTheNameOfOthersTreasurySharesEtc": "TreasuryShares",
