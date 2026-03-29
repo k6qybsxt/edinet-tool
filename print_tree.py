@@ -1,6 +1,10 @@
+from __future__ import annotations
+
+import sys
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\silve\EDINET_Pipeline")
+
+DEFAULT_ROOT = Path(r"C:\Users\silve\EDINET_Pipeline")
 EXCLUDE_DIRS = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".vscode"}
 EXCLUDE_FILES = set()
 
@@ -9,13 +13,13 @@ def is_excluded(path: Path) -> bool:
     return any(part in EXCLUDE_DIRS for part in path.parts) or path.name in EXCLUDE_FILES
 
 
-def build_tree(path: Path, prefix=""):
+def build_tree(path: Path, prefix: str = "") -> list[str]:
     entries = [
         p for p in sorted(path.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
         if not is_excluded(p)
     ]
 
-    lines = []
+    lines: list[str] = []
     for i, entry in enumerate(entries):
         is_last = i == len(entries) - 1
         connector = "└─ " if is_last else "├─ "
@@ -27,13 +31,32 @@ def build_tree(path: Path, prefix=""):
     return lines
 
 
-def main():
-    lines = [ROOT.name + "/"]
-    lines.extend(build_tree(ROOT))
+def resolve_target_root() -> Path:
+    if len(sys.argv) >= 2:
+        return Path(sys.argv[1]).resolve()
+    return DEFAULT_ROOT.resolve()
+
+
+def resolve_output_file(target_root: Path) -> Path:
+    if len(sys.argv) >= 3:
+        return Path(sys.argv[2]).resolve()
+    return target_root / "folder_tree.txt"
+
+
+def main() -> None:
+    target_root = resolve_target_root()
+    output_file = resolve_output_file(target_root)
+
+    if not target_root.exists():
+        raise FileNotFoundError(f"対象フォルダが存在しません: {target_root}")
+
+    lines = [target_root.name + "/"]
+    lines.extend(build_tree(target_root))
     text = "\n".join(lines)
 
-    output_file = ROOT / "folder_tree.txt"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(text, encoding="utf-8")
+
     print(text)
     print(f"\n保存先: {output_file}")
 

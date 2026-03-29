@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import zipfile
 
 import requests
 
@@ -45,13 +46,18 @@ def download_document_zip(
     if len(response.content) < 4:
         raise RuntimeError(f"response too small: doc_id={doc_id} bytes={len(response.content)}")
 
-    if response.content[:2] != b'PK':
+    if response.content[:2] != b"PK":
         preview = response.text[:300]
         raise RuntimeError(
             f"not a zip response: doc_id={doc_id} content_type={response.headers.get('Content-Type')} preview={preview!r}"
         )
 
     output_path.write_bytes(response.content)
+
+    if not zipfile.is_zipfile(output_path):
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"saved file is not a valid zip: doc_id={doc_id} path={output_path}")
+
     print(f"[DEBUG] write_complete doc_id={doc_id} bytes={len(response.content)}")
 
     return output_path
