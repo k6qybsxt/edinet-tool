@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from edinet_monitor.db.schema import get_connection
+from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.download_queue_service import (
     fetch_raw_facts_saved_filings,
     mark_normalized_metrics_error,
@@ -40,6 +40,8 @@ def fetch_raw_fact_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict]:
 
 
 def main() -> None:
+    create_tables()
+
     conn = get_connection()
     try:
         filings = fetch_raw_facts_saved_filings(conn, limit=5)

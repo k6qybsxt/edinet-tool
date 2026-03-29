@@ -12,9 +12,52 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _get_table_columns(cur: sqlite3.Cursor, table_name: str) -> set[str]:
+    rows = cur.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _rebuild_screening_results_if_needed(cur: sqlite3.Cursor) -> None:
+    table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'screening_results'
+        """
+    ).fetchone()
+
+    if not table_exists:
+        return
+
+    columns = _get_table_columns(cur, "screening_results")
+    required_columns = {
+        "screening_run_id",
+        "screening_date",
+        "rule_name",
+        "rule_version",
+        "edinet_code",
+        "security_code",
+        "company_name",
+        "period_end",
+        "result_flag",
+        "score",
+        "detail_json",
+        "created_at",
+    }
+
+    if required_columns.issubset(columns):
+        return
+
+    cur.execute("DROP TABLE IF EXISTS notifications")
+    cur.execute("DROP TABLE IF EXISTS screening_results")
+    cur.execute("DROP TABLE IF EXISTS screening_runs")
+
+
 def create_tables() -> None:
     conn = get_connection()
     cur = conn.cursor()
+
+    _rebuild_screening_results_if_needed(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS issuer_master (
@@ -82,14 +125,30 @@ def create_tables() -> None:
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS screening_results (
+    CREATE TABLE IF NOT EXISTS screening_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         screening_date TEXT NOT NULL,
         rule_name TEXT NOT NULL,
+        rule_version TEXT NOT NULL,
+        target_count INTEGER NOT NULL DEFAULT 0,
+        hit_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS screening_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        screening_run_id INTEGER NOT NULL,
+        screening_date TEXT NOT NULL,
+        rule_name TEXT NOT NULL,
+        rule_version TEXT NOT NULL,
         edinet_code TEXT NOT NULL,
         security_code TEXT,
-        company_name TEXT NOT NULL,
+        company_name TEXT,
+        period_end TEXT,
         result_flag INTEGER NOT NULL,
+        score REAL,
         detail_json TEXT,
         created_at TEXT NOT NULL
     )
@@ -117,6 +176,11 @@ def create_tables() -> None:
     """)
 
     cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_filings_parse_status
+    ON filings(parse_status)
+    """)
+
+    cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_raw_facts_doc_id
     ON raw_facts(doc_id)
     """)
@@ -124,6 +188,11 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_raw_facts_tag_name
     ON raw_facts(tag_name)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_raw_facts_doc_tag
+    ON raw_facts(doc_id, tag_name)
     """)
 
     cur.execute("""
@@ -137,8 +206,33 @@ def create_tables() -> None:
     """)
 
     cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_normalized_metrics_doc_metric_period
+    ON normalized_metrics(doc_id, metric_key, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_normalized_metrics_code_period
+    ON normalized_metrics(edinet_code, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_screening_runs_date_rule
+    ON screening_runs(screening_date, rule_name)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_screening_results_run_id
+    ON screening_results(screening_run_id)
+    """)
+
+    cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_screening_results_date_rule
     ON screening_results(screening_date, rule_name)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_screening_results_code
+    ON screening_results(edinet_code, security_code)
     """)
 
     conn.commit()

@@ -44,7 +44,7 @@ def insert_normalized_metrics(conn: sqlite3.Connection, rows: list[dict]) -> int
 
     conn.executemany(
         """
-        INSERT INTO normalized_metrics (
+        INSERT OR REPLACE INTO normalized_metrics (
             doc_id,
             edinet_code,
             security_code,
