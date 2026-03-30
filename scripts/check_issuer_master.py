@@ -2,26 +2,32 @@ import sqlite3
 
 db_path = r"C:\Users\silve\EDINET_Pipeline\data\edinet_monitor\edinet_monitor.db"
 conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
 print("=== issuer_master count ===")
-print(cur.execute("select count(*) from issuer_master").fetchone()[0])
+row = cur.execute("select count(*) as cnt from issuer_master").fetchone()
+print(row["cnt"])
 
-print("\n=== issuer_master sample ===")
+print()
+print("=== issuer_master sample ===")
 for row in cur.execute("""
 select
     edinet_code,
     security_code,
     company_name,
     market,
-    industry,
+    industry_33,
+    industry_17,
     exchange,
+    listing_category_raw,
+    is_listed,
     listing_source,
-    is_listed
+    updated_at
 from issuer_master
-order by edinet_code
+order by security_code asc
 limit 20
 """).fetchall():
-    print(row)
+    print(dict(row))
 
 conn.close()

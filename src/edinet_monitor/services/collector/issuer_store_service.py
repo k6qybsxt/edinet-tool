@@ -11,9 +11,11 @@ def upsert_issuer(conn: sqlite3.Connection, issuer: dict) -> None:
             security_code,
             company_name,
             market,
-            industry,
+            industry_33,
+            industry_17,
             is_listed,
             exchange,
+            listing_category_raw,
             listing_source,
             updated_at
         )
@@ -22,18 +24,28 @@ def upsert_issuer(conn: sqlite3.Connection, issuer: dict) -> None:
             :security_code,
             :company_name,
             :market,
-            :industry,
+            :industry_33,
+            :industry_17,
             :is_listed,
             :exchange,
+            :listing_category_raw,
             :listing_source,
             :updated_at
         )
         ON CONFLICT(edinet_code) DO UPDATE SET
             security_code = excluded.security_code,
             company_name = excluded.company_name,
+            market = excluded.market,
+            industry_33 = excluded.industry_33,
+            industry_17 = excluded.industry_17,
+            is_listed = excluded.is_listed,
             exchange = CASE
                 WHEN excluded.exchange <> '' THEN excluded.exchange
                 ELSE issuer_master.exchange
+            END,
+            listing_category_raw = CASE
+                WHEN excluded.listing_category_raw <> '' THEN excluded.listing_category_raw
+                ELSE issuer_master.listing_category_raw
             END,
             listing_source = CASE
                 WHEN excluded.listing_source <> '' THEN excluded.listing_source

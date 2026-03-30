@@ -1,0 +1,7 @@
+PowerShellで以下のコマンドを実行
+
+python C:\Users\silve\EDINET_Pipeline\print_tree\print_tree.py　→　デフォルトのフォルダ構成が表示
+
+python C:\Users\silve\EDINET_Pipeline\print_tree\print_tree.py C:\Users\指定したフォルダ　→　指定したフォルダ構成が表示
+
+python C:\Users\silve\EDINET_Pipeline\print_tree\print_tree.py C:\Users\指定したフォルダ C:\Users\指定したフォルダ\folder_tree.txt　→　指定したフォルダ構成表示、テキスト作成

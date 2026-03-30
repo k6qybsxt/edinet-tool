@@ -7,8 +7,7 @@ from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.issuer_store_service import upsert_issuers
 
 
-CSV_PATH = r"D:\EDINET_Data\master\tse_listed_companies.csv"
-
+CSV_PATH = r"D:\EDINET_Data\master\tse_issuer_master_latest.csv"
 
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -22,21 +21,20 @@ def load_csv_rows(csv_path: str) -> list[dict]:
 
 def row_to_issuer_record(row: dict) -> dict:
     security_code = str(row.get("security_code") or "").strip()
-    if len(security_code) == 4 and security_code.isdigit():
-        security_code = f"{security_code}0"
 
     return {
         "edinet_code": str(row.get("edinet_code") or "").strip(),
         "security_code": security_code,
         "company_name": str(row.get("company_name") or "").strip(),
         "market": str(row.get("market") or "").strip(),
-        "industry": str(row.get("industry") or "").strip(),
+        "industry_33": str(row.get("industry_33") or "").strip(),
+        "industry_17": str(row.get("industry_17") or "").strip(),
         "is_listed": 1,
         "exchange": str(row.get("exchange") or "TSE").strip(),
-        "listing_source": "tse_master_csv",
+        "listing_category_raw": str(row.get("listing_category_raw") or "").strip(),
+        "listing_source": "tse_issuer_master_csv",
         "updated_at": now_text(),
     }
-
 
 def main() -> None:
     create_tables()

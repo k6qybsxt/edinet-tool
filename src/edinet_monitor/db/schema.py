@@ -91,6 +91,9 @@ def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
     required_columns = {
         "exchange",
         "listing_source",
+        "industry_33",
+        "industry_17",
+        "listing_category_raw",
     }
 
     if required_columns.issubset(columns):
@@ -112,9 +115,11 @@ def create_tables() -> None:
         security_code TEXT,
         company_name TEXT NOT NULL,
         market TEXT,
-        industry TEXT,
+        industry_33 TEXT,
+        industry_17 TEXT,
         is_listed INTEGER NOT NULL DEFAULT 1,
         exchange TEXT,
+        listing_category_raw TEXT,
         listing_source TEXT,
         updated_at TEXT NOT NULL
     )

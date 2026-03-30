@@ -6,24 +6,8 @@ from datetime import date, timedelta
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
 from edinet_monitor.services.collector.document_list_service import fetch_document_list
-from edinet_monitor.services.collector.document_row_mapper import (
-    to_filing_record,
-    to_issuer_record,
-)
+from edinet_monitor.services.collector.document_row_mapper import to_filing_record
 from edinet_monitor.services.collector.filing_store_service import upsert_filings
-from edinet_monitor.services.collector.issuer_store_service import upsert_issuers
-
-
-def _dedupe_issuers_by_edinet_code(rows: list[dict]) -> list[dict]:
-    out: dict[str, dict] = {}
-
-    for row in rows:
-        edinet_code = str(row.get("edinetCode") or "")
-        if not edinet_code:
-            continue
-        out[edinet_code] = to_issuer_record(row)
-
-    return list(out.values())
 
 def _fetch_allowed_edinet_codes(conn) -> set[str]:
     rows = conn.execute(
@@ -43,13 +27,20 @@ def main() -> None:
 
     create_tables()
 
-    target_date = date.today() - timedelta(days=2)
+    target_date_text = os.getenv("EDINET_TARGET_DATE", "").strip()
+    if target_date_text:
+        target_date = date.fromisoformat(target_date_text)
+    else:
+        target_date = date.today() - timedelta(days=2)
 
     result = fetch_document_list(
         target_date=target_date,
         api_key=api_key,
         list_type=2,
     )
+    print(f"metadata_date={result.metadata.get('date')}")
+    print(f"metadata_status={result.metadata.get('status')}")
+    print(f"metadata_message={result.metadata.get('message')}")
 
     filtered_rows = filter_target_filings(result.results)
 
@@ -63,9 +54,8 @@ def main() -> None:
         ]
 
         filing_records = [to_filing_record(row) for row in issuer_rows]
-        issuer_records = _dedupe_issuers_by_edinet_code(issuer_rows)
 
-        issuer_saved_count = upsert_issuers(conn, issuer_records)
+        issuer_saved_count = 0
         filing_saved_count = upsert_filings(conn, filing_records)
     finally:
         conn.close()
