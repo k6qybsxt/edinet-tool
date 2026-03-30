@@ -52,12 +52,59 @@ def _rebuild_screening_results_if_needed(cur: sqlite3.Cursor) -> None:
     cur.execute("DROP TABLE IF EXISTS screening_results")
     cur.execute("DROP TABLE IF EXISTS screening_runs")
 
+def _rebuild_filings_if_needed(cur: sqlite3.Cursor) -> None:
+    table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'filings'
+        """
+    ).fetchone()
+
+    if not table_exists:
+        return
+
+    columns = _get_table_columns(cur, "filings")
+    required_columns = {
+        "doc_info_edit_status",
+        "legal_status",
+    }
+
+    if required_columns.issubset(columns):
+        return
+
+    cur.execute("DROP TABLE IF EXISTS filings")
+
+def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
+    table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'issuer_master'
+        """
+    ).fetchone()
+
+    if not table_exists:
+        return
+
+    columns = _get_table_columns(cur, "issuer_master")
+    required_columns = {
+        "exchange",
+        "listing_source",
+    }
+
+    if required_columns.issubset(columns):
+        return
+
+    cur.execute("DROP TABLE IF EXISTS issuer_master")
 
 def create_tables() -> None:
     conn = get_connection()
     cur = conn.cursor()
 
     _rebuild_screening_results_if_needed(cur)
+    _rebuild_filings_if_needed(cur)
+    _rebuild_issuer_master_if_needed(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS issuer_master (
@@ -67,6 +114,8 @@ def create_tables() -> None:
         market TEXT,
         industry TEXT,
         is_listed INTEGER NOT NULL DEFAULT 1,
+        exchange TEXT,
+        listing_source TEXT,
         updated_at TEXT NOT NULL
     )
     """)
@@ -80,6 +129,8 @@ def create_tables() -> None:
         period_end TEXT,
         submit_date TEXT,
         amendment_flag INTEGER NOT NULL DEFAULT 0,
+        doc_info_edit_status TEXT,
+        legal_status TEXT,
         zip_path TEXT,
         xbrl_path TEXT,
         download_status TEXT NOT NULL,

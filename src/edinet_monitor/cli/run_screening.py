@@ -8,6 +8,7 @@ from edinet_monitor.screening.screening_query_service import (
     fetch_target_edinet_codes,
 )
 from edinet_monitor.screening.screening_result_store_service import (
+    delete_screening_results_by_date_rule,
     insert_screening_result,
     insert_screening_run,
 )
@@ -49,6 +50,11 @@ def main() -> None:
             )
 
         hit_count = sum(1 for row in pending_results if row["result_flag"] == 1)
+        delete_screening_results_by_date_rule(
+            conn,
+            screening_date=screening_date,
+            rule_name=RULE_NAME,
+        )
 
         screening_run_id = insert_screening_run(
             conn,

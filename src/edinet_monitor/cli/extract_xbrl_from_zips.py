@@ -15,7 +15,7 @@ from edinet_monitor.services.storage.zip_extract_service import extract_first_xb
 def main() -> None:
     conn = get_connection()
     try:
-        rows = fetch_downloaded_filings_without_xbrl(conn, limit=5)
+        rows = fetch_downloaded_filings_without_xbrl(conn, limit=20)
         print(f"downloaded_rows_without_xbrl={len(rows)}")
 
         for row in rows:

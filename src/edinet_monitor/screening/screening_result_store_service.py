@@ -9,6 +9,31 @@ def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def delete_screening_results_by_date_rule(
+    conn: sqlite3.Connection,
+    *,
+    screening_date: str,
+    rule_name: str,
+) -> None:
+    conn.execute(
+        """
+        DELETE FROM screening_results
+        WHERE screening_date = ?
+          AND rule_name = ?
+        """,
+        (screening_date, rule_name),
+    )
+    conn.execute(
+        """
+        DELETE FROM screening_runs
+        WHERE screening_date = ?
+          AND rule_name = ?
+        """,
+        (screening_date, rule_name),
+    )
+    conn.commit()
+
+
 def insert_screening_run(
     conn: sqlite3.Connection,
     *,

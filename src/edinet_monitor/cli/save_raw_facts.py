@@ -19,7 +19,7 @@ from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 def main() -> None:
     conn = get_connection()
     try:
-        rows = fetch_xbrl_ready_filings(conn, limit=5)
+        rows = fetch_xbrl_ready_filings(conn, limit=20)
         print(f"xbrl_ready_rows={len(rows)}")
 
         for row in rows:

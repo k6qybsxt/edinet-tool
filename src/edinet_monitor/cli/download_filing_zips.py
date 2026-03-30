@@ -19,7 +19,7 @@ def main() -> None:
 
     conn = get_connection()
     try:
-        rows = fetch_pending_filings(conn, limit=1)
+        rows = fetch_pending_filings(conn, limit=20)
 
         print(f"[DEBUG] pending_rows={len(rows)}")
 
