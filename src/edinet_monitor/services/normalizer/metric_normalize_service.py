@@ -31,11 +31,13 @@ def _to_number(value_text: str | None) -> float | None:
 
 
 def _get_suffix_and_period_kind(context_ref: str) -> tuple[str, str] | None:
-    for suffix_key, result in TARGET_CONTEXT_SUFFIXES.items():
-        if str(context_ref or "").endswith(suffix_key):
-            return result
-    return None
+    text = str(context_ref or "")
 
+    for suffix_key in sorted(TARGET_CONTEXT_SUFFIXES.keys(), key=len, reverse=True):
+        if suffix_key in text:
+            return TARGET_CONTEXT_SUFFIXES[suffix_key]
+
+    return None
 
 def _build_metric_key(base_metric: str, suffix: str) -> str:
     return f"{base_metric}{suffix}"

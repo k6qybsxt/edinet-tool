@@ -62,17 +62,26 @@ def main() -> None:
                     security_code=security_code,
                 )
 
+                print(
+                    f"[DEBUG] doc_id={doc_id} raw_row_count={len(raw_rows)} normalized_row_count={len(normalized_rows)}"
+                )
+
                 delete_normalized_metrics_by_doc_id(conn, doc_id)
                 saved_count = insert_normalized_metrics(conn, normalized_rows)
-                mark_normalized_metrics_saved(conn, doc_id)
 
+                if saved_count <= 0:
+                    mark_normalized_metrics_error(conn, doc_id)
+                    print(f"normalized_metrics_error doc_id={doc_id} error='saved_count=0'")
+                    continue
+
+                mark_normalized_metrics_saved(conn, doc_id)
                 print(f"saved_normalized_metrics doc_id={doc_id} count={saved_count}")
+
             except Exception as e:
                 mark_normalized_metrics_error(conn, doc_id)
                 print(f"normalized_metrics_error doc_id={doc_id} error={repr(e)}")
     finally:
         conn.close()
-
 
 if __name__ == "__main__":
     main()
