@@ -44,42 +44,52 @@ def main() -> None:
 
     conn = get_connection()
     try:
-        filings = fetch_raw_facts_saved_filings(conn, limit=5)
-        print(f"raw_facts_saved_rows={len(filings)}")
+        batch_size = 100
+        total_saved_docs = 0
 
-        for filing in filings:
-            doc_id = filing["doc_id"]
-            edinet_code = filing["edinet_code"]
-            security_code = filing["security_code"]
+        while True:
+            filings = fetch_raw_facts_saved_filings(conn, limit=batch_size)
+            print(f"raw_facts_saved_rows={len(filings)}")
 
-            print(f"[DEBUG] target_doc_id={doc_id}")
+            if not filings:
+                break
 
-            try:
-                raw_rows = fetch_raw_fact_rows(conn, doc_id)
-                normalized_rows = normalize_raw_fact_rows(
-                    raw_rows,
-                    edinet_code=edinet_code,
-                    security_code=security_code,
-                )
+            for filing in filings:
+                doc_id = filing["doc_id"]
+                edinet_code = filing["edinet_code"]
+                security_code = filing["security_code"]
 
-                print(
-                    f"[DEBUG] doc_id={doc_id} raw_row_count={len(raw_rows)} normalized_row_count={len(normalized_rows)}"
-                )
+                print(f"[DEBUG] target_doc_id={doc_id}")
 
-                delete_normalized_metrics_by_doc_id(conn, doc_id)
-                saved_count = insert_normalized_metrics(conn, normalized_rows)
+                try:
+                    raw_rows = fetch_raw_fact_rows(conn, doc_id)
+                    normalized_rows = normalize_raw_fact_rows(
+                        raw_rows,
+                        edinet_code=edinet_code,
+                        security_code=security_code,
+                    )
 
-                if saved_count <= 0:
+                    print(
+                        f"[DEBUG] doc_id={doc_id} raw_row_count={len(raw_rows)} normalized_row_count={len(normalized_rows)}"
+                    )
+
+                    delete_normalized_metrics_by_doc_id(conn, doc_id)
+                    saved_count = insert_normalized_metrics(conn, normalized_rows)
+
+                    if saved_count <= 0:
+                        mark_normalized_metrics_error(conn, doc_id)
+                        print(f"normalized_metrics_error doc_id={doc_id} error='saved_count=0'")
+                        continue
+
+                    mark_normalized_metrics_saved(conn, doc_id)
+                    total_saved_docs += 1
+                    print(f"saved_normalized_metrics doc_id={doc_id} count={saved_count}")
+
+                except Exception as e:
                     mark_normalized_metrics_error(conn, doc_id)
-                    print(f"normalized_metrics_error doc_id={doc_id} error='saved_count=0'")
-                    continue
+                    print(f"normalized_metrics_error doc_id={doc_id} error={repr(e)}")
 
-                mark_normalized_metrics_saved(conn, doc_id)
-                print(f"saved_normalized_metrics doc_id={doc_id} count={saved_count}")
-
-            except Exception as e:
-                mark_normalized_metrics_error(conn, doc_id)
-                print(f"normalized_metrics_error doc_id={doc_id} error={repr(e)}")
+        print(f"normalized_metrics_saved_docs_total={total_saved_docs}")
     finally:
         conn.close()
 
