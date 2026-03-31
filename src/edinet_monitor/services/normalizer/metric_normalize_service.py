@@ -84,14 +84,7 @@ def _consolidation_rank(consolidation: str | None) -> int:
 
 
 def _is_forbidden_candidate(metric_base: str, tag_name: str, consolidation: str | None) -> bool:
-    if (
-        metric_base == "OperatingIncome"
-        and tag_name == "OperatingIncome"
-        and _consolidation_rank(consolidation) == 1
-    ):
-        return True
     return False
-
 
 def normalize_raw_fact_row(
     row: dict[str, Any],
