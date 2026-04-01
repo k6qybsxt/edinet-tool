@@ -19,7 +19,7 @@ env/
 # Logs
 # ===============================
 
-logs/
+/logs/
 *.log
 
 # ===============================
@@ -63,8 +63,7 @@ Thumbs.db
 # EDINET project
 # ===============================
 
-data/
-config/
+/data/
 src/edinet_tool/
 scripts/株価日付変更.py
 folder_tree.txt
