@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+from typing import Any
 
 from edinet_monitor.db.schema import get_connection
 from edinet_monitor.services.collector.download_queue_service import (
@@ -16,33 +18,80 @@ from edinet_monitor.services.parser.raw_fact_store_service import (
 from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 
 
-def main() -> None:
+def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[str, Any]:
     conn = get_connection()
+    total_target = 0
+    total_saved_docs = 0
+    total_saved_rows = 0
+    total_errors = 0
+    loop_count = 0
+
     try:
-        rows = fetch_xbrl_ready_filings(conn, limit=20)
-        print(f"xbrl_ready_rows={len(rows)}")
+        while True:
+            rows = fetch_xbrl_ready_filings(conn, limit=batch_size)
+            print(f"xbrl_ready_rows={len(rows)}")
 
-        for row in rows:
-            doc_id = row["doc_id"]
-            xbrl_path = Path(row["xbrl_path"])
+            if not rows:
+                break
 
-            print(f"[DEBUG] target_doc_id={doc_id}")
-            print(f"[DEBUG] xbrl_path={xbrl_path}")
+            loop_count += 1
+            total_target += len(rows)
 
-            try:
-                parsed = parse_xbrl_to_raw(xbrl_path)
-                raw_rows = to_raw_fact_rows(doc_id, parsed)
+            for row in rows:
+                doc_id = row["doc_id"]
+                xbrl_path = Path(row["xbrl_path"])
 
-                delete_raw_facts_by_doc_id(conn, doc_id)
-                saved_count = insert_raw_facts(conn, raw_rows)
-                mark_raw_facts_saved(conn, doc_id)
+                print(f"[DEBUG] target_doc_id={doc_id}")
+                print(f"[DEBUG] xbrl_path={xbrl_path}")
 
-                print(f"saved_raw_facts doc_id={doc_id} count={saved_count}")
-            except Exception as e:
-                mark_raw_facts_error(conn, doc_id)
-                print(f"raw_facts_error doc_id={doc_id} error={repr(e)}")
+                try:
+                    parsed = parse_xbrl_to_raw(xbrl_path)
+                    raw_rows = to_raw_fact_rows(doc_id, parsed)
+
+                    delete_raw_facts_by_doc_id(conn, doc_id)
+                    saved_count = insert_raw_facts(conn, raw_rows)
+                    mark_raw_facts_saved(conn, doc_id)
+
+                    total_saved_docs += 1
+                    total_saved_rows += saved_count
+                    print(f"saved_raw_facts doc_id={doc_id} count={saved_count}")
+                except Exception as e:
+                    mark_raw_facts_error(conn, doc_id)
+                    total_errors += 1
+                    print(f"raw_facts_error doc_id={doc_id} error={repr(e)}")
+
+            if not run_all:
+                break
     finally:
         conn.close()
+
+    print(f"raw_facts_target_total={total_target}")
+    print(f"raw_facts_saved_docs_total={total_saved_docs}")
+    print(f"raw_facts_saved_rows_total={total_saved_rows}")
+    print(f"raw_facts_error_total={total_errors}")
+
+    return {
+        "loop_count": loop_count,
+        "target_total": total_target,
+        "saved_docs_total": total_saved_docs,
+        "saved_rows_total": total_saved_rows,
+        "error_total": total_errors,
+    }
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--run-all", action="store_true")
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    run_save_raw_facts(
+        batch_size=args.batch_size,
+        run_all=args.run_all,
+    )
 
 
 if __name__ == "__main__":
