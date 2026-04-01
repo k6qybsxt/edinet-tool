@@ -15,18 +15,24 @@ from edinet_monitor.screening.screening_result_store_service import (
     insert_screening_run,
 )
 from edinet_monitor.screening.screening_rule_service import (
-    RULE_NAME,
-    RULE_VERSION,
-    evaluate_minimum_viable_value_check,
+    DEFAULT_RULE_NAME,
+    evaluate_screening_rule,
+    get_rule_definition,
+    list_rule_names,
 )
 
 
-def run_screening(*, screening_date: str | None = None) -> dict[str, Any]:
+def run_screening(
+    *,
+    screening_date: str | None = None,
+    rule_name: str | None = None,
+) -> dict[str, Any]:
     create_tables()
 
     conn = get_connection()
     try:
         effective_screening_date = screening_date or datetime.now().strftime("%Y-%m-%d")
+        rule_definition = get_rule_definition(rule_name)
         edinet_codes = fetch_target_edinet_codes(conn)
 
         pending_results: list[dict] = []
@@ -37,7 +43,10 @@ def run_screening(*, screening_date: str | None = None) -> dict[str, Any]:
                 continue
 
             sample_row = next(iter(metrics.values()))
-            result = evaluate_minimum_viable_value_check(metrics)
+            result = evaluate_screening_rule(
+                metrics,
+                rule_name=rule_definition.rule_name,
+            )
 
             pending_results.append(
                 {
@@ -55,14 +64,14 @@ def run_screening(*, screening_date: str | None = None) -> dict[str, Any]:
         delete_screening_results_by_date_rule(
             conn,
             screening_date=effective_screening_date,
-            rule_name=RULE_NAME,
+            rule_name=rule_definition.rule_name,
         )
 
         screening_run_id = insert_screening_run(
             conn,
             screening_date=effective_screening_date,
-            rule_name=RULE_NAME,
-            rule_version=RULE_VERSION,
+            rule_name=rule_definition.rule_name,
+            rule_version=rule_definition.rule_version,
             target_count=len(pending_results),
             hit_count=hit_count,
         )
@@ -72,8 +81,8 @@ def run_screening(*, screening_date: str | None = None) -> dict[str, Any]:
                 conn,
                 screening_run_id=screening_run_id,
                 screening_date=effective_screening_date,
-                rule_name=RULE_NAME,
-                rule_version=RULE_VERSION,
+                rule_name=rule_definition.rule_name,
+                rule_version=rule_definition.rule_version,
                 edinet_code=row["edinet_code"],
                 security_code=row["security_code"],
                 company_name=row["company_name"],
@@ -84,11 +93,15 @@ def run_screening(*, screening_date: str | None = None) -> dict[str, Any]:
             )
 
         print(f"screening_date={effective_screening_date}")
+        print(f"rule_name={rule_definition.rule_name}")
+        print(f"rule_version={rule_definition.rule_version}")
         print(f"target_count={len(pending_results)}")
         print(f"hit_count={hit_count}")
 
         return {
             "screening_date": effective_screening_date,
+            "rule_name": rule_definition.rule_name,
+            "rule_version": rule_definition.rule_version,
             "target_count": len(pending_results),
             "hit_count": hit_count,
             "screening_run_id": screening_run_id,
@@ -100,12 +113,20 @@ def run_screening(*, screening_date: str | None = None) -> dict[str, Any]:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--screening-date", default="")
+    parser.add_argument(
+        "--rule-name",
+        default=DEFAULT_RULE_NAME,
+        choices=list_rule_names(),
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    run_screening(screening_date=args.screening_date or None)
+    run_screening(
+        screening_date=args.screening_date or None,
+        rule_name=args.rule_name or None,
+    )
 
 
 if __name__ == "__main__":

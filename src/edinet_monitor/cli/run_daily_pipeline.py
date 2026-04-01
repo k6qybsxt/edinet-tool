@@ -10,6 +10,10 @@ from edinet_monitor.cli.run_screening import run_screening
 from edinet_monitor.cli.save_normalized_metrics import run_save_normalized_metrics
 from edinet_monitor.cli.save_raw_facts import run_save_raw_facts
 from edinet_monitor.services.collector.target_date_service import resolve_target_dates
+from edinet_monitor.screening.screening_rule_service import (
+    DEFAULT_RULE_NAME,
+    list_rule_names,
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -34,15 +38,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-batch-size", type=int, default=20)
     parser.add_argument("--normalized-batch-size", type=int, default=100)
     parser.add_argument("--screening-date", default="")
+    parser.add_argument(
+        "--screening-rule-name",
+        default=DEFAULT_RULE_NAME,
+        choices=list_rule_names(),
+    )
     return parser
 
 
 def main() -> None:
+    args = build_arg_parser().parse_args()
     api_key = os.getenv("EDINET_API_KEY")
     if not api_key:
         raise RuntimeError("Set EDINET_API_KEY before running.")
-
-    args = build_arg_parser().parse_args()
     target_dates = resolve_target_dates(
         target_date_text=args.target_date,
         date_from_text=args.date_from,
@@ -68,6 +76,7 @@ def main() -> None:
     )
     screening_summary = run_screening(
         screening_date=args.screening_date or None,
+        rule_name=args.screening_rule_name,
     )
 
     print("daily_pipeline_completed=1")
@@ -77,6 +86,7 @@ def main() -> None:
     print(f"daily_xbrl_extracted_total={extract_summary['extracted_total']}")
     print(f"daily_raw_facts_saved_docs_total={raw_summary['saved_docs_total']}")
     print(f"daily_normalized_metrics_saved_docs_total={normalized_summary['saved_docs_total']}")
+    print(f"daily_screening_rule_name={screening_summary['rule_name']}")
     print(f"daily_screening_target_count={screening_summary['target_count']}")
     print(f"daily_screening_hit_count={screening_summary['hit_count']}")
 

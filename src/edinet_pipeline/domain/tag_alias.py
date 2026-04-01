@@ -121,7 +121,7 @@ TAG_ALIAS = {
     "EquityAttributableToOwnersOfParentIFRS": "NetAssets",
     "EquityIFRS": "NetAssets",
 
-    # 期末残
+    # 現金残
     "CashAndCashEquivalents": "CashAndCashEquivalents",
     "CashAndCashEquivalentsSummaryOfBusinessResults": "CashAndCashEquivalents",
     "CashAndCashEquivalentsIFRSSummaryOfBusinessResults": "CashAndCashEquivalents",
