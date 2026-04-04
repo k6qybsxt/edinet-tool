@@ -5,7 +5,12 @@ from datetime import datetime
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
 from edinet_pipeline.config.runtime import RuntimeConfig
-from edinet_pipeline.config.settings import BASE_DIR, LOG_LEVEL
+from edinet_pipeline.config.settings import (
+    ACTIVE_CONFIG_PATH,
+    BASE_DIR,
+    LOADED_CONFIG_PATHS,
+    LOG_LEVEL,
+)
 from edinet_pipeline.domain.run_checks import validate_runtime_before_batch
 from edinet_pipeline.domain.skip import log_skip_summary
 from edinet_pipeline.logging_utils.logger import setup_logger
@@ -45,6 +50,8 @@ def main():
     runtime = RuntimeConfig()
 
     logger.info("project root: %s", BASE_DIR)
+    logger.info("config sources: %s", ", ".join(LOADED_CONFIG_PATHS))
+    logger.info("active config: %s", ACTIVE_CONFIG_PATH)
 
     zip_dir = get_main_zip_dir()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -1,0 +1,9 @@
+{
+  "log_mode": "DEBUG",
+  "log_dir": "logs",
+  "data_root": "D:\\EDINET_Data",
+  "template_dir": "templates",
+  "template_workbook_name": "決算分析シート_1.xlsm",
+  "log_max_bytes": 2000000,
+  "log_backup_count": 5
+}

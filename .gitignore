@@ -58,6 +58,7 @@ Thumbs.db
 # ===============================
 
 .env
+config/edinet_pipeline.local.json
 
 # ===============================
 # EDINET project

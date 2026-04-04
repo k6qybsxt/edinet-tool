@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-from edinet_pipeline.config.settings import BASE_DIR
+from edinet_pipeline.config.settings import LOG_DIR
 
 
 def write_loop_summary(loop_event, security_code, raw_rows, out_buffer_dict, skipped_files, loop, t0, perf_counter, logger):
@@ -19,7 +19,7 @@ def write_loop_summary(loop_event, security_code, raw_rows, out_buffer_dict, ski
         "sec": round(perf_counter() - t0, 3)
     }
 
-    jsonl_path = str(BASE_DIR / "logs" / "loop_summary.jsonl")
+    jsonl_path = str(Path(LOG_DIR) / "loop_summary.jsonl")
     os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
 
     with open(jsonl_path, "a", encoding="utf-8") as f:
