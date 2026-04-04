@@ -263,7 +263,7 @@ class LoopStageServiceTest(unittest.TestCase):
             loop={"slot": 1},
             company_code="12340",
             security_code="12340",
-            company_name="繝・せ繝域ｪ蠑丈ｼ夂､ｾ",
+            company_name="テスト株式会社",
             parse_cache=None,
             logger=_DummyLogger(),
         )
@@ -472,7 +472,7 @@ class LoopStageServiceTest(unittest.TestCase):
             result = run_workbook_output_stages(
                 excel_file_path=str(target_file),
                 out_buffer_dict={"NetSalesCurrent": 1_000_000},
-                display_unit="逋ｾ荳・・",
+                display_unit="百万円",
                 raw_rows=[{"status": "OK"}],
                 raw_cols=["status"],
                 x1={"CurrentFiscalYearEndDateDEI": "2026-03-31"},

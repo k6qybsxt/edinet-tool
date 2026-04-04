@@ -1,28 +1,49 @@
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Any
 
 from edinet_pipeline.config.settings import TEMPLATE_WORKBOOK_NAME
 from edinet_pipeline.services.company_task_result import CompanyTaskResult
 from edinet_pipeline.services.loop_processor import process_one_loop
+from edinet_pipeline.services.loop_types import LoopInput
 
 
-def run_company_job(job, date_pairs, output_root, template_dir, skipped_files, logger, parse_cache, runtime):
-    template_dir = Path(template_dir)
-    output_root = Path(output_root)
-
-    loop = {
-        "slot": job["slot"],
-        "company_code": job["company_code"],
-        "company_name": job["company_name"],
-        "has_half": job["has_half"],
-        "source_zips": job["source_zips"],
+def build_loop_input(job: dict[str, Any], *, output_root: Path, template_dir: Path) -> LoopInput:
+    return {
+        "slot": job.get("slot"),
+        "company_code": job.get("company_code"),
+        "company_name": job.get("company_name"),
+        "has_half": job.get("has_half"),
+        "source_zips": list(job.get("source_zips") or []),
         "output_root": str(output_root),
         "xbrl_file_paths": {
-            "file1": [job["file1"]] if job["file1"] else [],
-            "file2": [job["file2"]] if job["file2"] else [],
-            "file3": [job["file3"]] if job["file3"] else [],
+            "file1": [job["file1"]] if job.get("file1") else [],
+            "file2": [job["file2"]] if job.get("file2") else [],
+            "file3": [job["file3"]] if job.get("file3") else [],
         },
         "excel_file_path": str(template_dir / TEMPLATE_WORKBOOK_NAME),
     }
+
+
+def run_company_job(
+    job: dict[str, Any],
+    date_pairs,
+    output_root,
+    template_dir,
+    skipped_files,
+    logger,
+    parse_cache,
+    runtime,
+) -> CompanyTaskResult:
+    template_dir = Path(template_dir)
+    output_root = Path(output_root)
+
+    loop = build_loop_input(
+        job,
+        output_root=output_root,
+        template_dir=template_dir,
+    )
 
     result = process_one_loop(
         loop,

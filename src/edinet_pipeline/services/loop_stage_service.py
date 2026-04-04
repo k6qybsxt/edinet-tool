@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from calendar import monthrange
 from datetime import datetime
+from typing import Any, Callable
 
 from edinet_pipeline.domain.output_buffer import OutputBuffer
 from edinet_pipeline.domain.skip import SkipCode, add_skip
@@ -11,6 +12,16 @@ from edinet_pipeline.services.excel_service import (
     safe_filename,
     write_data_to_workbook_namedranges,
     write_rows_to_raw_sheet_workbook,
+)
+from edinet_pipeline.services.loop_types import (
+    ExcelPrepareStageResult,
+    LoopEvent,
+    LoopInput,
+    ParseStageResult,
+    ProcessLoopResult,
+    RuntimeFlags,
+    WorkbookStageResult,
+    XbrlFilePaths,
 )
 from edinet_pipeline.services.parse_service import (
     finalize_half_buffer,
@@ -43,13 +54,13 @@ _VALID_DISPLAY_UNITS = ("百万円", "千円")
 
 def create_loop_event(
     *,
-    loop: dict,
+    loop: LoopInput,
     company_code: str | None,
     company_name: str | None,
     has_half: bool | None,
     source_zips: list[str],
     run_id: str,
-) -> dict:
+) -> LoopEvent:
     return {
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "run_id": run_id,
@@ -71,7 +82,7 @@ def build_excel_not_found_result(
     slot: int | None,
     company_code: str | None,
     company_name: str | None,
-) -> dict:
+) -> ProcessLoopResult:
     return {
         "slot": slot,
         "company_code": company_code,
@@ -84,13 +95,13 @@ def build_excel_not_found_result(
 
 def prepare_excel_stage(
     *,
-    loop: dict,
+    loop: LoopInput,
     run_id: str,
-    skipped_files: list,
+    skipped_files: list[dict[str, Any]],
     logger,
-    prepare_workbook_func,
+    prepare_workbook_func: Callable[..., tuple[str | None, str | None, str | None]],
     add_skip_func=add_skip,
-) -> dict:
+) -> ExcelPrepareStageResult:
     selected_file, excel_file_path, excel_base_name = prepare_workbook_func(loop, run_id, logger)
     if selected_file:
         return {
@@ -157,22 +168,22 @@ def append_initial_annual_output(out_buffer: OutputBuffer, x1: dict | None) -> N
 
 def run_parse_stages(
     *,
-    loop: dict,
-    xbrl_file_paths: dict,
+    loop: LoopInput,
+    xbrl_file_paths: XbrlFilePaths,
     excel_file_path: str,
-    parsed_docs: list,
-    skipped_files: list,
-    loop_event: dict,
+    parsed_docs: list[dict[str, Any]],
+    skipped_files: list[dict[str, Any]],
+    loop_event: LoopEvent,
     out_buffer: OutputBuffer,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     parse_cache=None,
     parse_half_doc_func=parse_half_doc,
     parse_latest_annual_doc_func=parse_latest_annual_doc,
     parse_old_annual_doc_func=parse_old_annual_doc,
     finalize_half_buffer_func=finalize_half_buffer,
     append_initial_annual_output_func=append_initial_annual_output,
-) -> dict:
+) -> ParseStageResult:
     x1, base_year, use_half = parse_half_doc_func(
         loop=loop,
         xbrl_file_paths=xbrl_file_paths,
@@ -290,11 +301,11 @@ def shift_year_keep_month_end(date_str: str, years: int) -> str:
 
 
 def build_excel_output_payload(
-    out_buffer_dict_for_log: dict,
+    out_buffer_dict_for_log: dict[str, Any],
     *,
     x1: dict | None,
     use_half: bool,
-) -> dict:
+) -> dict[str, Any]:
     out_buffer_dict = dict(out_buffer_dict_for_log)
 
     if not use_half and isinstance(x1, dict):
@@ -328,7 +339,7 @@ def build_excel_output_payload(
 
 def resolve_document_display_unit(
     *,
-    xbrl_file_paths: dict,
+    xbrl_file_paths: XbrlFilePaths,
     x1: dict | None,
     x2: dict | None,
     use_half: bool,
@@ -377,18 +388,18 @@ def resolve_document_display_unit(
 def build_excel_write_inputs_stage(
     *,
     out_buffer: OutputBuffer,
-    xbrl_file_paths: dict,
+    xbrl_file_paths: XbrlFilePaths,
     x1: dict | None,
     x2: dict | None,
     use_half: bool,
-    loop: dict,
+    loop: LoopInput,
     company_code: str | None,
     security_code: str | None,
     company_name: str | None,
     parse_cache,
     logger,
     parse_document_func=parse_xbrl_file_raw,
-) -> tuple[dict, str]:
+) -> tuple[dict[str, Any], str]:
     out_buffer_dict_for_log = out_buffer.to_dict()
 
     logger.info(
@@ -423,12 +434,12 @@ def build_excel_write_inputs_stage(
         )
     else:
         out_buffer_dict = {}
-        display_unit = "逋ｾ荳・・"
+        display_unit = "百万円"
 
     return out_buffer_dict, display_unit
 
 
-def resolve_runtime_flags(runtime) -> dict:
+def resolve_runtime_flags(runtime) -> RuntimeFlags:
     return {
         "write_raw_sheet": True if runtime is None else bool(getattr(runtime, "write_raw_sheet", True)),
         "enable_stock": True if runtime is None else bool(getattr(runtime, "enable_stock", True)),
@@ -437,11 +448,11 @@ def resolve_runtime_flags(runtime) -> dict:
 
 def build_stock_write_context(
     *,
-    out_buffer_dict: dict,
+    out_buffer_dict: dict[str, Any],
     x1: dict | None,
     use_half: bool,
     security_code: str | None,
-) -> dict:
+) -> dict[str, Any]:
     fiscal_year_end = out_buffer_dict.get("CurrentFiscalYearEndDateDEI")
 
     if not fiscal_year_end and isinstance(x1, dict):
@@ -465,7 +476,7 @@ def build_stock_write_context(
 def run_workbook_output_stages(
     *,
     excel_file_path: str,
-    out_buffer_dict: dict,
+    out_buffer_dict: dict[str, Any],
     display_unit: str,
     raw_rows: list[dict],
     raw_cols: list[str],
@@ -474,16 +485,16 @@ def run_workbook_output_stages(
     security_code: str | None,
     company_code: str | None,
     company_name: str | None,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     optional_output_names: set[str] | frozenset[str],
     write_raw_sheet: bool,
     enable_stock: bool,
     load_workbook_func,
     write_stock_func,
-):
+) -> WorkbookStageResult:
     workbook = open_workbook_stage(
         excel_file_path=excel_file_path,
         loop_event=loop_event,
@@ -601,8 +612,8 @@ def finalize_output_excel(
 
 def finalize_company_result_stage(
     *,
-    loop: dict,
-    loop_event: dict,
+    loop: LoopInput,
+    loop_event: LoopEvent,
     x1: dict | None,
     x2: dict | None,
     meta2: dict | None,
@@ -613,14 +624,14 @@ def finalize_company_result_stage(
     excel_file_path: str,
     output_root: str | None,
     stock_status: str | None,
-    raw_rows: list[dict],
-    out_buffer_dict: dict,
-    skipped_files: list,
+    raw_rows: list[dict[str, Any]],
+    out_buffer_dict: dict[str, Any],
+    skipped_files: list[dict[str, Any]],
     t0,
-    perf_counter,
+    perf_counter: Callable[[], float],
     logger,
     write_loop_summary_func,
-) -> dict:
+) -> ProcessLoopResult:
     period_end_date = pick_period_end(x1, x2, meta2)
     final_security_code = security_code or company_code or ""
     final_company_name = pick_company_name(x1, x2, meta2, company_name)
@@ -670,16 +681,16 @@ def finalize_company_result_stage(
 
 def build_raw_rows_stage(
     *,
-    parsed_docs: list,
+    parsed_docs: list[dict[str, Any]],
     security_code: str | None,
     run_id: str,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     company_code: str | None,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     build_raw_rows_func,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     t = perf_counter()
     raw_rows = build_raw_rows_func(
         parsed_docs=parsed_docs,
@@ -701,12 +712,12 @@ def build_raw_rows_stage(
 def open_workbook_stage(
     *,
     excel_file_path: str,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     company_code: str | None,
     security_code: str | None,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     load_workbook_func,
 ):
     t = perf_counter()
@@ -727,15 +738,15 @@ def open_workbook_stage(
 def write_named_range_stage(
     *,
     workbook,
-    out_buffer_dict: dict,
+    out_buffer_dict: dict[str, Any],
     display_unit: str,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     company_code: str | None,
     security_code: str | None,
     company_name: str | None,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     optional_output_names: set[str] | frozenset[str],
     write_namedranges_func=write_data_to_workbook_namedranges,
 ) -> None:
@@ -781,15 +792,15 @@ def write_named_range_stage(
 def write_raw_sheet_stage(
     *,
     workbook,
-    raw_rows: list[dict],
+    raw_rows: list[dict[str, Any]],
     raw_cols: list[str],
     write_raw_sheet: bool,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     company_code: str | None,
     security_code: str | None,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     write_raw_sheet_func=write_rows_to_raw_sheet_workbook,
 ) -> None:
     if not write_raw_sheet:
@@ -824,13 +835,13 @@ def execute_stock_write_stage(
     stock_code: str | None,
     stock_date_pairs: list[dict],
     enable_stock: bool,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     company_code: str | None,
     security_code: str | None,
     company_name: str | None,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
     write_stock_func,
 ) -> str:
     if not enable_stock:
@@ -884,12 +895,12 @@ def save_workbook_stage(
     *,
     workbook,
     excel_file_path: str,
-    loop_event: dict,
-    loop: dict,
+    loop_event: LoopEvent,
+    loop: LoopInput,
     company_code: str | None,
     security_code: str | None,
     logger,
-    perf_counter,
+    perf_counter: Callable[[], float],
 ) -> None:
     t = perf_counter()
     workbook.save(excel_file_path)

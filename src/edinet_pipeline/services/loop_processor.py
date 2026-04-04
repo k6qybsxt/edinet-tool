@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from time import perf_counter
+from typing import Any, Sequence
 
 from openpyxl import load_workbook
 
@@ -20,10 +21,19 @@ from edinet_pipeline.services.raw_service import build_raw_rows_all_docs
 from edinet_pipeline.services.stock_service import write_stock_data_to_workbook
 from edinet_pipeline.services.summary_service import write_loop_summary
 from edinet_pipeline.services.template_contract_service import OPTIONAL_TEMPLATE_OUTPUT_NAMES
+from edinet_pipeline.services.loop_types import LoopInput, ProcessLoopResult
 from edinet_pipeline.services.workbook_service import prepare_workbook
 
 
-def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, runtime=None):
+def process_one_loop(
+    loop: LoopInput,
+    date_pairs: Sequence[dict[str, Any]] | None,
+    skipped_files: list[dict[str, Any]],
+    logger,
+    parse_cache=None,
+    runtime=None,
+) -> ProcessLoopResult:
+    _ = date_pairs
     company_code_from_job = loop.get("company_code")
     company_name_from_job = loop.get("company_name")
     has_half_from_job = loop.get("has_half")
@@ -55,7 +65,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, 
     if excel_stage["failed_result"] is not None:
         return excel_stage["failed_result"]
 
-    excel_file_path = excel_stage["excel_file_path"]
+    excel_file_path = str(excel_stage["excel_file_path"] or "")
     loop_event["excel"] = os.path.basename(excel_file_path)
     xbrl_file_paths = loop["xbrl_file_paths"]
 

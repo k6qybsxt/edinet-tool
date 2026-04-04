@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class CompanyTaskResult:
-    slot: int
+    slot: int | None
     company_code: str
     company_name: str | None
     status: str
