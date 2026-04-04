@@ -24,12 +24,16 @@ from edinet_pipeline.services.loop_stage_service import (  # noqa: E402
     build_stock_write_context,
     close_workbook_quietly,
     execute_stock_write_stage,
+    finalize_company_result_stage,
     finalize_output_excel,
     open_workbook_stage,
     pick_company_name,
     pick_period_end,
+    prepare_excel_stage,
     resolve_document_display_unit,
+    resolve_runtime_flags,
     run_parse_stages,
+    run_workbook_output_stages,
     save_workbook_stage,
     write_named_range_stage,
     write_raw_sheet_stage,
@@ -414,6 +418,122 @@ class LoopStageServiceTest(unittest.TestCase):
                 self.assertEqual(opened.active["A1"].value, None)
             finally:
                 opened.close()
+        finally:
+            if temp_root.exists():
+                shutil.rmtree(temp_root)
+
+    def test_prepare_excel_stage_returns_failed_result_when_template_missing(self) -> None:
+        skipped_files: list[dict] = []
+
+        result = prepare_excel_stage(
+            loop={"slot": 1, "company_code": "12340", "company_name": "Test"},
+            run_id="run1",
+            skipped_files=skipped_files,
+            logger=_DummyLogger(),
+            prepare_workbook_func=lambda loop, run_id, logger: (None, None, "missing.xlsm"),
+        )
+
+        self.assertIsNotNone(result["failed_result"])
+        self.assertEqual(result["failed_result"]["status"], "failed")
+        self.assertEqual(len(skipped_files), 1)
+
+    def test_resolve_runtime_flags_uses_defaults_and_runtime_values(self) -> None:
+        class _Runtime:
+            write_raw_sheet = False
+            enable_stock = True
+
+        self.assertEqual(
+            resolve_runtime_flags(None),
+            {"write_raw_sheet": True, "enable_stock": True},
+        )
+        self.assertEqual(
+            resolve_runtime_flags(_Runtime()),
+            {"write_raw_sheet": False, "enable_stock": True},
+        )
+
+    def test_run_workbook_output_stages_returns_stock_status(self) -> None:
+        temp_root = ROOT_DIR / "tests" / "_tmp_loop_stage_output"
+        target_file = temp_root / "dummy.xlsm"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        workbook = self._build_workbook_with_named_range()
+        original_close = workbook.close
+        workbook.closed = False
+
+        def tracked_close():
+            workbook.closed = True
+            original_close()
+
+        workbook.close = tracked_close
+
+        def fake_load_workbook(*args, **kwargs):
+            return workbook
+
+        try:
+            result = run_workbook_output_stages(
+                excel_file_path=str(target_file),
+                out_buffer_dict={"NetSalesCurrent": 1_000_000},
+                display_unit="逋ｾ荳・・",
+                raw_rows=[{"status": "OK"}],
+                raw_cols=["status"],
+                x1={"CurrentFiscalYearEndDateDEI": "2026-03-31"},
+                use_half=False,
+                security_code="12340",
+                company_code="12340",
+                company_name="Test",
+                loop_event={"phases": {}, "counts": {}},
+                loop={"slot": 1},
+                logger=_DummyLogger(),
+                perf_counter=lambda: 5.0,
+                optional_output_names=set(),
+                write_raw_sheet=False,
+                enable_stock=False,
+                load_workbook_func=fake_load_workbook,
+                write_stock_func=lambda *args, **kwargs: {"written": 0, "miss": 0, "errors": 0},
+            )
+
+            self.assertEqual(result["stock_status"], "disabled")
+            self.assertTrue(workbook.closed)
+            self.assertTrue(target_file.exists())
+        finally:
+            if temp_root.exists():
+                shutil.rmtree(temp_root)
+
+    def test_finalize_company_result_stage_updates_loop_and_returns_success(self) -> None:
+        temp_root = ROOT_DIR / "tests" / "_tmp_loop_stage_finalize"
+        source_file = temp_root / "source.xlsm"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        source_file.write_bytes(b"dummy")
+        loop = {"slot": 1}
+        summary_calls: list[dict] = []
+
+        try:
+            result = finalize_company_result_stage(
+                loop=loop,
+                loop_event={"phases": {}, "counts": {}, "has_half": False},
+                x1={"CompanyNameDEI": "Test", "CurrentFiscalYearEndDateDEI": "2026/03/31"},
+                x2=None,
+                meta2=None,
+                use_half=False,
+                security_code="12340",
+                company_code="12340",
+                company_name=None,
+                excel_file_path=str(source_file),
+                output_root=str(temp_root),
+                stock_status="success",
+                raw_rows=[{"status": "OK"}],
+                out_buffer_dict={"NetSalesCurrent": 100},
+                skipped_files=[],
+                t0=0.0,
+                perf_counter=lambda: 1.0,
+                logger=_DummyLogger(),
+                write_loop_summary_func=lambda **kwargs: summary_calls.append(kwargs),
+            )
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["company_code"], "12340")
+            self.assertTrue(Path(result["output_excel"]).exists())
+            self.assertEqual(loop["final_excel_file_path"], result["output_excel"])
+            self.assertEqual(len(summary_calls), 1)
         finally:
             if temp_root.exists():
                 shutil.rmtree(temp_root)

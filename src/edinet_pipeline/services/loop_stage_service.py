@@ -5,6 +5,7 @@ from calendar import monthrange
 from datetime import datetime
 
 from edinet_pipeline.domain.output_buffer import OutputBuffer
+from edinet_pipeline.domain.skip import SkipCode, add_skip
 from edinet_pipeline.services.excel_service import (
     rename_excel_file,
     safe_filename,
@@ -78,6 +79,51 @@ def build_excel_not_found_result(
         "status": "failed",
         "stock_status": None,
         "output_excel": None,
+    }
+
+
+def prepare_excel_stage(
+    *,
+    loop: dict,
+    run_id: str,
+    skipped_files: list,
+    logger,
+    prepare_workbook_func,
+    add_skip_func=add_skip,
+) -> dict:
+    selected_file, excel_file_path, excel_base_name = prepare_workbook_func(loop, run_id, logger)
+    if selected_file:
+        return {
+            "selected_file": selected_file,
+            "excel_file_path": excel_file_path,
+            "excel_base_name": excel_base_name,
+            "failed_result": None,
+        }
+
+    add_skip_func(
+        skipped_files,
+        code=SkipCode.EXCEL_NOT_FOUND,
+        phase="excel_select",
+        loop=loop,
+        excel=excel_base_name,
+        xbrl=None,
+        message="使用するExcelが見つからない",
+    )
+    logger.warning(
+        f"[company failed] slot={loop.get('slot')} "
+        f"code={loop.get('company_code')} "
+        f"name={loop.get('company_name')} "
+        f"phase=excel_select"
+    )
+    return {
+        "selected_file": selected_file,
+        "excel_file_path": excel_file_path,
+        "excel_base_name": excel_base_name,
+        "failed_result": build_excel_not_found_result(
+            slot=loop.get("slot"),
+            company_code=loop.get("company_code"),
+            company_name=loop.get("company_name"),
+        ),
     }
 
 
@@ -382,6 +428,13 @@ def build_excel_write_inputs_stage(
     return out_buffer_dict, display_unit
 
 
+def resolve_runtime_flags(runtime) -> dict:
+    return {
+        "write_raw_sheet": True if runtime is None else bool(getattr(runtime, "write_raw_sheet", True)),
+        "enable_stock": True if runtime is None else bool(getattr(runtime, "enable_stock", True)),
+    }
+
+
 def build_stock_write_context(
     *,
     out_buffer_dict: dict,
@@ -407,6 +460,106 @@ def build_stock_write_context(
         "stock_code": f"{security_code}.T" if security_code else None,
         "stock_date_pairs": stock_date_pairs,
     }
+
+
+def run_workbook_output_stages(
+    *,
+    excel_file_path: str,
+    out_buffer_dict: dict,
+    display_unit: str,
+    raw_rows: list[dict],
+    raw_cols: list[str],
+    x1: dict | None,
+    use_half: bool,
+    security_code: str | None,
+    company_code: str | None,
+    company_name: str | None,
+    loop_event: dict,
+    loop: dict,
+    logger,
+    perf_counter,
+    optional_output_names: set[str] | frozenset[str],
+    write_raw_sheet: bool,
+    enable_stock: bool,
+    load_workbook_func,
+    write_stock_func,
+):
+    workbook = open_workbook_stage(
+        excel_file_path=excel_file_path,
+        loop_event=loop_event,
+        loop=loop,
+        company_code=company_code,
+        security_code=security_code,
+        logger=logger,
+        perf_counter=perf_counter,
+        load_workbook_func=load_workbook_func,
+    )
+
+    stock_status = None
+
+    try:
+        write_named_range_stage(
+            workbook=workbook,
+            out_buffer_dict=out_buffer_dict,
+            display_unit=display_unit,
+            loop_event=loop_event,
+            loop=loop,
+            company_code=company_code,
+            security_code=security_code,
+            company_name=company_name,
+            logger=logger,
+            perf_counter=perf_counter,
+            optional_output_names=optional_output_names,
+        )
+
+        write_raw_sheet_stage(
+            workbook=workbook,
+            raw_rows=raw_rows,
+            raw_cols=raw_cols,
+            write_raw_sheet=write_raw_sheet,
+            loop_event=loop_event,
+            loop=loop,
+            company_code=company_code,
+            security_code=security_code,
+            logger=logger,
+            perf_counter=perf_counter,
+        )
+
+        stock_context = build_stock_write_context(
+            out_buffer_dict=out_buffer_dict,
+            x1=x1,
+            use_half=use_half,
+            security_code=security_code,
+        )
+        stock_status = execute_stock_write_stage(
+            workbook=workbook,
+            stock_code=stock_context["stock_code"],
+            stock_date_pairs=stock_context["stock_date_pairs"],
+            enable_stock=enable_stock,
+            loop_event=loop_event,
+            loop=loop,
+            company_code=company_code,
+            security_code=security_code,
+            company_name=company_name,
+            logger=logger,
+            perf_counter=perf_counter,
+            write_stock_func=write_stock_func,
+        )
+
+        save_workbook_stage(
+            workbook=workbook,
+            excel_file_path=excel_file_path,
+            loop_event=loop_event,
+            loop=loop,
+            company_code=company_code,
+            security_code=security_code,
+            logger=logger,
+            perf_counter=perf_counter,
+        )
+    finally:
+        close_workbook_quietly(workbook)
+
+    return {"stock_status": stock_status}
 
 
 def finalize_output_excel(
@@ -444,6 +597,75 @@ def finalize_output_excel(
         period_end_date,
         logger,
     )
+
+
+def finalize_company_result_stage(
+    *,
+    loop: dict,
+    loop_event: dict,
+    x1: dict | None,
+    x2: dict | None,
+    meta2: dict | None,
+    use_half: bool,
+    security_code: str | None,
+    company_code: str | None,
+    company_name: str | None,
+    excel_file_path: str,
+    output_root: str | None,
+    stock_status: str | None,
+    raw_rows: list[dict],
+    out_buffer_dict: dict,
+    skipped_files: list,
+    t0,
+    perf_counter,
+    logger,
+    write_loop_summary_func,
+) -> dict:
+    period_end_date = pick_period_end(x1, x2, meta2)
+    final_security_code = security_code or company_code or ""
+    final_company_name = pick_company_name(x1, x2, meta2, company_name)
+
+    final_excel_file_path = finalize_output_excel(
+        excel_file_path=excel_file_path,
+        output_root=output_root,
+        security_code=final_security_code,
+        company_name=final_company_name,
+        period_end_date=period_end_date,
+        logger=logger,
+    )
+
+    loop["final_excel_file_path"] = final_excel_file_path
+    loop_event["excel"] = os.path.basename(final_excel_file_path)
+    loop_event["company_name"] = final_company_name
+
+    write_loop_summary_func(
+        loop_event=loop_event,
+        security_code=final_security_code,
+        raw_rows=raw_rows,
+        out_buffer_dict=out_buffer_dict,
+        skipped_files=skipped_files,
+        loop=loop,
+        t0=t0,
+        perf_counter=perf_counter,
+        logger=logger,
+    )
+
+    logger.info(
+        f"[company done] slot={loop.get('slot')} "
+        f"code={final_security_code} "
+        f"name={final_company_name} "
+        f"mode={'half' if use_half else 'full'} "
+        f"output_excel={final_excel_file_path}"
+    )
+
+    return {
+        "slot": loop.get("slot"),
+        "company_code": final_security_code,
+        "company_name": final_company_name,
+        "status": "success",
+        "stock_status": stock_status,
+        "output_excel": final_excel_file_path,
+    }
 
 
 def build_raw_rows_stage(
