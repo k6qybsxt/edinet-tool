@@ -16,6 +16,7 @@ from edinet_pipeline.services.parse_service import (
     finalize_half_buffer,
 )
 from edinet_pipeline.services.summary_service import write_loop_summary
+from edinet_pipeline.services.template_contract_service import OPTIONAL_TEMPLATE_OUTPUT_NAMES
 from edinet_pipeline.services.raw_service import build_raw_rows_all_docs
 from edinet_pipeline.services.xbrl_parser import parse_xbrl_file_raw
 
@@ -29,7 +30,7 @@ from calendar import monthrange
 from time import perf_counter
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
-def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
+def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, runtime=None):
 
     def _pick_period_end(x1, x2, meta2):
         candidates = []
@@ -351,20 +352,37 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
         f"sec={round(perf_counter() - t, 3)}"
     )
 
-    stock_result = None
     stock_date_pairs = []
     stock_status = None
+    write_raw_sheet = True if runtime is None else bool(getattr(runtime, "write_raw_sheet", True))
+    enable_stock = True if runtime is None else bool(getattr(runtime, "enable_stock", True))
 
 
     try:
         if out_buffer_dict:
             t = perf_counter()
 
-            write_data_to_workbook_namedranges(
+            write_result = write_data_to_workbook_namedranges(
                 wb,
                 out_buffer_dict,
                 display_unit=display_unit,
             )
+            unexpected_missing_named_ranges = [
+                name for name in write_result["missing"]
+                if name not in OPTIONAL_TEMPLATE_OUTPUT_NAMES
+            ]
+            loop_event["counts"]["named_ranges_written"] = len(write_result["written"])
+            loop_event["counts"]["named_ranges_missing"] = len(unexpected_missing_named_ranges)
+
+            if unexpected_missing_named_ranges:
+                loop_event["missing_named_ranges"] = unexpected_missing_named_ranges[:25]
+                logger.warning(
+                    "[template mismatch] slot=%s code=%s missing_named_ranges=%d sample=%s",
+                    loop.get("slot"),
+                    company_code_from_job or security_code,
+                    len(unexpected_missing_named_ranges),
+                    unexpected_missing_named_ranges[:10],
+                )
 
             loop_event["phases"]["excel_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
             logger.info(
@@ -374,24 +392,34 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
                 f"ranges={len(out_buffer_dict)}"
             )
         else:
+            loop_event["counts"]["named_ranges_written"] = 0
+            loop_event["counts"]["named_ranges_missing"] = 0
             loop_event["phases"]["excel_write"] = {"ok": True, "sec": 0.0}
 
         t = perf_counter()
 
-        write_rows_to_raw_sheet_workbook(
-            wb,
-            raw_rows,
-            RAW_COLS,
-            sheet_name="raw_edinet",
-        )
+        if write_raw_sheet:
+            write_rows_to_raw_sheet_workbook(
+                wb,
+                raw_rows,
+                RAW_COLS,
+                sheet_name="raw_edinet",
+            )
 
-        loop_event["phases"]["raw_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
-        logger.info(
-            f"[raw write] slot={loop.get('slot')} "
-            f"code={company_code_from_job or security_code} "
-            f"rows={len(raw_rows)} "
-            f"sec={round(perf_counter() - t, 3)}"
-        )
+            loop_event["phases"]["raw_write"] = {"ok": True, "sec": round(perf_counter() - t, 3)}
+            logger.info(
+                f"[raw write] slot={loop.get('slot')} "
+                f"code={company_code_from_job or security_code} "
+                f"rows={len(raw_rows)} "
+                f"sec={round(perf_counter() - t, 3)}"
+            )
+        else:
+            loop_event["phases"]["raw_write"] = {"ok": True, "sec": 0.0}
+            logger.info(
+                "[raw write] slot=%s code=%s skipped_by_runtime=1",
+                loop.get("slot"),
+                company_code_from_job or security_code,
+            )
 
         fiscal_year_end_for_stock = out_buffer_dict.get("CurrentFiscalYearEndDateDEI")
 
@@ -415,7 +443,14 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None):
 
         stock_code = f"{security_code}.T" if security_code else None
 
-        if stock_code and stock_date_pairs:
+        if not enable_stock:
+            logger.info(
+                "[stock write] slot=%s code=%s skipped_by_runtime=1",
+                loop.get("slot"),
+                company_code_from_job or security_code,
+            )
+            stock_status = "disabled"
+        elif stock_code and stock_date_pairs:
 
             t = perf_counter()
 

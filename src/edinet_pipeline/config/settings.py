@@ -9,12 +9,10 @@ def load_config(file_path):
         return json.load(f)
 
 
-# =========================================================
-# logging mode
-#   NORMAL = 通常運用
-#   DEBUG  = 不具合調査
-# =========================================================
-LOG_MODE = "DEBUG"   # "NORMAL" or "DEBUG"
+# Logging mode:
+#   NORMAL = quieter batch logs
+#   DEBUG  = detailed troubleshooting logs
+LOG_MODE = "DEBUG"  # "NORMAL" or "DEBUG"
 
 
 if LOG_MODE == "DEBUG":
@@ -31,7 +29,6 @@ else:
     WORKER_EMIT_INITIALIZED_LOG = False
 
 
-# === logging settings ===
 LOG_DIR = "logs"
 
 DATA_ROOT = Path(r"D:\EDINET_Data")
@@ -44,6 +41,7 @@ COMPANY_SETS_DIR = INPUT_ROOT / "company_sets"
 MANUAL_XBRL_DIR = INPUT_ROOT / "xbrl_manual"
 
 TEMPLATE_DIR = BASE_DIR / "templates"
+TEMPLATE_WORKBOOK_NAME = "決算分析シート_1.xlsm"
 
 LOG_MAX_BYTES = 2_000_000
 LOG_BACKUP_COUNT = 5

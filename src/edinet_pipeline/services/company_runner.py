@@ -1,9 +1,11 @@
 from pathlib import Path
-from edinet_pipeline.services.loop_processor import process_one_loop
+
+from edinet_pipeline.config.settings import TEMPLATE_WORKBOOK_NAME
 from edinet_pipeline.services.company_task_result import CompanyTaskResult
+from edinet_pipeline.services.loop_processor import process_one_loop
 
 
-def run_company_job(job, date_pairs, output_root, template_dir, skipped_files, logger, parse_cache):
+def run_company_job(job, date_pairs, output_root, template_dir, skipped_files, logger, parse_cache, runtime):
     template_dir = Path(template_dir)
     output_root = Path(output_root)
 
@@ -19,7 +21,7 @@ def run_company_job(job, date_pairs, output_root, template_dir, skipped_files, l
             "file2": [job["file2"]] if job["file2"] else [],
             "file3": [job["file3"]] if job["file3"] else [],
         },
-        "excel_file_path": str(template_dir / "決算分析シート_1.xlsm"),
+        "excel_file_path": str(template_dir / TEMPLATE_WORKBOOK_NAME),
     }
 
     result = process_one_loop(
@@ -28,6 +30,7 @@ def run_company_job(job, date_pairs, output_root, template_dir, skipped_files, l
         skipped_files,
         logger,
         parse_cache=parse_cache,
+        runtime=runtime,
     )
 
     return CompanyTaskResult(

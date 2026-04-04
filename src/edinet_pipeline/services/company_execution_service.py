@@ -1,11 +1,11 @@
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
 import traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from edinet_pipeline.config.settings import LOG_LEVEL
-from edinet_pipeline.services.company_task_result import CompanyTaskResult
 from edinet_pipeline.services.company_runner import run_company_job
 from edinet_pipeline.services.company_runner_worker import run_company_job_worker
+from edinet_pipeline.services.company_task_result import CompanyTaskResult
 
 
 def _log_company_start(job, logger):
@@ -64,6 +64,7 @@ def _run_company_jobs_process_pool(job_inputs, date_pairs, output_root, template
                 output_root=str(output_root),
                 template_dir=str(template_dir),
                 log_level=LOG_LEVEL,
+                runtime=runtime,
             )
             future_to_job[future] = job
 
@@ -102,7 +103,16 @@ def _run_company_jobs_process_pool(job_inputs, date_pairs, output_root, template
     return batch_results
 
 
-def _run_company_jobs_serial(job_inputs, date_pairs, output_root, template_dir, skipped_files, logger, parse_cache):
+def _run_company_jobs_serial(
+    job_inputs,
+    date_pairs,
+    output_root,
+    template_dir,
+    skipped_files,
+    logger,
+    parse_cache,
+    runtime,
+):
     batch_results = []
 
     for job in job_inputs:
@@ -117,6 +127,7 @@ def _run_company_jobs_serial(job_inputs, date_pairs, output_root, template_dir, 
                 skipped_files=skipped_files,
                 logger=logger,
                 parse_cache=parse_cache,
+                runtime=runtime,
             )
 
             batch_results.append(_normalize_result(job, result))
@@ -156,6 +167,7 @@ def run_company_jobs(job_inputs, date_pairs, output_root, template_dir, skipped_
             skipped_files=skipped_files,
             logger=logger,
             parse_cache=parse_cache,
+            runtime=runtime,
         )
 
     batch_results.sort(key=lambda x: (x.get("slot") or 0, x.get("company_code") or ""))

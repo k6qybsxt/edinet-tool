@@ -1,29 +1,26 @@
 import os
 import re
-import glob
 import shutil
 import openpyxl
 
 from openpyxl.cell.cell import Cell
 
 
+INPUT_SHEET_NAME = "決算入力"
+
+
 def safe_filename(s: str) -> str:
-    """
-    Windowsでファイル名に使えない文字を置換して安全にする
-    """
+    """Replace characters that are not safe in Windows file names."""
     if s is None:
         return ""
     s = str(s).strip()
-    s = re.sub(r'[\\/:*?"<>|]', '_', s)
+    s = re.sub(r'[\\/:*?"<>|]', "_", s)
     s = s.rstrip(". ").strip()
     return s
 
 
 def rename_excel_file(original_path, security_code, company_name, period_end_date, logger):
-    """
-    original_path を「<code>_<name>_<date>.xlsm」にリネームし、パスを返す。
-    同名があれば _1, _2... を付ける。
-    """
+    """Rename a workbook to <code>_<name>_<date>.xlsm and avoid collisions."""
     dir_path = os.path.dirname(original_path)
 
     code = safe_filename(security_code)
@@ -32,7 +29,7 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
 
     base_name = f"{code}_{name}_{date}".strip("_")
     if not base_name:
-        raise ValueError("リネーム用の情報が不足しています（code/name/date が空です）。")
+        raise ValueError("rename target is empty: code/name/date are all blank")
 
     new_file_path = os.path.join(dir_path, f"{base_name}.xlsm")
 
@@ -45,59 +42,54 @@ def rename_excel_file(original_path, security_code, company_name, period_end_dat
         os.rename(original_path, new_file_path)
     except PermissionError as e:
         raise PermissionError(
-            f"リネームできません（ファイルが開かれている可能性があります）。\n"
-            f"対象: {original_path}\n"
-            f"対策: Excelで該当ファイルを閉じてから再実行してください。"
+            "failed to rename workbook because the file is likely open.\n"
+            f"source: {original_path}\n"
+            "close the workbook in Excel and try again."
         ) from e
 
-    logger.info(f"Excelファイルがリネームされました: {new_file_path}")
+    logger.info("renamed workbook: %s", new_file_path)
     return new_file_path
 
 
 def find_available_excel_file(base_path, file_name, logger, max_copies=30):
-    """
-    必ず“オリジナルテンプレ”から新しい作業用コピーを作って返す
-    """
+    """Create a working copy of a template workbook next to the original."""
     exts = ["xlsx", "xlsm"]
 
     def first_existing(paths):
-        for p in paths:
-            if os.path.exists(p):
-                return p
+        for path in paths:
+            if os.path.exists(path):
+                return path
         return None
 
     def make_next_copy(original_path):
         root, ext = os.path.splitext(original_path)
-        candidate0 = f"{root} - コピー{ext}"
+        candidate0 = f"{root} - copy{ext}"
         if not os.path.exists(candidate0):
             shutil.copy2(original_path, candidate0)
             return candidate0
 
         for i in range(2, max_copies + 2):
-            cand = f"{root} - コピー ({i}){ext}"
-            if not os.path.exists(cand):
-                shutil.copy2(original_path, cand)
-                return cand
+            candidate = f"{root} - copy ({i}){ext}"
+            if not os.path.exists(candidate):
+                shutil.copy2(original_path, candidate)
+                return candidate
 
-        raise RuntimeError("コピー上限に達しました（max_copies を増やしてください）")
+        raise RuntimeError("no copy slot available; increase max_copies")
 
-    # ここでは“オリジナル名”だけを候補にする
-    candidates = []
-    for ext in exts:
-        candidates.append(os.path.join(base_path, f"{file_name}.{ext}"))
-
-    orig = first_existing(candidates)
-    if not orig:
-        logger.warning(f"{file_name} のオリジナルテンプレが見つかりませんでした。")
+    candidates = [os.path.join(base_path, f"{file_name}.{ext}") for ext in exts]
+    original_path = first_existing(candidates)
+    if not original_path:
+        logger.warning("template file was not found: %s", file_name)
         return None
 
     try:
-        new_copy = make_next_copy(orig)
-        logger.info(f"テンプレから作業用コピーを作成しました: {new_copy}")
+        new_copy = make_next_copy(original_path)
+        logger.info("created workbook copy: %s", new_copy)
         return new_copy
     except Exception:
-        logger.exception("作業用コピー作成に失敗しました")
+        logger.exception("failed to create workbook copy")
         raise
+
 
 _SUFFIXES = [
     "YTD",
@@ -114,10 +106,12 @@ _suffix_pat = re.compile(rf"^(.*)({'|'.join(_SUFFIXES)})$")
 
 def to_namedrange_key(key: str) -> str:
     """
-    例:
-      NetSalesYTD     -> NetSales_YTD
+    Normalize code-side keys to workbook named ranges.
+
+    Examples:
+      NetSalesYTD -> NetSales_YTD
       TotalAssetsPrior1 -> TotalAssets_Prior1
-      SecurityCodeDEI -> そのまま
+      SecurityCodeDEI -> unchanged
     """
     if not isinstance(key, str) or not key:
         return key
@@ -127,21 +121,18 @@ def to_namedrange_key(key: str) -> str:
     if key.endswith("DEI"):
         return key
 
-    m = _suffix_pat.match(key)
-    if not m:
+    match = _suffix_pat.match(key)
+    if not match:
         return key
 
-    metric = m.group(1)
-    suffix = m.group(2)
+    metric = match.group(1)
+    suffix = match.group(2)
     return f"{metric}_{suffix}"
 
 
 def transform_keys_for_namedranges(data: dict) -> dict:
-    out = {}
-    for k, v in data.items():
-        nk = to_namedrange_key(k)
-        out[nk] = v
-    return out
+    return {to_namedrange_key(k): v for k, v in data.items()}
+
 
 _FINANCIAL_PREFIXES = (
     "NetSales_",
@@ -188,11 +179,9 @@ def _scale_value_for_excel(name: str, value, display_unit: str):
     if num is None:
         return value
 
-    # 発行株数欄は常に千未満四捨五入
     if name in _TOTALNUMBER_KEYS:
         return int(round(num / 1000))
 
-    # 財務数値は決算書単位に合わせる
     if name.startswith(_FINANCIAL_PREFIXES):
         if display_unit == "千円":
             return int(round(num / 1000))
@@ -202,26 +191,21 @@ def _scale_value_for_excel(name: str, value, display_unit: str):
 
 
 def _apply_excel_scaling(payload: dict, display_unit: str) -> dict:
-    out = {}
-    for k, v in payload.items():
-        out[k] = _scale_value_for_excel(k, v, display_unit)
-    return out
+    return {k: _scale_value_for_excel(k, v, display_unit) for k, v in payload.items()}
 
 
 def _iter_namedrange_cells(workbook: openpyxl.Workbook, range_name: str):
-    """
-    NamedRangeが指すセル（1セル/複数セル）を返す
-    """
-    dn = workbook.defined_names.get(range_name)
-    if dn is None:
+    """Yield all cells pointed to by a defined name."""
+    defined_name = workbook.defined_names.get(range_name)
+    if defined_name is None:
         return
 
-    for sheet_name, ref in dn.destinations:
+    for sheet_name, ref in defined_name.destinations:
         if sheet_name not in workbook.sheetnames:
             continue
 
-        ws = workbook[sheet_name]
-        obj = ws[ref]
+        worksheet = workbook[sheet_name]
+        obj = worksheet[ref]
 
         if isinstance(obj, Cell):
             yield obj
@@ -230,6 +214,42 @@ def _iter_namedrange_cells(workbook: openpyxl.Workbook, range_name: str):
         for row in obj:
             for cell in row:
                 yield cell
+
+
+def _iter_defined_name_objects(workbook: openpyxl.Workbook):
+    container = workbook.defined_names
+
+    if hasattr(container, "definedName"):
+        return list(container.definedName)
+    if hasattr(container, "values"):
+        return list(container.values())
+    return []
+
+
+def get_defined_name_set(workbook: openpyxl.Workbook) -> set[str]:
+    names: set[str] = set()
+    for defined_name in _iter_defined_name_objects(workbook):
+        name = getattr(defined_name, "name", None)
+        attr_text = getattr(defined_name, "attr_text", None)
+        if name and attr_text:
+            names.add(str(name))
+    return names
+
+
+def build_namedrange_cache(workbook: openpyxl.Workbook) -> dict[str, list[Cell]]:
+    cache: dict[str, list[Cell]] = {}
+    for defined_name in _iter_defined_name_objects(workbook):
+        name = getattr(defined_name, "name", None)
+        attr_text = getattr(defined_name, "attr_text", None)
+
+        if not name or not attr_text:
+            continue
+
+        cells = list(_iter_namedrange_cells(workbook, str(name)))
+        if cells:
+            cache[str(name)] = cells
+    return cache
+
 
 def write_data_to_workbook_namedranges(
     wb,
@@ -242,37 +262,13 @@ def write_data_to_workbook_namedranges(
 ):
     result = {"written": [], "skipped": [], "missing": []}
 
-    # --- NamedRangeキャッシュ作成 ---
-    namedrange_cache = {}
-
-    dn_container = wb.defined_names
-
-    if hasattr(dn_container, "definedName"):
-        dn_iter = dn_container.definedName
-    elif hasattr(dn_container, "values"):
-        dn_iter = dn_container.values()
-    else:
-        dn_iter = []
-
-    for dn in dn_iter:
-        name = getattr(dn, "name", None)
-        attr_text = getattr(dn, "attr_text", None)
-
-        if not name or not attr_text:
-            continue
-
-        cells = list(_iter_namedrange_cells(wb, name))
-        if cells:
-            namedrange_cache[name] = cells
-
-    # --- データ整形 ---
+    namedrange_cache = build_namedrange_cache(wb)
     payload = transform_keys_for_namedranges(data) if transform_keys else dict(data)
     payload = _apply_excel_scaling(payload, display_unit)
 
-    if "決算入力" in wb.sheetnames:
-        wb["決算入力"]["J2"] = display_unit
+    if INPUT_SHEET_NAME in wb.sheetnames:
+        wb[INPUT_SHEET_NAME]["J2"] = display_unit
 
-    # --- 書き込みキュー ---
     write_queue = []
 
     for name, value in payload.items():
@@ -293,11 +289,11 @@ def write_data_to_workbook_namedranges(
             write_queue.append((cell, value))
             result["written"].append((name, f"{cell.parent.title}!{cell.coordinate}"))
 
-    # --- 一括書き込み ---
     for cell, value in write_queue:
         cell.value = value
 
     return result
+
 
 def write_rows_to_raw_sheet_workbook(wb, rows: list[dict], raw_cols: list[str], *, sheet_name: str = "raw_edinet"):
     import datetime as _dt
@@ -334,47 +330,18 @@ def write_rows_to_raw_sheet_workbook(wb, rows: list[dict], raw_cols: list[str], 
 
 
 def write_rows_to_raw_sheet(excel_file: str, rows: list[dict], raw_cols: list[str], *, sheet_name: str = "raw_edinet"):
-    """
-    raw_edinet シートに rows を書き込む
-    """
-    import datetime as _dt
-
-    def _to_excel_date(v):
-        if isinstance(v, _dt.datetime):
-            return v.date()
-        if isinstance(v, _dt.date):
-            return v
-        if isinstance(v, str):
-            s = v.strip()
-            try:
-                return _dt.datetime.strptime(s, "%Y-%m-%d").date()
-            except Exception:
-                return v
-        return v
-
+    """Write raw_edinet rows directly into a workbook file."""
     wb = openpyxl.load_workbook(
         excel_file,
         keep_vba=excel_file.lower().endswith(".xlsm")
     )
-    if sheet_name not in wb.sheetnames:
-        raise ValueError(f"sheet not found: {sheet_name}")
-
-    ws = wb[sheet_name]
-
-    if ws.max_row >= 2:
-        ws.delete_rows(2, ws.max_row - 1)
-
-    r = 2
-    for row in rows:
-        for c, col in enumerate(raw_cols, start=1):
-            v = row.get(col)
-            if col in ("period_start", "period_end"):
-                v = _to_excel_date(v)
-            ws.cell(row=r, column=c).value = v
-        r += 1
-
     try:
+        write_rows_to_raw_sheet_workbook(
+            wb,
+            rows,
+            raw_cols,
+            sheet_name=sheet_name,
+        )
         wb.save(excel_file)
     finally:
         wb.close()
-

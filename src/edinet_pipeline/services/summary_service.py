@@ -129,7 +129,7 @@ def _write_failed_jobs_csv(failed_csv, batch_results):
                 })
 
 
-def write_batch_reports(output_root, job_inputs, batch_results, logger):
+def write_batch_reports(output_root, job_inputs, batch_results, logger, runtime):
     reports_dir = Path(output_root) / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,11 +139,17 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
 
     result_name_map = _build_result_name_map(batch_results)
 
-    _write_company_jobs_csv(
-        jobs_csv=jobs_csv,
-        job_inputs=job_inputs,
-        result_name_map=result_name_map,
-    )
+    if runtime.write_company_jobs_csv:
+        _write_company_jobs_csv(
+            jobs_csv=jobs_csv,
+            job_inputs=job_inputs,
+            result_name_map=result_name_map,
+        )
+        logger.info("[batch summary] jobs_csv=%s", jobs_csv)
+    else:
+        jobs_csv = None
+        logger.info("[batch summary] jobs_csv skipped by runtime config")
+
     _write_batch_summary_csv(
         summary_csv=summary_csv,
         batch_results=batch_results,
@@ -155,7 +161,6 @@ def write_batch_reports(output_root, job_inputs, batch_results, logger):
 
     logger.info(f"[batch summary] total={len(batch_results)} summary_csv={summary_csv}")
     logger.info(f"[batch summary] failed_csv={failed_csv}")
-    logger.info(f"[batch summary] jobs_csv={jobs_csv}")
 
     return {
         "reports_dir": reports_dir,

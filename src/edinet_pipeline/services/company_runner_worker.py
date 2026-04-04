@@ -2,15 +2,15 @@ from dataclasses import asdict
 import traceback
 
 from edinet_pipeline.config.settings import (
-    WORKER_LOG_LEVEL,
-    WORKER_ENABLE_STREAM_HANDLER,
-    WORKER_ENABLE_FILE_HANDLER,
     WORKER_EMIT_INITIALIZED_LOG,
+    WORKER_ENABLE_FILE_HANDLER,
+    WORKER_ENABLE_STREAM_HANDLER,
+    WORKER_LOG_LEVEL,
 )
 from edinet_pipeline.logging_utils.logger import setup_logger
 from edinet_pipeline.services.company_runner import run_company_job
-from edinet_pipeline.services.parse_cache import XbrlParseCache
 from edinet_pipeline.services.company_task_result import CompanyTaskResult
+from edinet_pipeline.services.parse_cache import XbrlParseCache
 
 
 def run_company_job_worker(
@@ -19,6 +19,7 @@ def run_company_job_worker(
     output_root,
     template_dir,
     log_level,
+    runtime,
 ):
     effective_log_level = WORKER_LOG_LEVEL or log_level
 
@@ -29,7 +30,10 @@ def run_company_job_worker(
         enable_stream_handler=WORKER_ENABLE_STREAM_HANDLER,
     )
     skipped_files = []
-    parse_cache = XbrlParseCache(logger=logger, max_items=8)
+    parse_cache = XbrlParseCache(
+        logger=logger,
+        max_items=runtime.parse_cache_max_items,
+    )
 
     try:
         result = run_company_job(
@@ -40,6 +44,7 @@ def run_company_job_worker(
             skipped_files=skipped_files,
             logger=logger,
             parse_cache=parse_cache,
+            runtime=runtime,
         )
         return asdict(result)
 
