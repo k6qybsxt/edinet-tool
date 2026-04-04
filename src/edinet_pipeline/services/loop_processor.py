@@ -2,13 +2,19 @@ from openpyxl import load_workbook
 from edinet_pipeline.services.excel_service import (
     write_data_to_workbook_namedranges,
     write_rows_to_raw_sheet_workbook,
-    rename_excel_file,
 )
-from edinet_pipeline.services.stock_service import (
-    build_stock_date_pairs_from_fiscal_year_end,
-    write_stock_data_to_workbook,
-)
+from edinet_pipeline.services.stock_service import write_stock_data_to_workbook
 from edinet_pipeline.services.workbook_service import prepare_workbook
+from edinet_pipeline.services.loop_stage_service import (
+    append_initial_annual_output,
+    build_excel_output_payload,
+    build_stock_write_context,
+    create_loop_event,
+    finalize_output_excel,
+    pick_company_name,
+    pick_period_end,
+    resolve_document_display_unit,
+)
 from edinet_pipeline.services.parse_service import (
     parse_half_doc,
     parse_latest_annual_doc,
@@ -26,61 +32,10 @@ from edinet_pipeline.domain.output_buffer import OutputBuffer
 
 import os
 from datetime import datetime
-from calendar import monthrange
 from time import perf_counter
 
 # XBRLデータの取得、証券コードの取得、Excelへの書き込み、株価データ取得までをループ処理に含める
 def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, runtime=None):
-
-    def _pick_period_end(x1, x2, meta2):
-        candidates = []
-
-        for src in (x1 or {}, x2 or {}, meta2 or {}):
-            if not isinstance(src, dict):
-                continue
-            for key in (
-                "CurrentPeriodEndDateDEI",
-                "CurrentFiscalYearEndDateDEI",
-                "CurrentQuarterEndDateDEI",
-                "PeriodEndDEI",
-                "HalfPeriodEndDateDEI",
-            ):
-                v = src.get(key)
-                if v not in (None, ""):
-                    candidates.append(str(v).strip())
-
-        for v in candidates:
-            if len(v) >= 10:
-                return v[:10].replace("/", "-")
-
-        return datetime.now().strftime("%Y-%m-%d")
-
-    def _pick_company_name(x1, x2, meta2, company_name_from_job):
-        if company_name_from_job not in (None, ""):
-            return str(company_name_from_job).strip()
-
-        for src in (x1 or {}, x2 or {}, meta2 or {}):
-            if not isinstance(src, dict):
-                continue
-            for key in (
-                "CompanyNameCoverPage",
-                "FilerNameInJapaneseDEI",
-                "CompanyNameInJapaneseDEI",
-                "CompanyNameDEI",
-                "FilerNameDEI",
-            ):
-                v = src.get(key)
-                if v not in (None, ""):
-                    return str(v).strip()
-
-        return ""
-    
-    def _shift_year_keep_month_end(date_str, years):
-        s = str(date_str or "").strip().replace("/", "-")
-        dt = datetime.strptime(s[:10], "%Y-%m-%d")
-        y = dt.year + years
-        d = min(dt.day, monthrange(y, dt.month)[1])
-        return dt.replace(year=y, day=d).strftime("%Y-%m-%d")
 
     company_code_from_job = loop.get("company_code")
     company_name_from_job = loop.get("company_name")
@@ -93,20 +48,14 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     t0 = perf_counter()
 
-    loop_event = {
-        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "run_id": run_id,
-        "slot": loop.get("slot"),
-        "excel": os.path.basename(loop.get("excel_file_path", "")) if loop.get("excel_file_path") else None,
-        "security_code": None,
-        "company_code": company_code_from_job,
-        "company_name": company_name_from_job,
-        "has_half": has_half_from_job,
-        "source_zips": source_zips,
-        "phases": {},
-        "counts": {},
-        "errors": [],
-    }
+    loop_event = create_loop_event(
+        loop=loop,
+        company_code=company_code_from_job,
+        company_name=company_name_from_job,
+        has_half=has_half_from_job,
+        source_zips=source_zips,
+        run_id=run_id,
+    )
 
     out_buffer = OutputBuffer()
 
@@ -166,34 +115,7 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, 
     )
 
     if (not use_half) and x1 is not None:
-        out1_write = {}
-        out1_write["UseHalfModeFlag"] = 0
-
-        for k, v in x1.items():
-            if v in (None, ""):
-                continue
-            if k.endswith("Quarter"):
-                continue
-            elif k.endswith("Prior2"):
-                continue
-            elif k.endswith("Prior3"):
-                continue
-            elif k.endswith("Prior4"):
-                continue
-            else:
-                out1_write[k] = v
-
-        for kk in list(out1_write.keys()):
-            if kk.startswith("TotalNumber"):
-                del out1_write[kk]
-
-        if x1.get("TotalNumberCurrent") not in (None, ""):
-            out1_write["TotalNumberCurrent"] = x1["TotalNumberCurrent"]
-
-        for k, v in out1_write.items():
-            if v in (None, ""):
-                continue
-            out_buffer.put(k, v, "file1_annual")
+        append_initial_annual_output(out_buffer, x1)
 
     x2, meta2, path2, security_code, base_year = parse_latest_annual_doc(
         loop=loop,
@@ -258,67 +180,20 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, 
             logger.debug(" overwrite: %s  %s -> %s (winner=%s)", k, old_src, new_src, winner)
 
     if out_buffer:
-        out_buffer_dict = out_buffer_dict_for_log
-
-        if not use_half and isinstance(x1, dict):
-            fy_end = x1.get("CurrentFiscalYearEndDateDEI")
-            if fy_end not in (None, ""):
-                fy_end = str(fy_end).strip().replace("/", "-")
-                out_buffer_dict["CurrentFiscalYearEndDateDEI"] = fy_end
-
-                parts = fy_end.split("-")
-                if len(parts) >= 2:
-                    out_buffer_dict["CurrentFiscalYearEndDateDEIyear"] = parts[0]
-                    out_buffer_dict["CurrentFiscalYearEndDateDEImonth"] = parts[1]
-
-            period_end = x1.get("CurrentPeriodEndDateDEI")
-            if period_end not in (None, ""):
-                out_buffer_dict["CurrentPeriodEndDateDEI"] = str(period_end).strip().replace("/", "-")
-
-            fy_start = x1.get("CurrentFiscalYearStartDateDEI")
-            if fy_start not in (None, ""):
-                out_buffer_dict["CurrentFiscalYearStartDateDEI"] = str(fy_start).strip().replace("/", "-")
-
-        if not use_half:
-            out_buffer_dict = {
-                k: v for k, v in out_buffer_dict.items()
-                if not k.endswith("Quarter")
-            }
-
-        display_unit = "百万円"
-
-        if parse_cache is not None and x1 is not None:
-            file1_list = xbrl_file_paths.get("file1") or []
-            if file1_list:
-                _doc1 = parse_cache.get_or_create(
-                    file1_list[0],
-                    parser_func=lambda p: parse_xbrl_file_raw(
-                        p,
-                        mode="half" if use_half else "full",
-                        logger=logger,
-                    ),
-                )
-                if _doc1.document_display_unit in ("百万円", "千円"):
-                    display_unit = _doc1.document_display_unit
-        elif x1 is not None and x1.get("DocumentDisplayUnit") in ("百万円", "千円"):
-            display_unit = x1["DocumentDisplayUnit"]
-
-        if display_unit == "百万円":
-            if parse_cache is not None and x2 is not None:
-                file2_list = xbrl_file_paths.get("file2") or []
-                if file2_list:
-                    _doc2 = parse_cache.get_or_create(
-                        file2_list[0],
-                        parser_func=lambda p: parse_xbrl_file_raw(
-                            p,
-                            mode="full",
-                            logger=logger,
-                        ),
-                    )
-                    if _doc2.document_display_unit in ("百万円", "千円"):
-                        display_unit = _doc2.document_display_unit
-            elif x2 is not None and x2.get("DocumentDisplayUnit") in ("百万円", "千円"):
-                display_unit = x2["DocumentDisplayUnit"]
+        out_buffer_dict = build_excel_output_payload(
+            out_buffer_dict_for_log,
+            x1=x1,
+            use_half=use_half,
+        )
+        display_unit = resolve_document_display_unit(
+            xbrl_file_paths=xbrl_file_paths,
+            x1=x1,
+            x2=x2,
+            use_half=use_half,
+            parse_cache=parse_cache,
+            logger=logger,
+            parse_document_func=parse_xbrl_file_raw,
+        )
     else:
         out_buffer_dict = {}
         display_unit = "百万円"
@@ -421,27 +296,14 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, 
                 company_code_from_job or security_code,
             )
 
-        fiscal_year_end_for_stock = out_buffer_dict.get("CurrentFiscalYearEndDateDEI")
-
-        if not fiscal_year_end_for_stock and isinstance(x1, dict):
-            fiscal_year_end_for_stock = x1.get("CurrentFiscalYearEndDateDEI")
-
-        if fiscal_year_end_for_stock:
-            fiscal_year_end_for_stock = str(fiscal_year_end_for_stock).strip().replace("/", "-")
-
-            if use_half:
-                fiscal_year_end_for_stock = _shift_year_keep_month_end(
-                    fiscal_year_end_for_stock,
-                    -1,
-                )
-
-            stock_date_pairs = build_stock_date_pairs_from_fiscal_year_end(
-                fiscal_year_end_for_stock
-            )
-        else:
-            stock_date_pairs = []
-
-        stock_code = f"{security_code}.T" if security_code else None
+        stock_context = build_stock_write_context(
+            out_buffer_dict=out_buffer_dict,
+            x1=x1,
+            use_half=use_half,
+            security_code=security_code,
+        )
+        stock_date_pairs = stock_context["stock_date_pairs"]
+        stock_code = stock_context["stock_code"]
 
         if not enable_stock:
             logger.info(
@@ -535,33 +397,18 @@ def process_one_loop(loop, date_pairs, skipped_files, logger, parse_cache=None, 
 
             wb = None
 
-    period_end_date = _pick_period_end(x1, x2, meta2)
+    period_end_date = pick_period_end(x1, x2, meta2)
     final_security_code = security_code or company_code_from_job or ""
-    final_company_name = _pick_company_name(x1, x2, meta2, company_name_from_job)
+    final_company_name = pick_company_name(x1, x2, meta2, company_name_from_job)
 
-    if output_root:
-        output_excel_dir = os.path.join(output_root, "excel")
-        os.makedirs(output_excel_dir, exist_ok=True)
-
-        base_name = f"{final_security_code}_{final_company_name}_{period_end_date}".strip("_")
-        safe_name = "".join("_" if c in '\\/:*?"<>|' else c for c in base_name)
-        final_excel_file_path = os.path.join(output_excel_dir, f"{safe_name}.xlsm")
-
-        counter = 1
-        while os.path.exists(final_excel_file_path):
-            final_excel_file_path = os.path.join(output_excel_dir, f"{safe_name}_{counter}.xlsm")
-            counter += 1
-
-        os.replace(excel_file_path, final_excel_file_path)
-        logger.info(f"Excelファイルが移動されました: {final_excel_file_path}")
-    else:
-        final_excel_file_path = rename_excel_file(
-            excel_file_path,
-            final_security_code,
-            final_company_name,
-            period_end_date,
-            logger,
-        )
+    final_excel_file_path = finalize_output_excel(
+        excel_file_path=excel_file_path,
+        output_root=output_root,
+        security_code=final_security_code,
+        company_name=final_company_name,
+        period_end_date=period_end_date,
+        logger=logger,
+    )
 
     loop["final_excel_file_path"] = final_excel_file_path
     loop_event["excel"] = os.path.basename(final_excel_file_path)
