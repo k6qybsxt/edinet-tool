@@ -93,9 +93,93 @@ def _build_annual_growth_quality_rule() -> ScreeningRuleDefinition:
     )
 
 
+def _build_annual_profitability_safety_rule() -> ScreeningRuleDefinition:
+    checks = (
+        MetricCheckDefinition(
+            check_name="operating_margin_current_gte_5pct",
+            metric_key="OperatingMarginCurrent",
+            operator="gte",
+            threshold=0.05,
+            weight=30.0,
+        ),
+        MetricCheckDefinition(
+            check_name="equity_ratio_current_gte_30pct",
+            metric_key="EquityRatioCurrent",
+            operator="gte",
+            threshold=0.3,
+            weight=30.0,
+        ),
+        MetricCheckDefinition(
+            check_name="fcf_current_gt_zero",
+            metric_key="FCFCurrent",
+            operator="gt",
+            threshold=0.0,
+            weight=30.0,
+        ),
+        MetricCheckDefinition(
+            check_name="roe_current_gte_8pct",
+            metric_key="ROECurrent",
+            operator="gte",
+            threshold=0.08,
+            weight=10.0,
+            required_for_pass=False,
+        ),
+    )
+
+    return ScreeningRuleDefinition(
+        rule_name="annual_profitability_safety_check",
+        rule_version="2026-04-04-v1",
+        period_scope="annual",
+        checks=checks,
+    )
+
+
+def _build_annual_sga_efficiency_rule() -> ScreeningRuleDefinition:
+    checks = (
+        MetricCheckDefinition(
+            check_name="selling_expenses_ratio_current_lte_30pct",
+            metric_key="SellingExpensesRatioCurrent",
+            operator="lte",
+            threshold=0.3,
+            weight=30.0,
+        ),
+        MetricCheckDefinition(
+            check_name="ordinary_income_margin_current_gte_5pct",
+            metric_key="OrdinaryIncomeMarginCurrent",
+            operator="gte",
+            threshold=0.05,
+            weight=30.0,
+        ),
+        MetricCheckDefinition(
+            check_name="equity_ratio_current_gte_30pct",
+            metric_key="EquityRatioCurrent",
+            operator="gte",
+            threshold=0.3,
+            weight=30.0,
+        ),
+        MetricCheckDefinition(
+            check_name="fcf_current_gt_zero",
+            metric_key="FCFCurrent",
+            operator="gt",
+            threshold=0.0,
+            weight=10.0,
+            required_for_pass=False,
+        ),
+    )
+
+    return ScreeningRuleDefinition(
+        rule_name="annual_sga_efficiency_check",
+        rule_version="2026-04-04-v1",
+        period_scope="annual",
+        checks=checks,
+    )
+
+
 RULE_DEFINITIONS = {
     "minimum_viable_value_check": _build_minimum_viable_rule(),
     "annual_growth_quality_check": _build_annual_growth_quality_rule(),
+    "annual_profitability_safety_check": _build_annual_profitability_safety_rule(),
+    "annual_sga_efficiency_check": _build_annual_sga_efficiency_rule(),
 }
 DEFAULT_RULE_NAME = "minimum_viable_value_check"
 RULE_NAME = DEFAULT_RULE_NAME

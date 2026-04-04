@@ -45,6 +45,8 @@ class ScreeningRuleServiceTest(unittest.TestCase):
     def test_default_rule_is_registered(self) -> None:
         self.assertIn(DEFAULT_RULE_NAME, list_rule_names())
         self.assertIn("annual_growth_quality_check", list_rule_names())
+        self.assertIn("annual_profitability_safety_check", list_rule_names())
+        self.assertIn("annual_sga_efficiency_check", list_rule_names())
 
         rule_definition = get_rule_definition(DEFAULT_RULE_NAME)
 
@@ -152,6 +154,49 @@ class ScreeningRuleServiceTest(unittest.TestCase):
         self.assertEqual(
             result["detail"]["check_results"][1]["failure_reason"],
             "zero_or_negative_base",
+        )
+
+    def test_annual_profitability_safety_rule_allows_optional_roe_to_affect_score_only(self) -> None:
+        metrics = {
+            "OperatingMarginCurrent": build_metric_row(0.08),
+            "EquityRatioCurrent": build_metric_row(0.45),
+            "FCFCurrent": build_metric_row(100.0, value_unit="yen", metric_group="cashflow"),
+            "ROECurrent": build_metric_row(0.05),
+        }
+
+        result = evaluate_screening_rule(
+            metrics,
+            rule_name="annual_profitability_safety_check",
+        )
+
+        self.assertEqual(result["result_flag"], 1)
+        self.assertEqual(result["score"], 90.0)
+        self.assertEqual(result["detail"]["failed_required_checks"], [])
+        self.assertEqual(
+            result["detail"]["check_results"][3]["failure_reason"],
+            "comparison_failed",
+        )
+
+    def test_annual_sga_efficiency_rule_fails_when_required_ratio_is_missing(self) -> None:
+        metrics = {
+            "OrdinaryIncomeMarginCurrent": build_metric_row(0.06),
+            "EquityRatioCurrent": build_metric_row(0.40),
+            "FCFCurrent": build_metric_row(100.0, value_unit="yen", metric_group="cashflow"),
+        }
+
+        result = evaluate_screening_rule(
+            metrics,
+            rule_name="annual_sga_efficiency_check",
+        )
+
+        self.assertEqual(result["result_flag"], 0)
+        self.assertEqual(
+            result["detail"]["missing_keys"],
+            ["SellingExpensesRatioCurrent"],
+        )
+        self.assertEqual(
+            result["detail"]["failed_required_checks"],
+            ["selling_expenses_ratio_current_lte_30pct"],
         )
 
 
