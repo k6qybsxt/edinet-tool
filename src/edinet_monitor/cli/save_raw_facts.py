@@ -4,11 +4,12 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from edinet_monitor.db.schema import get_connection
+from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.download_queue_service import (
     fetch_xbrl_ready_filings,
     mark_raw_facts_error,
     mark_raw_facts_saved,
+    update_filing_parse_metadata,
 )
 from edinet_monitor.services.parser.raw_fact_mapper import to_raw_fact_rows
 from edinet_monitor.services.parser.raw_fact_store_service import (
@@ -19,6 +20,8 @@ from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 
 
 def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[str, Any]:
+    create_tables()
+
     conn = get_connection()
     total_target = 0
     total_saved_docs = 0
@@ -47,9 +50,23 @@ def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[s
                 try:
                     parsed = parse_xbrl_to_raw(xbrl_path)
                     raw_rows = to_raw_fact_rows(doc_id, parsed)
+                    parsed_meta = dict(parsed.get("meta") or {})
+                    parsed_out = dict(parsed.get("out") or {})
+                    accounting_standard = str(parsed_meta.get("accounting_standard") or "")
+                    document_display_unit = str(
+                        parsed_meta.get("document_display_unit")
+                        or parsed_out.get("DocumentDisplayUnit")
+                        or ""
+                    )
 
                     delete_raw_facts_by_doc_id(conn, doc_id)
                     saved_count = insert_raw_facts(conn, raw_rows)
+                    update_filing_parse_metadata(
+                        conn,
+                        doc_id,
+                        accounting_standard=accounting_standard,
+                        document_display_unit=document_display_unit,
+                    )
                     mark_raw_facts_saved(conn, doc_id)
 
                     total_saved_docs += 1

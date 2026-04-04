@@ -17,6 +17,14 @@ def _get_table_columns(cur: sqlite3.Cursor, table_name: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
+def _ensure_table_column(cur: sqlite3.Cursor, table_name: str, column_def: str) -> None:
+    column_name = column_def.split()[0]
+    columns = _get_table_columns(cur, table_name)
+    if column_name in columns:
+        return
+    cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+
+
 def _rebuild_screening_results_if_needed(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
         """
@@ -52,7 +60,7 @@ def _rebuild_screening_results_if_needed(cur: sqlite3.Cursor) -> None:
     cur.execute("DROP TABLE IF EXISTS screening_results")
     cur.execute("DROP TABLE IF EXISTS screening_runs")
 
-def _rebuild_filings_if_needed(cur: sqlite3.Cursor) -> None:
+def _ensure_filings_columns(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
         """
         SELECT name
@@ -64,16 +72,10 @@ def _rebuild_filings_if_needed(cur: sqlite3.Cursor) -> None:
     if not table_exists:
         return
 
-    columns = _get_table_columns(cur, "filings")
-    required_columns = {
-        "doc_info_edit_status",
-        "legal_status",
-    }
-
-    if required_columns.issubset(columns):
-        return
-
-    cur.execute("DROP TABLE IF EXISTS filings")
+    _ensure_table_column(cur, "filings", "doc_info_edit_status TEXT")
+    _ensure_table_column(cur, "filings", "legal_status TEXT")
+    _ensure_table_column(cur, "filings", "accounting_standard TEXT")
+    _ensure_table_column(cur, "filings", "document_display_unit TEXT")
 
 def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
@@ -106,7 +108,6 @@ def create_tables() -> None:
     cur = conn.cursor()
 
     _rebuild_screening_results_if_needed(cur)
-    _rebuild_filings_if_needed(cur)
     _rebuild_issuer_master_if_needed(cur)
 
     cur.execute("""
@@ -136,6 +137,8 @@ def create_tables() -> None:
         amendment_flag INTEGER NOT NULL DEFAULT 0,
         doc_info_edit_status TEXT,
         legal_status TEXT,
+        accounting_standard TEXT,
+        document_display_unit TEXT,
         zip_path TEXT,
         xbrl_path TEXT,
         download_status TEXT NOT NULL,
@@ -144,6 +147,7 @@ def create_tables() -> None:
         updated_at TEXT NOT NULL
     )
     """)
+    _ensure_filings_columns(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS raw_facts (
@@ -174,6 +178,33 @@ def create_tables() -> None:
         value_num REAL,
         source_tag TEXT,
         consolidation TEXT,
+        rule_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS derived_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id TEXT NOT NULL,
+        edinet_code TEXT NOT NULL,
+        security_code TEXT,
+        metric_key TEXT NOT NULL,
+        metric_base TEXT NOT NULL,
+        metric_group TEXT NOT NULL,
+        fiscal_year INTEGER,
+        period_end TEXT,
+        period_scope TEXT NOT NULL,
+        period_offset INTEGER NOT NULL DEFAULT 0,
+        consolidation TEXT,
+        accounting_standard TEXT,
+        document_display_unit TEXT,
+        value_num REAL,
+        value_unit TEXT NOT NULL,
+        calc_status TEXT NOT NULL,
+        formula_name TEXT NOT NULL,
+        source_detail_json TEXT,
         rule_version TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -269,6 +300,26 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_normalized_metrics_code_period
     ON normalized_metrics(edinet_code, period_end)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_derived_metrics_doc_metric_period
+    ON derived_metrics(doc_id, metric_key, period_end, consolidation)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_derived_metrics_code_base_period
+    ON derived_metrics(edinet_code, metric_base, period_scope, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_derived_metrics_doc_id
+    ON derived_metrics(doc_id)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_derived_metrics_status
+    ON derived_metrics(calc_status)
     """)
 
     cur.execute("""

@@ -151,6 +151,30 @@ def mark_raw_facts_saved(conn: sqlite3.Connection, doc_id: str) -> None:
     conn.commit()
 
 
+def update_filing_parse_metadata(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    *,
+    accounting_standard: str | None,
+    document_display_unit: str | None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE filings
+        SET
+            accounting_standard = ?,
+            document_display_unit = ?
+        WHERE doc_id = ?
+        """,
+        (
+            str(accounting_standard or ""),
+            str(document_display_unit or ""),
+            doc_id,
+        ),
+    )
+    conn.commit()
+
+
 def mark_raw_facts_error(conn: sqlite3.Connection, doc_id: str) -> None:
     conn.execute(
         """
@@ -203,6 +227,81 @@ def mark_normalized_metrics_error(conn: sqlite3.Connection, doc_id: str) -> None
         UPDATE filings
         SET
             parse_status = 'normalized_metrics_error'
+        WHERE doc_id = ?
+        """,
+        (doc_id,),
+    )
+    conn.commit()
+
+
+def fetch_derived_metrics_target_filings(
+    conn: sqlite3.Connection,
+    *,
+    rule_version: str,
+    limit: int = 10,
+) -> list[sqlite3.Row]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            f.doc_id,
+            f.edinet_code,
+            f.security_code,
+            f.form_type,
+            f.period_end,
+            f.accounting_standard,
+            f.document_display_unit,
+            f.xbrl_path,
+            f.parse_status,
+            IFNULL(dm.metric_count, 0) AS derived_metric_count
+        FROM filings f
+        INNER JOIN issuer_master im
+            ON f.edinet_code = im.edinet_code
+        LEFT JOIN (
+            SELECT
+                doc_id,
+                COUNT(*) AS metric_count
+            FROM derived_metrics
+            WHERE rule_version = ?
+            GROUP BY doc_id
+        ) dm
+            ON f.doc_id = dm.doc_id
+        WHERE im.is_listed = 1
+          AND im.exchange = 'TSE'
+          AND (
+                f.parse_status IN ('normalized_metrics_saved', 'derived_metrics_error')
+                OR (
+                    f.parse_status = 'derived_metrics_saved'
+                    AND IFNULL(dm.metric_count, 0) = 0
+                )
+          )
+        ORDER BY f.submit_date ASC, f.doc_id ASC
+        LIMIT ?
+        """,
+        (rule_version, limit),
+    )
+    return cur.fetchall()
+
+
+def mark_derived_metrics_saved(conn: sqlite3.Connection, doc_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE filings
+        SET
+            parse_status = 'derived_metrics_saved'
+        WHERE doc_id = ?
+        """,
+        (doc_id,),
+    )
+    conn.commit()
+
+
+def mark_derived_metrics_error(conn: sqlite3.Connection, doc_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE filings
+        SET
+            parse_status = 'derived_metrics_error'
         WHERE doc_id = ?
         """,
         (doc_id,),

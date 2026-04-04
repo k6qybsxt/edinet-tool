@@ -30,6 +30,8 @@ def to_filing_record(row: dict[str, Any]) -> dict[str, Any]:
         "amendment_flag": 1 if doc_info_edit_status == "1" else 0,
         "doc_info_edit_status": doc_info_edit_status,
         "legal_status": legal_status,
+        "accounting_standard": "",
+        "document_display_unit": "",
         "zip_path": "",
         "xbrl_path": "",
         "download_status": "pending",
