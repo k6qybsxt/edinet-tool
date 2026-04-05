@@ -3,11 +3,12 @@ from __future__ import annotations
 import csv
 from datetime import datetime
 
+from edinet_monitor.config.settings import TSE_LISTING_MASTER_CSV_PATH
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.issuer_store_service import upsert_issuers
 
 
-CSV_PATH = r"D:\EDINET_Data\master\tse_issuer_master_latest.csv"
+CSV_PATH = str(TSE_LISTING_MASTER_CSV_PATH)
 
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

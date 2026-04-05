@@ -38,6 +38,7 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/_tmp_edinet_monitor/
 
 # ===============================
 # IDE

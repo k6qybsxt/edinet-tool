@@ -14,10 +14,12 @@ MONITOR_DB_ROOT = PROJECT_ROOT / "data" / "edinet_monitor"
 DB_PATH = MONITOR_DB_ROOT / "edinet_monitor.db"
 
 MONITOR_STORAGE_ROOT = Path(r"D:\EDINET_Data") / "edinet_monitor"
+TSE_LISTING_MASTER_CSV_PATH = Path(r"D:\EDINET_Data\master\tse_issuer_master_latest.csv")
 
 RAW_ROOT = MONITOR_STORAGE_ROOT / "raw"
 ZIP_ROOT = RAW_ROOT / "zip"
 XBRL_ROOT = RAW_ROOT / "xbrl"
+MANIFEST_ROOT = RAW_ROOT / "manifests"
 
 LOG_ROOT = MONITOR_STORAGE_ROOT / "logs"
 
@@ -51,4 +53,5 @@ def ensure_data_dirs() -> None:
     RAW_ROOT.mkdir(parents=True, exist_ok=True)
     ZIP_ROOT.mkdir(parents=True, exist_ok=True)
     XBRL_ROOT.mkdir(parents=True, exist_ok=True)
+    MANIFEST_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
