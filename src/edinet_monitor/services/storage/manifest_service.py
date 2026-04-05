@@ -81,8 +81,10 @@ def summarize_manifest_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "downloaded_rows": 0,
         "error_rows": 0,
         "other_rows": 0,
+        "retryable_error_rows": 0,
     }
     sample_errors: list[dict[str, Any]] = []
+    error_type_counts: dict[str, int] = {}
 
     for row in rows:
         totals["manifest_rows"] += 1
@@ -94,12 +96,19 @@ def summarize_manifest_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
             totals["downloaded_rows"] += 1
         elif status == "error":
             totals["error_rows"] += 1
+            error_type = str(row.get("download_error_type") or "unknown_error").strip() or "unknown_error"
+            error_type_counts[error_type] = error_type_counts.get(error_type, 0) + 1
+            if int(row.get("download_error_retryable") or 0):
+                totals["retryable_error_rows"] += 1
             if len(sample_errors) < 5:
                 sample_errors.append(
                     {
                         "doc_id": row.get("doc_id"),
                         "company_name": row.get("company_name"),
                         "submit_date": row.get("submit_date"),
+                        "download_error_type": row.get("download_error_type"),
+                        "download_error_retryable": row.get("download_error_retryable"),
+                        "download_http_status": row.get("download_http_status"),
                         "download_error": row.get("download_error"),
                     }
                 )
@@ -108,5 +117,6 @@ def summarize_manifest_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         **totals,
+        "error_type_counts": dict(sorted(error_type_counts.items())),
         "sample_errors": sample_errors,
     }

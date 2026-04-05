@@ -15,7 +15,9 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.cli.run_zip_backfill import (  # noqa: E402
     build_month_manifest_name,
+    iter_manifest_chunks,
     iter_month_chunks,
+    resolve_manifest_granularity,
     run_zip_backfill,
 )
 from edinet_monitor.services.storage.manifest_service import write_manifest_rows  # noqa: E402
@@ -46,6 +48,16 @@ class RunZipBackfillTest(unittest.TestCase):
             build_month_manifest_name("document_manifest", "2026-03"),
             "document_manifest_2026-03",
         )
+
+    def test_iter_manifest_chunks_supports_day_granularity(self) -> None:
+        chunks = iter_manifest_chunks(date(2026, 4, 1), date(2026, 4, 3), granularity="day")
+
+        self.assertEqual([chunk.chunk_key for chunk in chunks], ["2026-04-01", "2026-04-02", "2026-04-03"])
+        self.assertTrue(all(chunk.granularity == "day" for chunk in chunks))
+
+    def test_resolve_manifest_granularity_uses_profile_default_when_empty(self) -> None:
+        self.assertEqual(resolve_manifest_granularity(manifest_granularity="", download_profile="peak"), "day")
+        self.assertEqual(resolve_manifest_granularity(manifest_granularity="month", download_profile="peak"), "month")
 
     def test_run_zip_backfill_prepare_only_creates_monthly_manifests(self) -> None:
         tmpdir = make_tempdir()
@@ -154,6 +166,64 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertFalse(collect_called)
         self.assertEqual(summary["months"], 1)
         self.assertEqual(summary["manifest_rows_total"], 1)
+
+    def test_run_zip_backfill_peak_profile_defaults_to_day_granularity(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        manifest_names: list[str] = []
+
+        def fake_collect(
+            target_dates: list[date],
+            *,
+            api_key: str,
+            allowed_edinet_codes: set[str],
+            manifest_path: Path,
+            append: bool = False,
+            overwrite: bool = False,
+            fetcher=None,
+        ) -> dict[str, object]:
+            manifest_names.append(manifest_path.stem)
+            write_manifest_rows(
+                manifest_path,
+                [
+                    {
+                        "doc_id": "S100AAAA",
+                        "company_name": "テスト株式会社",
+                        "submit_date": f"{target_dates[0].isoformat()} 15:30",
+                        "download_status": "pending",
+                    }
+                ],
+            )
+            return {"manifest_path": str(manifest_path), "saved_manifest_rows": 1, "totals": {"incoming_manifest_rows": 1}}
+
+        def fake_download(**_: object) -> dict[str, object]:
+            return {
+                "downloaded_total": 0,
+                "existing_total": 0,
+                "error_total": 0,
+                "manifest_rows": 1,
+                "target_total": 0,
+                "processed_total": 0,
+                "cooldown_count": 0,
+                "error_type_totals": {},
+            }
+
+        run_zip_backfill(
+            api_key="dummy-key",
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 2),
+            manifest_prefix="document_manifest",
+            manifest_granularity="",
+            master_csv_path=tmpdir / "issuer_master.csv",
+            download_profile="peak",
+            collect_func=fake_collect,
+            download_func=fake_download,
+            allowed_codes_loader=lambda _: {"E00001"},
+            manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
+            ensure_dirs_func=lambda: None,
+        )
+
+        self.assertEqual(manifest_names, ["document_manifest_2026-04-01", "document_manifest_2026-04-02"])
 
 
 if __name__ == "__main__":
