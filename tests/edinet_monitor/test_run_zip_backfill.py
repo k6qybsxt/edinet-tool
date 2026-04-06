@@ -189,6 +189,9 @@ class RunZipBackfillTest(unittest.TestCase):
                 "target_total": 1,
                 "processed_total": 1,
                 "cooldown_count": 0,
+                "download_elapsed_seconds": 12.5,
+                "retry_wait_elapsed_seconds": 1.25,
+                "cooldown_elapsed_seconds": 0.0,
                 "error_type_totals": {},
             }
 
@@ -222,6 +225,9 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(summary["started_at"], "2026-04-06 12:00:00")
         self.assertEqual(summary["finished_at"], "2026-04-06 12:01:30")
         self.assertEqual(summary["elapsed_seconds"], 90.0)
+        self.assertEqual(summary["download_elapsed_seconds"], 12.5)
+        self.assertEqual(summary["retry_wait_elapsed_seconds"], 1.25)
+        self.assertEqual(summary["cooldown_elapsed_seconds"], 0.0)
         self.assertEqual(summary["run_id"].startswith("backfill_20260406_120000_"), True)
         self.assertTrue(run_log_path.exists())
         self.assertTrue(chunk_log_path.exists())
@@ -234,6 +240,9 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(records[0]["finished_at"], "2026-04-06 12:01:30")
         self.assertEqual(records[0]["elapsed_seconds"], 90.0)
         self.assertEqual(records[0]["run_status"], "completed")
+        self.assertEqual(records[0]["download_elapsed_seconds"], 12.5)
+        self.assertEqual(records[0]["retry_wait_elapsed_seconds"], 1.25)
+        self.assertEqual(records[0]["cooldown_elapsed_seconds"], 0.0)
 
         with chunk_log_path.open("r", encoding="utf-8") as f:
             chunk_records = [json.loads(line) for line in f if line.strip()]
@@ -246,6 +255,9 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(chunk_records[0]["chunk_status"], "completed")
         self.assertEqual(chunk_records[0]["manifest_rows"], 1)
         self.assertEqual(chunk_records[0]["run_id"], records[0]["run_id"])
+        self.assertEqual(chunk_records[0]["download_elapsed_seconds"], 12.5)
+        self.assertEqual(chunk_records[0]["retry_wait_elapsed_seconds"], 1.25)
+        self.assertEqual(chunk_records[0]["cooldown_elapsed_seconds"], 0.0)
         self.assertEqual(summary["monthly_results"][0]["chunk_key"], "2026-04")
         self.assertEqual(summary["monthly_results"][0]["chunk_status"], "completed")
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from time import sleep
 from typing import Any, Callable
 import zipfile
@@ -259,12 +260,15 @@ def process_manifest_download_row(
     max_retries: int = DOWNLOAD_MAX_RETRIES,
     retry_wait_sec: float = DOWNLOAD_RETRY_WAIT_SEC,
     sleep_func: Callable[[float], None] = sleep,
+    timer_func: Callable[[], float] = perf_counter,
 ) -> dict[str, Any]:
     normalized = normalize_manifest_row_for_download(row)
     base_attempts = int(normalized.get("download_attempts") or 0)
     doc_id = normalized["doc_id"]
     output_path = Path(str(normalized.get("zip_path") or ""))
     replaced_invalid_existing = False
+    download_elapsed_seconds = 0.0
+    retry_wait_elapsed_seconds = 0.0
 
     if output_path and output_path.exists() and not is_valid_zip_path(output_path):
         output_path.unlink(missing_ok=True)
@@ -281,6 +285,8 @@ def process_manifest_download_row(
             "doc_id": doc_id,
             "path": str(output_path),
             "attempts_used": 1,
+            "download_elapsed_seconds": 0.0,
+            "retry_wait_elapsed_seconds": 0.0,
             "error_type": "",
             "retryable": False,
             "status_code": "",
@@ -294,6 +300,7 @@ def process_manifest_download_row(
         normalized["download_last_attempt_at"] = now_text()
 
         try:
+            attempt_started = timer_func()
             saved_path = downloader(
                 doc_id=doc_id,
                 api_key=api_key,
@@ -301,6 +308,7 @@ def process_manifest_download_row(
                 connect_timeout_sec=connect_timeout_sec,
                 read_timeout_sec=read_timeout_sec,
             )
+            download_elapsed_seconds += max(timer_func() - attempt_started, 0.0)
             mark_manifest_download_success(
                 normalized,
                 saved_path,
@@ -314,12 +322,15 @@ def process_manifest_download_row(
                 "doc_id": doc_id,
                 "path": str(saved_path),
                 "attempts_used": attempt_index + 1,
+                "download_elapsed_seconds": round(download_elapsed_seconds, 3),
+                "retry_wait_elapsed_seconds": round(retry_wait_elapsed_seconds, 3),
                 "error_type": "",
                 "retryable": False,
                 "status_code": "",
                 "cooldown_eligible": False,
             }
         except Exception as error:
+            download_elapsed_seconds += max(timer_func() - attempt_started, 0.0)
             classified = classify_download_exception(error)
             final_error = classified
             mark_manifest_download_error(
@@ -330,7 +341,9 @@ def process_manifest_download_row(
 
             if classified.retryable and attempt_index < max_retries:
                 if retry_wait_sec > 0:
+                    retry_wait_started = timer_func()
                     sleep_func(retry_wait_sec)
+                    retry_wait_elapsed_seconds += max(timer_func() - retry_wait_started, 0.0)
                 continue
 
             row.clear()
@@ -340,6 +353,8 @@ def process_manifest_download_row(
                 "doc_id": doc_id,
                 "path": str(output_path),
                 "attempts_used": attempt_index + 1,
+                "download_elapsed_seconds": round(download_elapsed_seconds, 3),
+                "retry_wait_elapsed_seconds": round(retry_wait_elapsed_seconds, 3),
                 "error_type": normalized["download_error_type"],
                 "retryable": bool(normalized["download_error_retryable"]),
                 "status_code": normalized["download_http_status"],
@@ -357,6 +372,8 @@ def process_manifest_download_row(
         "doc_id": doc_id,
         "path": str(output_path),
         "attempts_used": max_retries + 1,
+        "download_elapsed_seconds": round(download_elapsed_seconds, 3),
+        "retry_wait_elapsed_seconds": round(retry_wait_elapsed_seconds, 3),
         "error_type": final_error.error_type if final_error else "unexpected_error",
         "retryable": final_error.retryable if final_error else False,
         "status_code": final_error.status_code if final_error else "",

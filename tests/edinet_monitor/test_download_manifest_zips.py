@@ -139,6 +139,7 @@ class DownloadManifestZipsTest(unittest.TestCase):
         zip_path = tmpdir / "2026-04-01" / "S100AAAA.zip"
         row = build_manifest_row("S100AAAA", zip_path=str(zip_path))
         call_count = {"value": 0}
+        timer_values = iter([0.0, 1.0, 1.5, 3.0, 4.0, 6.0])
 
         def flaky_downloader(
             *,
@@ -159,11 +160,15 @@ class DownloadManifestZipsTest(unittest.TestCase):
             api_key="dummy-key",
             downloader=flaky_downloader,
             max_retries=1,
-            retry_wait_sec=0,
+            retry_wait_sec=1.0,
+            sleep_func=lambda _: None,
+            timer_func=lambda: next(timer_values),
         )
 
         self.assertEqual(result["result"], "downloaded")
         self.assertEqual(result["attempts_used"], 2)
+        self.assertEqual(result["download_elapsed_seconds"], 3.0)
+        self.assertEqual(result["retry_wait_elapsed_seconds"], 1.5)
         self.assertEqual(row["download_status"], "downloaded")
         self.assertEqual(row["download_attempts"], 2)
         self.assertEqual(call_count["value"], 2)
@@ -290,6 +295,7 @@ class DownloadManifestZipsTest(unittest.TestCase):
         ]
         write_manifest_rows(manifest_path, rows)
         cooldown_calls: list[float] = []
+        timer_values = iter([0.0, 2.0, 5.0, 8.0, 10.0, 14.0])
 
         def failing_downloader(**_: object) -> Path:
             raise DownloadDocumentZipError("timeout", retryable=True)
@@ -300,16 +306,21 @@ class DownloadManifestZipsTest(unittest.TestCase):
             batch_size=10,
             run_all=True,
             downloader=failing_downloader,
+            max_retries=0,
             progress_every=0,
             cooldown_failure_streak=2,
             cooldown_sec=3.5,
             sleep_func=cooldown_calls.append,
+            timer_func=lambda: next(timer_values),
         )
 
         self.assertEqual(summary["error_total"], 2)
         self.assertEqual(summary["cooldown_count"], 1)
         self.assertEqual(cooldown_calls[-1], 3.5)
         self.assertEqual(summary["error_type_totals"], {"timeout": 2})
+        self.assertEqual(summary["download_elapsed_seconds"], 5.0)
+        self.assertEqual(summary["retry_wait_elapsed_seconds"], 0.0)
+        self.assertEqual(summary["cooldown_elapsed_seconds"], 4.0)
 
     def test_matches_manifest_row_submit_filter_combines_date_and_time(self) -> None:
         row = build_manifest_row("S100AAAA", zip_path=r"D:\dummy\a.zip")

@@ -228,6 +228,9 @@ def run_zip_backfill(
     total_existing = 0
     total_errors = 0
     total_cooldowns = 0
+    total_download_elapsed_seconds = 0.0
+    total_retry_wait_elapsed_seconds = 0.0
+    total_cooldown_elapsed_seconds = 0.0
     aggregate_error_type_totals: dict[str, int] = {}
     effective_profile_totals: dict[str, int] = {}
 
@@ -315,6 +318,9 @@ def run_zip_backfill(
                         "error_total": 0,
                         "processed_total": 0,
                         "cooldown_count": 0,
+                        "download_elapsed_seconds": 0.0,
+                        "retry_wait_elapsed_seconds": 0.0,
+                        "cooldown_elapsed_seconds": 0.0,
                         "error_type_totals": {},
                         "skipped": True,
                     }
@@ -355,6 +361,9 @@ def run_zip_backfill(
                     total_existing += int(download_summary.get("existing_total", 0))
                     total_errors += int(download_summary.get("error_total", 0))
                     total_cooldowns += int(download_summary.get("cooldown_count", 0))
+                    total_download_elapsed_seconds += float(download_summary.get("download_elapsed_seconds", 0.0) or 0.0)
+                    total_retry_wait_elapsed_seconds += float(download_summary.get("retry_wait_elapsed_seconds", 0.0) or 0.0)
+                    total_cooldown_elapsed_seconds += float(download_summary.get("cooldown_elapsed_seconds", 0.0) or 0.0)
                     for error_type, count in dict(download_summary.get("error_type_totals", {})).items():
                         aggregate_error_type_totals[error_type] = (
                             aggregate_error_type_totals.get(error_type, 0) + int(count)
@@ -370,6 +379,12 @@ def run_zip_backfill(
 
                 print(f"chunk_finished_at={chunk_finished_at_text}")
                 print(f"chunk_elapsed_seconds={chunk_elapsed_seconds}")
+                print(
+                    "chunk_download_timing_seconds "
+                    f"download={round(float(download_summary.get('download_elapsed_seconds', 0.0) or 0.0), 3)} "
+                    f"retry_wait={round(float(download_summary.get('retry_wait_elapsed_seconds', 0.0) or 0.0), 3)} "
+                    f"cooldown={round(float(download_summary.get('cooldown_elapsed_seconds', 0.0) or 0.0), 3)}"
+                )
                 print(f"chunk_run_status={chunk_status}")
 
                 chunk_log_writer(
@@ -393,6 +408,18 @@ def run_zip_backfill(
                         "existing_total": int(download_summary.get("existing_total", 0) or 0),
                         "error_total": int(download_summary.get("error_total", 0) or 0),
                         "cooldown_count": int(download_summary.get("cooldown_count", 0) or 0),
+                        "download_elapsed_seconds": round(
+                            float(download_summary.get("download_elapsed_seconds", 0.0) or 0.0),
+                            3,
+                        ),
+                        "retry_wait_elapsed_seconds": round(
+                            float(download_summary.get("retry_wait_elapsed_seconds", 0.0) or 0.0),
+                            3,
+                        ),
+                        "cooldown_elapsed_seconds": round(
+                            float(download_summary.get("cooldown_elapsed_seconds", 0.0) or 0.0),
+                            3,
+                        ),
                         "error_type_totals": dict(sorted(dict(download_summary.get("error_type_totals", {})).items())),
                     },
                 )
@@ -406,6 +433,18 @@ def run_zip_backfill(
                     "chunk_started_at": chunk_started_at_text,
                     "chunk_finished_at": chunk_finished_at_text,
                     "chunk_elapsed_seconds": chunk_elapsed_seconds,
+                    "chunk_download_elapsed_seconds": round(
+                        float(download_summary.get("download_elapsed_seconds", 0.0) or 0.0),
+                        3,
+                    ),
+                    "chunk_retry_wait_elapsed_seconds": round(
+                        float(download_summary.get("retry_wait_elapsed_seconds", 0.0) or 0.0),
+                        3,
+                    ),
+                    "chunk_cooldown_elapsed_seconds": round(
+                        float(download_summary.get("cooldown_elapsed_seconds", 0.0) or 0.0),
+                        3,
+                    ),
                     "chunk_status": chunk_status,
                     "collect_summary": collect_summary,
                     "manifest_summary": manifest_summary,
@@ -430,6 +469,9 @@ def run_zip_backfill(
         print(f"backfill_existing_total={total_existing}")
         print(f"backfill_error_total={total_errors}")
         print(f"backfill_cooldown_total={total_cooldowns}")
+        print(f"backfill_download_elapsed_seconds={round(total_download_elapsed_seconds, 3)}")
+        print(f"backfill_retry_wait_elapsed_seconds={round(total_retry_wait_elapsed_seconds, 3)}")
+        print(f"backfill_cooldown_elapsed_seconds={round(total_cooldown_elapsed_seconds, 3)}")
         profile_parts = [f"{profile_name}:{count}" for profile_name, count in sorted(effective_profile_totals.items())]
         print(f"backfill_effective_profile_totals={'|'.join(profile_parts)}")
         if aggregate_error_type_totals:
@@ -461,6 +503,9 @@ def run_zip_backfill(
                 "existing_total": total_existing,
                 "error_total": total_errors,
                 "cooldown_total": total_cooldowns,
+                "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
+                "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
+                "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
                 "effective_profile_totals": dict(sorted(effective_profile_totals.items())),
                 "error_type_totals": dict(sorted(aggregate_error_type_totals.items())),
             },
@@ -481,6 +526,9 @@ def run_zip_backfill(
         "existing_total": total_existing,
         "error_total": total_errors,
         "cooldown_total": total_cooldowns,
+        "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
+        "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
+        "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
         "effective_profile_totals": dict(sorted(effective_profile_totals.items())),
         "error_type_totals": dict(sorted(aggregate_error_type_totals.items())),
         "monthly_results": monthly_results,

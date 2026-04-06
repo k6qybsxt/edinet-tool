@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from time import sleep
 from typing import Any, Callable
 
@@ -172,6 +173,9 @@ def print_progress_snapshot(
     downloaded_total: int,
     existing_total: int,
     error_total: int,
+    download_elapsed_seconds: float,
+    retry_wait_elapsed_seconds: float,
+    cooldown_elapsed_seconds: float,
     retry_errors: bool,
     target_date_text: str,
     date_from_text: str,
@@ -202,6 +206,9 @@ def print_progress_snapshot(
     print(f"{label}_downloaded_total={downloaded_total}")
     print(f"{label}_existing_total={existing_total}")
     print(f"{label}_error_total={error_total}")
+    print(f"{label}_download_elapsed_seconds={round(download_elapsed_seconds, 3)}")
+    print(f"{label}_retry_wait_elapsed_seconds={round(retry_wait_elapsed_seconds, 3)}")
+    print(f"{label}_cooldown_elapsed_seconds={round(cooldown_elapsed_seconds, 3)}")
     print(f"{label}_remaining_total={len(remaining_rows)}")
     print(f"{label}_filtered_manifest_rows={filtered_summary['manifest_rows']}")
     print(f"{label}_filtered_pending_rows={filtered_summary['pending_rows']}")
@@ -233,6 +240,7 @@ def run_download_manifest_zips(
     submit_time_to_text: str = "",
     downloader: Callable[..., Path] = download_document_zip,
     sleep_func: Callable[[float], None] = sleep,
+    timer_func: Callable[[], float] = perf_counter,
 ) -> dict[str, Any]:
     rows = read_manifest_rows(manifest_path)
     if not rows:
@@ -256,6 +264,9 @@ def run_download_manifest_zips(
     total_processed = 0
     consecutive_cooldown_errors = 0
     cooldown_count = 0
+    total_download_elapsed_seconds = 0.0
+    total_retry_wait_elapsed_seconds = 0.0
+    total_cooldown_elapsed_seconds = 0.0
     error_type_totals: dict[str, int] = {}
 
     initial_summary = build_filtered_manifest_summary(
@@ -319,9 +330,12 @@ def run_download_manifest_zips(
                 max_retries=max_retries,
                 retry_wait_sec=retry_wait_sec,
                 sleep_func=sleep_func,
+                timer_func=timer_func,
             )
             rows[idx] = row
             total_processed += 1
+            total_download_elapsed_seconds += float(result.get("download_elapsed_seconds", 0.0) or 0.0)
+            total_retry_wait_elapsed_seconds += float(result.get("retry_wait_elapsed_seconds", 0.0) or 0.0)
 
             if result["result"] == "existing":
                 total_existing += 1
@@ -366,6 +380,9 @@ def run_download_manifest_zips(
                     downloaded_total=total_downloaded,
                     existing_total=total_existing,
                     error_total=total_errors,
+                    download_elapsed_seconds=total_download_elapsed_seconds,
+                    retry_wait_elapsed_seconds=total_retry_wait_elapsed_seconds,
+                    cooldown_elapsed_seconds=total_cooldown_elapsed_seconds,
                     retry_errors=retry_errors,
                     target_date_text=submit_date_text,
                     date_from_text=submit_date_from_text,
@@ -384,7 +401,9 @@ def run_download_manifest_zips(
                     f"cooldown_start consecutive_failures={consecutive_cooldown_errors} "
                     f"cooldown_sec={cooldown_sec}"
                 )
+                cooldown_started = timer_func()
                 sleep_func(cooldown_sec)
+                total_cooldown_elapsed_seconds += max(timer_func() - cooldown_started, 0.0)
                 print("cooldown_end=1")
                 consecutive_cooldown_errors = 0
 
@@ -404,6 +423,9 @@ def run_download_manifest_zips(
         downloaded_total=total_downloaded,
         existing_total=total_existing,
         error_total=total_errors,
+        download_elapsed_seconds=total_download_elapsed_seconds,
+        retry_wait_elapsed_seconds=total_retry_wait_elapsed_seconds,
+        cooldown_elapsed_seconds=total_cooldown_elapsed_seconds,
         retry_errors=retry_errors,
         target_date_text=submit_date_text,
         date_from_text=submit_date_from_text,
@@ -418,6 +440,9 @@ def run_download_manifest_zips(
     print(f"download_error_total={total_errors}")
     print(f"processed_total={total_processed}")
     print(f"cooldown_count={cooldown_count}")
+    print(f"download_elapsed_seconds={round(total_download_elapsed_seconds, 3)}")
+    print(f"retry_wait_elapsed_seconds={round(total_retry_wait_elapsed_seconds, 3)}")
+    print(f"cooldown_elapsed_seconds={round(total_cooldown_elapsed_seconds, 3)}")
     print_error_type_counts(label="run", error_type_counts=error_type_totals)
 
     return {
@@ -429,6 +454,9 @@ def run_download_manifest_zips(
         "error_total": total_errors,
         "processed_total": total_processed,
         "cooldown_count": cooldown_count,
+        "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
+        "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
+        "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
         "error_type_totals": dict(sorted(error_type_totals.items())),
         "initial_summary": initial_summary,
         "final_summary": build_filtered_manifest_summary(
