@@ -29,6 +29,11 @@ from edinet_monitor.services.storage.manifest_service import (
 )
 
 
+AUTO_DOWNLOAD_PROFILE = "auto"
+AUTO_DOWNLOAD_PROFILE_MANIFEST_GRANULARITY = "month"
+AUTO_DOWNLOAD_PEAK_THRESHOLD = 100
+
+
 @dataclass(frozen=True)
 class BackfillChunk:
     chunk_key: str
@@ -112,7 +117,23 @@ def resolve_manifest_granularity(*, manifest_granularity: str, download_profile:
         if normalized not in {"month", "day"}:
             raise ValueError("manifest_granularity must be 'month' or 'day'.")
         return normalized
+    if download_profile == AUTO_DOWNLOAD_PROFILE:
+        return AUTO_DOWNLOAD_PROFILE_MANIFEST_GRANULARITY
     return DOWNLOAD_PROFILES[download_profile].manifest_granularity
+
+
+def resolve_effective_download_profile(
+    *,
+    requested_profile: str,
+    manifest_rows: int,
+    auto_peak_threshold: int,
+) -> str:
+    normalized = str(requested_profile or DOWNLOAD_PROFILE_DEFAULT).strip().lower() or DOWNLOAD_PROFILE_DEFAULT
+    if normalized != AUTO_DOWNLOAD_PROFILE:
+        return normalized
+    if manifest_rows >= auto_peak_threshold:
+        return "peak"
+    return "normal"
 
 
 def run_zip_backfill(
@@ -127,6 +148,7 @@ def run_zip_backfill(
     overwrite_manifests: bool = False,
     month_limit: int = 0,
     download_profile: str = DOWNLOAD_PROFILE_DEFAULT,
+    download_auto_peak_threshold: int = AUTO_DOWNLOAD_PEAK_THRESHOLD,
     download_batch_size: int | None = None,
     download_run_all: bool = False,
     download_retry_errors: bool = False,
@@ -150,23 +172,13 @@ def run_zip_backfill(
     ensure_dirs_func: Callable[[], None] = ensure_data_dirs,
 ) -> dict[str, Any]:
     ensure_dirs_func()
-    runtime_settings = resolve_download_runtime_settings(
-        profile_name=download_profile,
-        batch_size=download_batch_size,
-        connect_timeout_sec=download_connect_timeout_sec,
-        read_timeout_sec=download_read_timeout_sec,
-        max_retries=download_max_retries,
-        retry_wait_sec=download_retry_wait_sec,
-        progress_every=download_progress_every,
-        cooldown_failure_streak=download_cooldown_failure_streak,
-        cooldown_sec=download_cooldown_sec,
-    )
     manifest_granularity = resolve_manifest_granularity(
         manifest_granularity=manifest_granularity,
-        download_profile=runtime_settings["profile_name"],
+        download_profile=download_profile,
     )
 
-    print(f"download_profile={runtime_settings['profile_name']}")
+    print(f"requested_download_profile={download_profile}")
+    print(f"download_auto_peak_threshold={download_auto_peak_threshold}")
     print(f"manifest_granularity={manifest_granularity}")
 
     allowed_edinet_codes = allowed_codes_loader(master_csv_path)
@@ -182,6 +194,7 @@ def run_zip_backfill(
     total_errors = 0
     total_cooldowns = 0
     aggregate_error_type_totals: dict[str, int] = {}
+    effective_profile_totals: dict[str, int] = {}
 
     for chunk in chunks:
         manifest_name = build_chunk_manifest_name(manifest_prefix, chunk.chunk_key)
@@ -224,6 +237,15 @@ def run_zip_backfill(
 
         manifest_summary = summarize_manifest_rows(read_manifest_rows(manifest_path))
         total_manifest_rows += int(manifest_summary["manifest_rows"])
+        effective_profile_name = resolve_effective_download_profile(
+            requested_profile=download_profile,
+            manifest_rows=int(manifest_summary["manifest_rows"]),
+            auto_peak_threshold=download_auto_peak_threshold,
+        )
+        effective_profile_totals[effective_profile_name] = effective_profile_totals.get(effective_profile_name, 0) + 1
+
+        print(f"chunk_manifest_rows={manifest_summary['manifest_rows']}")
+        print(f"chunk_effective_download_profile={effective_profile_name}")
 
         if prepare_only:
             download_summary = {
@@ -240,6 +262,17 @@ def run_zip_backfill(
             }
             print("download_skipped=1")
         else:
+            runtime_settings = resolve_download_runtime_settings(
+                profile_name=effective_profile_name,
+                batch_size=download_batch_size,
+                connect_timeout_sec=download_connect_timeout_sec,
+                read_timeout_sec=download_read_timeout_sec,
+                max_retries=download_max_retries,
+                retry_wait_sec=download_retry_wait_sec,
+                progress_every=download_progress_every,
+                cooldown_failure_streak=download_cooldown_failure_streak,
+                cooldown_sec=download_cooldown_sec,
+            )
             download_summary = download_func(
                 api_key=api_key,
                 manifest_path=manifest_path,
@@ -272,6 +305,7 @@ def run_zip_backfill(
                 "chunk_key": chunk.chunk_key,
                 "manifest_name": manifest_name,
                 "manifest_path": str(manifest_path),
+                "effective_download_profile": effective_profile_name,
                 "collect_summary": collect_summary,
                 "manifest_summary": manifest_summary,
                 "download_summary": download_summary,
@@ -284,6 +318,8 @@ def run_zip_backfill(
     print(f"backfill_existing_total={total_existing}")
     print(f"backfill_error_total={total_errors}")
     print(f"backfill_cooldown_total={total_cooldowns}")
+    profile_parts = [f"{profile_name}:{count}" for profile_name, count in sorted(effective_profile_totals.items())]
+    print(f"backfill_effective_profile_totals={'|'.join(profile_parts)}")
     if aggregate_error_type_totals:
         parts = [f"{error_type}:{count}" for error_type, count in sorted(aggregate_error_type_totals.items())]
         print(f"backfill_error_type_totals={'|'.join(parts)}")
@@ -298,6 +334,7 @@ def run_zip_backfill(
         "existing_total": total_existing,
         "error_total": total_errors,
         "cooldown_total": total_cooldowns,
+        "effective_profile_totals": dict(sorted(effective_profile_totals.items())),
         "error_type_totals": dict(sorted(aggregate_error_type_totals.items())),
         "monthly_results": monthly_results,
     }
@@ -338,9 +375,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--month-limit", type=int, default=0, help="Optional cap for generated chunks.")
     parser.add_argument(
         "--download-profile",
-        choices=sorted(DOWNLOAD_PROFILES.keys()),
+        choices=sorted([*DOWNLOAD_PROFILES.keys(), AUTO_DOWNLOAD_PROFILE]),
         default=os.getenv("EDINET_DOWNLOAD_PROFILE", DOWNLOAD_PROFILE_DEFAULT).strip().lower() or DOWNLOAD_PROFILE_DEFAULT,
     )
+    parser.add_argument("--download-auto-peak-threshold", type=int, default=AUTO_DOWNLOAD_PEAK_THRESHOLD)
     parser.add_argument("--download-batch-size", type=int, default=None)
     parser.add_argument("--download-run-all", action="store_true")
     parser.add_argument("--download-retry-errors", action="store_true")
@@ -414,6 +452,7 @@ def main() -> None:
         overwrite_manifests=args.overwrite_manifests,
         month_limit=args.month_limit,
         download_profile=args.download_profile,
+        download_auto_peak_threshold=args.download_auto_peak_threshold,
         download_batch_size=args.download_batch_size,
         download_run_all=args.download_run_all,
         download_retry_errors=args.download_retry_errors,

@@ -14,9 +14,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from edinet_monitor.cli.run_zip_backfill import (  # noqa: E402
+    AUTO_DOWNLOAD_PEAK_THRESHOLD,
     build_month_manifest_name,
     iter_manifest_chunks,
     iter_month_chunks,
+    resolve_effective_download_profile,
     resolve_manifest_granularity,
     run_zip_backfill,
 )
@@ -58,6 +60,33 @@ class RunZipBackfillTest(unittest.TestCase):
     def test_resolve_manifest_granularity_uses_profile_default_when_empty(self) -> None:
         self.assertEqual(resolve_manifest_granularity(manifest_granularity="", download_profile="peak"), "day")
         self.assertEqual(resolve_manifest_granularity(manifest_granularity="month", download_profile="peak"), "month")
+        self.assertEqual(resolve_manifest_granularity(manifest_granularity="", download_profile="auto"), "month")
+
+    def test_resolve_effective_download_profile_uses_threshold_for_auto(self) -> None:
+        self.assertEqual(
+            resolve_effective_download_profile(
+                requested_profile="auto",
+                manifest_rows=AUTO_DOWNLOAD_PEAK_THRESHOLD - 1,
+                auto_peak_threshold=AUTO_DOWNLOAD_PEAK_THRESHOLD,
+            ),
+            "normal",
+        )
+        self.assertEqual(
+            resolve_effective_download_profile(
+                requested_profile="auto",
+                manifest_rows=AUTO_DOWNLOAD_PEAK_THRESHOLD,
+                auto_peak_threshold=AUTO_DOWNLOAD_PEAK_THRESHOLD,
+            ),
+            "peak",
+        )
+        self.assertEqual(
+            resolve_effective_download_profile(
+                requested_profile="normal",
+                manifest_rows=999,
+                auto_peak_threshold=AUTO_DOWNLOAD_PEAK_THRESHOLD,
+            ),
+            "normal",
+        )
 
     def test_run_zip_backfill_prepare_only_creates_monthly_manifests(self) -> None:
         tmpdir = make_tempdir()
@@ -224,6 +253,70 @@ class RunZipBackfillTest(unittest.TestCase):
         )
 
         self.assertEqual(manifest_names, ["document_manifest_2026-04-01", "document_manifest_2026-04-02"])
+
+    def test_run_zip_backfill_auto_profile_uses_peak_when_manifest_rows_hit_threshold(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        observed_profiles: list[tuple[int, int]] = []
+
+        def fake_collect(
+            target_dates: list[date],
+            *,
+            api_key: str,
+            allowed_edinet_codes: set[str],
+            manifest_path: Path,
+            append: bool = False,
+            overwrite: bool = False,
+            fetcher=None,
+        ) -> dict[str, object]:
+            row_count = 3 if target_dates[0].month == 1 else 1
+            rows = [
+                {
+                    "doc_id": f"S100{target_dates[0].month:02d}{index:02d}",
+                    "company_name": "テスト株式会社",
+                    "submit_date": f"{target_dates[0].isoformat()} 09:00",
+                    "download_status": "pending",
+                }
+                for index in range(row_count)
+            ]
+            write_manifest_rows(manifest_path, rows)
+            return {"manifest_path": str(manifest_path), "saved_manifest_rows": row_count, "totals": {"incoming_manifest_rows": row_count}}
+
+        def fake_download(**kwargs: object) -> dict[str, object]:
+            observed_profiles.append((int(kwargs["batch_size"]), int(kwargs["read_timeout_sec"])))
+            return {
+                "downloaded_total": 0,
+                "existing_total": 0,
+                "error_total": 0,
+                "manifest_rows": 0,
+                "target_total": 0,
+                "processed_total": 0,
+                "cooldown_count": 0,
+                "error_type_totals": {},
+            }
+
+        summary = run_zip_backfill(
+            api_key="dummy-key",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 2, 1),
+            manifest_prefix="document_manifest",
+            master_csv_path=tmpdir / "issuer_master.csv",
+            download_profile="auto",
+            download_auto_peak_threshold=2,
+            collect_func=fake_collect,
+            download_func=fake_download,
+            allowed_codes_loader=lambda _: {"E00001"},
+            manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
+            ensure_dirs_func=lambda: None,
+        )
+
+        self.assertEqual(len(observed_profiles), 2)
+        january_batch_size, january_read_timeout = observed_profiles[0]
+        february_batch_size, february_read_timeout = observed_profiles[1]
+        self.assertEqual(january_batch_size, 10)
+        self.assertEqual(february_batch_size, 20)
+        self.assertGreater(january_read_timeout, february_read_timeout)
+        self.assertEqual(summary["effective_profile_totals"], {"normal": 1, "peak": 1})
 
 
 if __name__ == "__main__":
