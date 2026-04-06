@@ -7,13 +7,25 @@ from pathlib import Path
 DEFAULT_ROOT = Path(r"C:\Users\silve\EDINET_Pipeline")
 EXCLUDE_DIRS = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".vscode"}
 EXCLUDE_FILES = set()
+PRUNE_PATHS = {
+    Path(r"D:\EDINET_Data\edinet_monitor\raw\zip").resolve(),
+    Path(r"D:\EDINET_Data\edinet_monitor\raw\xbrl").resolve(),
+    Path(r"D:\EDINET_Data\edinet_monitor\raw\manifests").resolve(),
+}
 
 
 def is_excluded(path: Path) -> bool:
     return any(part in EXCLUDE_DIRS for part in path.parts) or path.name in EXCLUDE_FILES
 
 
+def is_pruned(path: Path) -> bool:
+    return path.resolve() in PRUNE_PATHS
+
+
 def build_tree(path: Path, prefix: str = "") -> list[str]:
+    if is_pruned(path):
+        return [prefix + "[contents omitted]"]
+
     entries = [
         p for p in sorted(path.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
         if not is_excluded(p)
