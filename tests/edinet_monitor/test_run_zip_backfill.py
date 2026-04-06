@@ -95,6 +95,7 @@ class RunZipBackfillTest(unittest.TestCase):
         manifest_calls: list[tuple[str, Path]] = []
         manifest_path_builder = lambda manifest_name: tmpdir / f"{manifest_name}.jsonl"
         run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+        chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -139,6 +140,7 @@ class RunZipBackfillTest(unittest.TestCase):
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=manifest_path_builder,
             run_log_path=run_log_path,
+            chunk_log_path=chunk_log_path,
             ensure_dirs_func=lambda: None,
         )
 
@@ -147,11 +149,13 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(summary["downloaded_total"], 0)
         self.assertEqual(summary["error_total"], 0)
         self.assertTrue(run_log_path.exists())
+        self.assertTrue(chunk_log_path.exists())
 
-    def test_run_zip_backfill_writes_timing_log(self) -> None:
+    def test_run_zip_backfill_writes_timing_logs(self) -> None:
         tmpdir = make_tempdir()
         self.addCleanup(shutil.rmtree, tmpdir, True)
         run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+        chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -191,10 +195,12 @@ class RunZipBackfillTest(unittest.TestCase):
         timestamp_values = iter(
             [
                 datetime(2026, 4, 6, 12, 0, 0),
+                datetime(2026, 4, 6, 12, 0, 5),
+                datetime(2026, 4, 6, 12, 1, 0),
                 datetime(2026, 4, 6, 12, 1, 30),
             ]
         )
-        timer_values = iter([10.0, 100.0])
+        timer_values = iter([10.0, 20.0, 55.0, 100.0])
 
         summary = run_zip_backfill(
             api_key="dummy-key",
@@ -207,6 +213,7 @@ class RunZipBackfillTest(unittest.TestCase):
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
             run_log_path=run_log_path,
+            chunk_log_path=chunk_log_path,
             timestamp_now_func=lambda: next(timestamp_values),
             timer_func=lambda: next(timer_values),
             ensure_dirs_func=lambda: None,
@@ -215,7 +222,9 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(summary["started_at"], "2026-04-06 12:00:00")
         self.assertEqual(summary["finished_at"], "2026-04-06 12:01:30")
         self.assertEqual(summary["elapsed_seconds"], 90.0)
+        self.assertEqual(summary["run_id"].startswith("backfill_20260406_120000_"), True)
         self.assertTrue(run_log_path.exists())
+        self.assertTrue(chunk_log_path.exists())
 
         with run_log_path.open("r", encoding="utf-8") as f:
             records = [json.loads(line) for line in f if line.strip()]
@@ -226,12 +235,27 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(records[0]["elapsed_seconds"], 90.0)
         self.assertEqual(records[0]["run_status"], "completed")
 
+        with chunk_log_path.open("r", encoding="utf-8") as f:
+            chunk_records = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(chunk_records), 1)
+        self.assertEqual(chunk_records[0]["chunk_key"], "2026-04")
+        self.assertEqual(chunk_records[0]["started_at"], "2026-04-06 12:00:05")
+        self.assertEqual(chunk_records[0]["finished_at"], "2026-04-06 12:01:00")
+        self.assertEqual(chunk_records[0]["elapsed_seconds"], 35.0)
+        self.assertEqual(chunk_records[0]["chunk_status"], "completed")
+        self.assertEqual(chunk_records[0]["manifest_rows"], 1)
+        self.assertEqual(chunk_records[0]["run_id"], records[0]["run_id"])
+        self.assertEqual(summary["monthly_results"][0]["chunk_key"], "2026-04")
+        self.assertEqual(summary["monthly_results"][0]["chunk_status"], "completed")
+
     def test_run_zip_backfill_reuses_existing_manifest_without_overwrite(self) -> None:
         tmpdir = make_tempdir()
         self.addCleanup(shutil.rmtree, tmpdir, True)
         manifest_path = tmpdir / "document_manifest_2026-03.jsonl"
         manifest_path_builder = lambda manifest_name: tmpdir / f"{manifest_name}.jsonl"
         run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+        chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
         write_manifest_rows(
             manifest_path,
             [
@@ -273,6 +297,7 @@ class RunZipBackfillTest(unittest.TestCase):
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=manifest_path_builder,
             run_log_path=run_log_path,
+            chunk_log_path=chunk_log_path,
             ensure_dirs_func=lambda: None,
         )
 
@@ -285,6 +310,7 @@ class RunZipBackfillTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, True)
         manifest_names: list[str] = []
         run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+        chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -335,6 +361,7 @@ class RunZipBackfillTest(unittest.TestCase):
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
             run_log_path=run_log_path,
+            chunk_log_path=chunk_log_path,
             ensure_dirs_func=lambda: None,
         )
 
@@ -345,6 +372,7 @@ class RunZipBackfillTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, True)
         observed_profiles: list[tuple[int, int]] = []
         run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+        chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -395,6 +423,7 @@ class RunZipBackfillTest(unittest.TestCase):
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
             run_log_path=run_log_path,
+            chunk_log_path=chunk_log_path,
             ensure_dirs_func=lambda: None,
         )
 

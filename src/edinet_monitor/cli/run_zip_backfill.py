@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
+from uuid import uuid4
 
 from edinet_monitor.cli.collect_document_list_to_manifest import (
     collect_document_manifest_for_dates,
@@ -19,6 +20,7 @@ from edinet_monitor.cli.download_manifest_zips import (
     run_download_manifest_zips,
 )
 from edinet_monitor.config.settings import (
+    ZIP_BACKFILL_CHUNK_LOG_PATH,
     DOWNLOAD_PROFILE_DEFAULT,
     TSE_LISTING_MASTER_CSV_PATH,
     ZIP_BACKFILL_RUN_LOG_PATH,
@@ -151,6 +153,14 @@ def append_backfill_run_log(run_log_path: Path, row: dict[str, Any]) -> None:
         f.write("\n")
 
 
+def append_backfill_chunk_log(chunk_log_path: Path, row: dict[str, Any]) -> None:
+    target_path = Path(chunk_log_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with target_path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(row, ensure_ascii=False))
+        f.write("\n")
+
+
 def run_zip_backfill(
     *,
     api_key: str,
@@ -181,6 +191,7 @@ def run_zip_backfill(
     download_submit_time_from_text: str = "",
     download_submit_time_to_text: str = "",
     run_log_path: Path = ZIP_BACKFILL_RUN_LOG_PATH,
+    chunk_log_path: Path = ZIP_BACKFILL_CHUNK_LOG_PATH,
     collect_func: Callable[..., dict[str, Any]] = collect_document_manifest_for_dates,
     download_func: Callable[..., dict[str, Any]] = run_download_manifest_zips,
     allowed_codes_loader: Callable[[Path], set[str]] = load_allowed_edinet_codes,
@@ -189,6 +200,7 @@ def run_zip_backfill(
     timestamp_now_func: Callable[[], datetime] = datetime.now,
     timer_func: Callable[[], float] = perf_counter,
     run_log_writer: Callable[[Path, dict[str, Any]], None] = append_backfill_run_log,
+    chunk_log_writer: Callable[[Path, dict[str, Any]], None] = append_backfill_chunk_log,
 ) -> dict[str, Any]:
     ensure_dirs_func()
     manifest_granularity = resolve_manifest_granularity(
@@ -199,12 +211,15 @@ def run_zip_backfill(
     started_at = timestamp_now_func()
     started_at_text = format_run_timestamp(started_at)
     timer_started = timer_func()
+    run_id = f"backfill_{started_at.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
 
     print(f"backfill_started_at={started_at_text}")
+    print(f"backfill_run_id={run_id}")
     print(f"requested_download_profile={download_profile}")
     print(f"download_auto_peak_threshold={download_auto_peak_threshold}")
     print(f"manifest_granularity={manifest_granularity}")
     print(f"backfill_run_log_path={run_log_path}")
+    print(f"backfill_chunk_log_path={chunk_log_path}")
 
     chunks: list[BackfillChunk] = []
     monthly_results: list[dict[str, Any]] = []
@@ -230,109 +245,157 @@ def run_zip_backfill(
             manifest_name = build_chunk_manifest_name(manifest_prefix, chunk.chunk_key)
             manifest_path = manifest_path_builder(manifest_name)
             manifest_exists = manifest_path.exists()
+            chunk_started_at = timestamp_now_func()
+            chunk_started_at_text = format_run_timestamp(chunk_started_at)
+            chunk_timer_started = timer_func()
+            chunk_status = "completed"
+            chunk_error = ""
+            collect_summary: dict[str, Any] = {}
+            manifest_summary: dict[str, Any] = {"manifest_rows": 0}
+            download_summary: dict[str, Any] = {}
+            effective_profile_name = ""
 
             print(f"chunk_key={chunk.chunk_key}")
+            print(f"chunk_started_at={chunk_started_at_text}")
             print(f"chunk_granularity={chunk.granularity}")
             print(f"chunk_date_from={chunk.start_date.isoformat()}")
             print(f"chunk_date_to={chunk.end_date.isoformat()}")
             print(f"chunk_manifest_path={manifest_path}")
             print(f"chunk_manifest_exists={manifest_exists}")
 
-            if not manifest_exists or overwrite_manifests:
-                collect_summary = collect_func(
-                    chunk.target_dates,
-                    api_key=api_key,
-                    allowed_edinet_codes=allowed_edinet_codes,
-                    manifest_path=manifest_path,
-                    overwrite=overwrite_manifests,
-                )
-            else:
-                existing_rows = read_manifest_rows(manifest_path)
-                collect_summary = {
-                    "target_dates": [target_date.isoformat() for target_date in chunk.target_dates],
-                    "manifest_path": str(manifest_path),
-                    "daily_summaries": [],
-                    "totals": {
-                        "dates": len(chunk.target_dates),
-                        "all_results": 0,
-                        "target_results": 0,
-                        "issuer_target_results": 0,
-                        "incoming_manifest_rows": 0,
-                    },
-                    "existing_manifest_rows": len(existing_rows),
-                    "saved_manifest_rows": len(existing_rows),
-                    "reused_existing_manifest": True,
-                }
-                print("manifest_reused_existing=1")
-
-            manifest_summary = summarize_manifest_rows(read_manifest_rows(manifest_path))
-            total_manifest_rows += int(manifest_summary["manifest_rows"])
-            effective_profile_name = resolve_effective_download_profile(
-                requested_profile=download_profile,
-                manifest_rows=int(manifest_summary["manifest_rows"]),
-                auto_peak_threshold=download_auto_peak_threshold,
-            )
-            effective_profile_totals[effective_profile_name] = (
-                effective_profile_totals.get(effective_profile_name, 0) + 1
-            )
-
-            print(f"chunk_manifest_rows={manifest_summary['manifest_rows']}")
-            print(f"chunk_effective_download_profile={effective_profile_name}")
-
-            if prepare_only:
-                download_summary = {
-                    "manifest_path": str(manifest_path),
-                    "manifest_rows": manifest_summary["manifest_rows"],
-                    "target_total": 0,
-                    "downloaded_total": 0,
-                    "existing_total": 0,
-                    "error_total": 0,
-                    "processed_total": 0,
-                    "cooldown_count": 0,
-                    "error_type_totals": {},
-                    "skipped": True,
-                }
-                print("download_skipped=1")
-            else:
-                runtime_settings = resolve_download_runtime_settings(
-                    profile_name=effective_profile_name,
-                    batch_size=download_batch_size,
-                    connect_timeout_sec=download_connect_timeout_sec,
-                    read_timeout_sec=download_read_timeout_sec,
-                    max_retries=download_max_retries,
-                    retry_wait_sec=download_retry_wait_sec,
-                    progress_every=download_progress_every,
-                    cooldown_failure_streak=download_cooldown_failure_streak,
-                    cooldown_sec=download_cooldown_sec,
-                )
-                download_summary = download_func(
-                    api_key=api_key,
-                    manifest_path=manifest_path,
-                    batch_size=runtime_settings["batch_size"],
-                    run_all=download_run_all,
-                    retry_errors=download_retry_errors,
-                    max_docs=download_max_docs,
-                    connect_timeout_sec=runtime_settings["connect_timeout_sec"],
-                    read_timeout_sec=runtime_settings["read_timeout_sec"],
-                    max_retries=runtime_settings["max_retries"],
-                    retry_wait_sec=runtime_settings["retry_wait_sec"],
-                    progress_every=runtime_settings["progress_every"],
-                    cooldown_failure_streak=runtime_settings["cooldown_failure_streak"],
-                    cooldown_sec=runtime_settings["cooldown_sec"],
-                    submit_date_text=download_submit_date_text,
-                    submit_date_from_text=download_submit_date_from_text,
-                    submit_date_to_text=download_submit_date_to_text,
-                    submit_time_from_text=download_submit_time_from_text,
-                    submit_time_to_text=download_submit_time_to_text,
-                )
-                total_downloaded += int(download_summary.get("downloaded_total", 0))
-                total_existing += int(download_summary.get("existing_total", 0))
-                total_errors += int(download_summary.get("error_total", 0))
-                total_cooldowns += int(download_summary.get("cooldown_count", 0))
-                for error_type, count in dict(download_summary.get("error_type_totals", {})).items():
-                    aggregate_error_type_totals[error_type] = (
-                        aggregate_error_type_totals.get(error_type, 0) + int(count)
+            try:
+                if not manifest_exists or overwrite_manifests:
+                    collect_summary = collect_func(
+                        chunk.target_dates,
+                        api_key=api_key,
+                        allowed_edinet_codes=allowed_edinet_codes,
+                        manifest_path=manifest_path,
+                        overwrite=overwrite_manifests,
                     )
+                else:
+                    existing_rows = read_manifest_rows(manifest_path)
+                    collect_summary = {
+                        "target_dates": [target_date.isoformat() for target_date in chunk.target_dates],
+                        "manifest_path": str(manifest_path),
+                        "daily_summaries": [],
+                        "totals": {
+                            "dates": len(chunk.target_dates),
+                            "all_results": 0,
+                            "target_results": 0,
+                            "issuer_target_results": 0,
+                            "incoming_manifest_rows": 0,
+                        },
+                        "existing_manifest_rows": len(existing_rows),
+                        "saved_manifest_rows": len(existing_rows),
+                        "reused_existing_manifest": True,
+                    }
+                    print("manifest_reused_existing=1")
+
+                manifest_summary = summarize_manifest_rows(read_manifest_rows(manifest_path))
+                total_manifest_rows += int(manifest_summary["manifest_rows"])
+                effective_profile_name = resolve_effective_download_profile(
+                    requested_profile=download_profile,
+                    manifest_rows=int(manifest_summary["manifest_rows"]),
+                    auto_peak_threshold=download_auto_peak_threshold,
+                )
+                effective_profile_totals[effective_profile_name] = (
+                    effective_profile_totals.get(effective_profile_name, 0) + 1
+                )
+
+                print(f"chunk_manifest_rows={manifest_summary['manifest_rows']}")
+                print(f"chunk_effective_download_profile={effective_profile_name}")
+
+                if prepare_only:
+                    download_summary = {
+                        "manifest_path": str(manifest_path),
+                        "manifest_rows": manifest_summary["manifest_rows"],
+                        "target_total": 0,
+                        "downloaded_total": 0,
+                        "existing_total": 0,
+                        "error_total": 0,
+                        "processed_total": 0,
+                        "cooldown_count": 0,
+                        "error_type_totals": {},
+                        "skipped": True,
+                    }
+                    print("download_skipped=1")
+                else:
+                    runtime_settings = resolve_download_runtime_settings(
+                        profile_name=effective_profile_name,
+                        batch_size=download_batch_size,
+                        connect_timeout_sec=download_connect_timeout_sec,
+                        read_timeout_sec=download_read_timeout_sec,
+                        max_retries=download_max_retries,
+                        retry_wait_sec=download_retry_wait_sec,
+                        progress_every=download_progress_every,
+                        cooldown_failure_streak=download_cooldown_failure_streak,
+                        cooldown_sec=download_cooldown_sec,
+                    )
+                    download_summary = download_func(
+                        api_key=api_key,
+                        manifest_path=manifest_path,
+                        batch_size=runtime_settings["batch_size"],
+                        run_all=download_run_all,
+                        retry_errors=download_retry_errors,
+                        max_docs=download_max_docs,
+                        connect_timeout_sec=runtime_settings["connect_timeout_sec"],
+                        read_timeout_sec=runtime_settings["read_timeout_sec"],
+                        max_retries=runtime_settings["max_retries"],
+                        retry_wait_sec=runtime_settings["retry_wait_sec"],
+                        progress_every=runtime_settings["progress_every"],
+                        cooldown_failure_streak=runtime_settings["cooldown_failure_streak"],
+                        cooldown_sec=runtime_settings["cooldown_sec"],
+                        submit_date_text=download_submit_date_text,
+                        submit_date_from_text=download_submit_date_from_text,
+                        submit_date_to_text=download_submit_date_to_text,
+                        submit_time_from_text=download_submit_time_from_text,
+                        submit_time_to_text=download_submit_time_to_text,
+                    )
+                    total_downloaded += int(download_summary.get("downloaded_total", 0))
+                    total_existing += int(download_summary.get("existing_total", 0))
+                    total_errors += int(download_summary.get("error_total", 0))
+                    total_cooldowns += int(download_summary.get("cooldown_count", 0))
+                    for error_type, count in dict(download_summary.get("error_type_totals", {})).items():
+                        aggregate_error_type_totals[error_type] = (
+                            aggregate_error_type_totals.get(error_type, 0) + int(count)
+                        )
+            except Exception as exc:
+                chunk_status = "failed"
+                chunk_error = repr(exc)
+                raise
+            finally:
+                chunk_finished_at = timestamp_now_func()
+                chunk_finished_at_text = format_run_timestamp(chunk_finished_at)
+                chunk_elapsed_seconds = round(max(timer_func() - chunk_timer_started, 0.0), 3)
+
+                print(f"chunk_finished_at={chunk_finished_at_text}")
+                print(f"chunk_elapsed_seconds={chunk_elapsed_seconds}")
+                print(f"chunk_run_status={chunk_status}")
+
+                chunk_log_writer(
+                    chunk_log_path,
+                    {
+                        "run_id": run_id,
+                        "chunk_key": chunk.chunk_key,
+                        "chunk_granularity": chunk.granularity,
+                        "chunk_date_from": chunk.start_date.isoformat(),
+                        "chunk_date_to": chunk.end_date.isoformat(),
+                        "manifest_name": manifest_name,
+                        "manifest_path": str(manifest_path),
+                        "started_at": chunk_started_at_text,
+                        "finished_at": chunk_finished_at_text,
+                        "elapsed_seconds": chunk_elapsed_seconds,
+                        "chunk_status": chunk_status,
+                        "chunk_error": chunk_error,
+                        "manifest_rows": int(manifest_summary.get("manifest_rows", 0) or 0),
+                        "effective_download_profile": effective_profile_name,
+                        "downloaded_total": int(download_summary.get("downloaded_total", 0) or 0),
+                        "existing_total": int(download_summary.get("existing_total", 0) or 0),
+                        "error_total": int(download_summary.get("error_total", 0) or 0),
+                        "cooldown_count": int(download_summary.get("cooldown_count", 0) or 0),
+                        "error_type_totals": dict(sorted(dict(download_summary.get("error_type_totals", {})).items())),
+                    },
+                )
 
             monthly_results.append(
                 {
@@ -340,6 +403,10 @@ def run_zip_backfill(
                     "manifest_name": manifest_name,
                     "manifest_path": str(manifest_path),
                     "effective_download_profile": effective_profile_name,
+                    "chunk_started_at": chunk_started_at_text,
+                    "chunk_finished_at": chunk_finished_at_text,
+                    "chunk_elapsed_seconds": chunk_elapsed_seconds,
+                    "chunk_status": chunk_status,
                     "collect_summary": collect_summary,
                     "manifest_summary": manifest_summary,
                     "download_summary": download_summary,
@@ -374,6 +441,7 @@ def run_zip_backfill(
         run_log_writer(
             run_log_path,
             {
+                "run_id": run_id,
                 "started_at": started_at_text,
                 "finished_at": finished_at_text,
                 "elapsed_seconds": elapsed_seconds,
@@ -399,11 +467,13 @@ def run_zip_backfill(
         )
 
     return {
+        "run_id": run_id,
         "started_at": started_at_text,
         "finished_at": finished_at_text,
         "elapsed_seconds": elapsed_seconds,
         "run_status": run_status,
         "run_log_path": str(run_log_path),
+        "chunk_log_path": str(chunk_log_path),
         "months": len(chunks),
         "chunks": len(chunks),
         "manifest_rows_total": total_manifest_rows,
