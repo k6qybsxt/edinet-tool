@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 
@@ -93,6 +94,7 @@ class RunZipBackfillTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, True)
         manifest_calls: list[tuple[str, Path]] = []
         manifest_path_builder = lambda manifest_name: tmpdir / f"{manifest_name}.jsonl"
+        run_log_path = tmpdir / "zip_backfill_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -136,6 +138,7 @@ class RunZipBackfillTest(unittest.TestCase):
             download_func=fail_download,
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=manifest_path_builder,
+            run_log_path=run_log_path,
             ensure_dirs_func=lambda: None,
         )
 
@@ -143,12 +146,92 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(len(manifest_calls), 2)
         self.assertEqual(summary["downloaded_total"], 0)
         self.assertEqual(summary["error_total"], 0)
+        self.assertTrue(run_log_path.exists())
+
+    def test_run_zip_backfill_writes_timing_log(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+
+        def fake_collect(
+            target_dates: list[date],
+            *,
+            api_key: str,
+            allowed_edinet_codes: set[str],
+            manifest_path: Path,
+            append: bool = False,
+            overwrite: bool = False,
+            fetcher=None,
+        ) -> dict[str, object]:
+            write_manifest_rows(
+                manifest_path,
+                [
+                    {
+                        "doc_id": "S100AAAA",
+                        "company_name": "テスト株式会社",
+                        "submit_date": f"{target_dates[0].isoformat()} 09:00",
+                        "download_status": "pending",
+                    }
+                ],
+            )
+            return {"manifest_path": str(manifest_path), "saved_manifest_rows": 1, "totals": {"incoming_manifest_rows": 1}}
+
+        def fake_download(**_: object) -> dict[str, object]:
+            return {
+                "downloaded_total": 1,
+                "existing_total": 0,
+                "error_total": 0,
+                "manifest_rows": 1,
+                "target_total": 1,
+                "processed_total": 1,
+                "cooldown_count": 0,
+                "error_type_totals": {},
+            }
+
+        timestamp_values = iter(
+            [
+                datetime(2026, 4, 6, 12, 0, 0),
+                datetime(2026, 4, 6, 12, 1, 30),
+            ]
+        )
+        timer_values = iter([10.0, 100.0])
+
+        summary = run_zip_backfill(
+            api_key="dummy-key",
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 1),
+            manifest_prefix="document_manifest",
+            master_csv_path=tmpdir / "issuer_master.csv",
+            collect_func=fake_collect,
+            download_func=fake_download,
+            allowed_codes_loader=lambda _: {"E00001"},
+            manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
+            run_log_path=run_log_path,
+            timestamp_now_func=lambda: next(timestamp_values),
+            timer_func=lambda: next(timer_values),
+            ensure_dirs_func=lambda: None,
+        )
+
+        self.assertEqual(summary["started_at"], "2026-04-06 12:00:00")
+        self.assertEqual(summary["finished_at"], "2026-04-06 12:01:30")
+        self.assertEqual(summary["elapsed_seconds"], 90.0)
+        self.assertTrue(run_log_path.exists())
+
+        with run_log_path.open("r", encoding="utf-8") as f:
+            records = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["started_at"], "2026-04-06 12:00:00")
+        self.assertEqual(records[0]["finished_at"], "2026-04-06 12:01:30")
+        self.assertEqual(records[0]["elapsed_seconds"], 90.0)
+        self.assertEqual(records[0]["run_status"], "completed")
 
     def test_run_zip_backfill_reuses_existing_manifest_without_overwrite(self) -> None:
         tmpdir = make_tempdir()
         self.addCleanup(shutil.rmtree, tmpdir, True)
         manifest_path = tmpdir / "document_manifest_2026-03.jsonl"
         manifest_path_builder = lambda manifest_name: tmpdir / f"{manifest_name}.jsonl"
+        run_log_path = tmpdir / "zip_backfill_runs.jsonl"
         write_manifest_rows(
             manifest_path,
             [
@@ -189,6 +272,7 @@ class RunZipBackfillTest(unittest.TestCase):
             download_func=fake_download,
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=manifest_path_builder,
+            run_log_path=run_log_path,
             ensure_dirs_func=lambda: None,
         )
 
@@ -200,6 +284,7 @@ class RunZipBackfillTest(unittest.TestCase):
         tmpdir = make_tempdir()
         self.addCleanup(shutil.rmtree, tmpdir, True)
         manifest_names: list[str] = []
+        run_log_path = tmpdir / "zip_backfill_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -249,6 +334,7 @@ class RunZipBackfillTest(unittest.TestCase):
             download_func=fake_download,
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
+            run_log_path=run_log_path,
             ensure_dirs_func=lambda: None,
         )
 
@@ -258,6 +344,7 @@ class RunZipBackfillTest(unittest.TestCase):
         tmpdir = make_tempdir()
         self.addCleanup(shutil.rmtree, tmpdir, True)
         observed_profiles: list[tuple[int, int]] = []
+        run_log_path = tmpdir / "zip_backfill_runs.jsonl"
 
         def fake_collect(
             target_dates: list[date],
@@ -307,6 +394,7 @@ class RunZipBackfillTest(unittest.TestCase):
             download_func=fake_download,
             allowed_codes_loader=lambda _: {"E00001"},
             manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
+            run_log_path=run_log_path,
             ensure_dirs_func=lambda: None,
         )
 

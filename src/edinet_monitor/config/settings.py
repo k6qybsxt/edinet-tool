@@ -22,6 +22,7 @@ XBRL_ROOT = RAW_ROOT / "xbrl"
 MANIFEST_ROOT = RAW_ROOT / "manifests"
 
 LOG_ROOT = MONITOR_STORAGE_ROOT / "logs"
+ZIP_BACKFILL_RUN_LOG_PATH = LOG_ROOT / "zip_backfill_runs.jsonl"
 
 # =========================================================
 # logging mode
