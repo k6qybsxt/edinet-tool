@@ -33,7 +33,7 @@ def is_target_filing(row: dict[str, Any]) -> bool:
     if doc_type_code != "120":
         return False
 
-    if legal_status not in ("1", ""):
+    if legal_status not in ("1", "2", ""):
         return False
 
     return True
