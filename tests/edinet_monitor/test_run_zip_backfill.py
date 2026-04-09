@@ -447,6 +447,93 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertGreater(january_read_timeout, february_read_timeout)
         self.assertEqual(summary["effective_profile_totals"], {"normal": 1, "peak": 1})
 
+    def test_run_zip_backfill_writes_raw_retention_summary_to_run_log(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        run_log_path = tmpdir / "zip_backfill_runs.jsonl"
+        chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
+
+        def fake_collect(
+            target_dates: list[date],
+            *,
+            api_key: str,
+            allowed_edinet_codes: set[str],
+            manifest_path: Path,
+            append: bool = False,
+            overwrite: bool = False,
+            fetcher=None,
+        ) -> dict[str, object]:
+            write_manifest_rows(
+                manifest_path,
+                [
+                    {
+                        "doc_id": "S100AAAA",
+                        "company_name": "テスト株式会社",
+                        "submit_date": f"{target_dates[0].isoformat()} 09:00",
+                        "download_status": "pending",
+                    }
+                ],
+            )
+            return {"manifest_path": str(manifest_path), "saved_manifest_rows": 1, "totals": {"incoming_manifest_rows": 1}}
+
+        def fake_download(**_: object) -> dict[str, object]:
+            return {
+                "downloaded_total": 1,
+                "existing_total": 0,
+                "error_total": 0,
+                "manifest_rows": 1,
+                "target_total": 1,
+                "processed_total": 1,
+                "cooldown_count": 0,
+                "download_elapsed_seconds": 10.0,
+                "retry_wait_elapsed_seconds": 0.0,
+                "cooldown_elapsed_seconds": 0.0,
+                "error_type_totals": {},
+            }
+
+        def fake_cleanup(*, keep_years: int) -> dict[str, object]:
+            self.assertEqual(keep_years, 10)
+            return {
+                "status": "completed",
+                "reason": "",
+                "reference_month": "2026-03",
+                "keep_from_month": "2016-04",
+                "deleted_zip_dirs": 1,
+                "deleted_xbrl_dirs": 2,
+                "deleted_manifest_files": 3,
+                "deleted_total": 6,
+                "sample_deleted_paths": [r"D:\EDINET_Data\edinet_monitor\raw\zip\2016-03-31"],
+                "error": "",
+            }
+
+        summary = run_zip_backfill(
+            api_key="dummy-key",
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 31),
+            manifest_prefix="document_manifest",
+            master_csv_path=tmpdir / "issuer_master.csv",
+            collect_func=fake_collect,
+            download_func=fake_download,
+            allowed_codes_loader=lambda _: {"E00001"},
+            manifest_path_builder=lambda manifest_name: tmpdir / f"{manifest_name}.jsonl",
+            run_log_path=run_log_path,
+            chunk_log_path=chunk_log_path,
+            ensure_dirs_func=lambda: None,
+            raw_retention_cleanup_func=fake_cleanup,
+        )
+
+        self.assertEqual(summary["raw_retention_summary"]["status"], "completed")
+        self.assertEqual(summary["raw_retention_summary"]["deleted_total"], 6)
+
+        with run_log_path.open("r", encoding="utf-8") as f:
+            records = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["raw_retention_cleanup_status"], "completed")
+        self.assertEqual(records[0]["raw_retention_reference_month"], "2026-03")
+        self.assertEqual(records[0]["raw_retention_keep_from_month"], "2016-04")
+        self.assertEqual(records[0]["raw_retention_deleted_total"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

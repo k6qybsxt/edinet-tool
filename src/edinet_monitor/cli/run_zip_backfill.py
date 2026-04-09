@@ -22,11 +22,13 @@ from edinet_monitor.cli.download_manifest_zips import (
 from edinet_monitor.config.settings import (
     ZIP_BACKFILL_CHUNK_LOG_PATH,
     DOWNLOAD_PROFILE_DEFAULT,
+    RAW_SAVE_YEARS,
     TSE_LISTING_MASTER_CSV_PATH,
     ZIP_BACKFILL_RUN_LOG_PATH,
     ensure_data_dirs,
 )
 from edinet_monitor.services.collector.issuer_master_csv_service import load_allowed_edinet_codes
+from edinet_monitor.services.storage.raw_retention_service import cleanup_old_raw_storage
 from edinet_monitor.services.storage.manifest_service import (
     build_manifest_path,
     read_manifest_rows,
@@ -201,6 +203,8 @@ def run_zip_backfill(
     timer_func: Callable[[], float] = perf_counter,
     run_log_writer: Callable[[Path, dict[str, Any]], None] = append_backfill_run_log,
     chunk_log_writer: Callable[[Path, dict[str, Any]], None] = append_backfill_chunk_log,
+    raw_retention_keep_years: int = RAW_SAVE_YEARS,
+    raw_retention_cleanup_func: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     ensure_dirs_func()
     manifest_granularity = resolve_manifest_granularity(
@@ -233,6 +237,18 @@ def run_zip_backfill(
     total_cooldown_elapsed_seconds = 0.0
     aggregate_error_type_totals: dict[str, int] = {}
     effective_profile_totals: dict[str, int] = {}
+    raw_retention_summary: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "not_run",
+        "reference_month": "",
+        "keep_from_month": "",
+        "deleted_zip_dirs": 0,
+        "deleted_xbrl_dirs": 0,
+        "deleted_manifest_files": 0,
+        "deleted_total": 0,
+        "sample_deleted_paths": [],
+        "error": "",
+    }
 
     run_status = "completed"
     run_error = ""
@@ -451,6 +467,29 @@ def run_zip_backfill(
                     "download_summary": download_summary,
                 }
             )
+
+        if prepare_only:
+            raw_retention_summary = {
+                **raw_retention_summary,
+                "reason": "prepare_only",
+            }
+        elif raw_retention_cleanup_func is None:
+            raw_retention_summary = {
+                **raw_retention_summary,
+                "reason": "disabled",
+            }
+        else:
+            try:
+                raw_retention_summary = raw_retention_cleanup_func(
+                    keep_years=raw_retention_keep_years,
+                )
+            except Exception as exc:
+                raw_retention_summary = {
+                    **raw_retention_summary,
+                    "status": "failed",
+                    "reason": "cleanup_error",
+                    "error": repr(exc),
+                }
     except Exception as exc:
         run_status = "failed"
         run_error = repr(exc)
@@ -472,6 +511,23 @@ def run_zip_backfill(
         print(f"backfill_download_elapsed_seconds={round(total_download_elapsed_seconds, 3)}")
         print(f"backfill_retry_wait_elapsed_seconds={round(total_retry_wait_elapsed_seconds, 3)}")
         print(f"backfill_cooldown_elapsed_seconds={round(total_cooldown_elapsed_seconds, 3)}")
+        print(f"raw_retention_cleanup_status={raw_retention_summary['status']}")
+        print(f"raw_retention_cleanup_reason={raw_retention_summary['reason']}")
+        print(f"raw_retention_reference_month={raw_retention_summary['reference_month']}")
+        print(f"raw_retention_keep_from_month={raw_retention_summary['keep_from_month']}")
+        print(f"raw_retention_deleted_zip_dirs={raw_retention_summary['deleted_zip_dirs']}")
+        print(f"raw_retention_deleted_xbrl_dirs={raw_retention_summary['deleted_xbrl_dirs']}")
+        print(f"raw_retention_deleted_manifest_files={raw_retention_summary['deleted_manifest_files']}")
+        print(f"raw_retention_deleted_total={raw_retention_summary['deleted_total']}")
+        if raw_retention_summary["sample_deleted_paths"]:
+            print(
+                "raw_retention_sample_deleted_paths="
+                + "|".join(str(path) for path in raw_retention_summary["sample_deleted_paths"])
+            )
+        else:
+            print("raw_retention_sample_deleted_paths=none")
+        if raw_retention_summary["error"]:
+            print(f"raw_retention_cleanup_error={raw_retention_summary['error']}")
         profile_parts = [f"{profile_name}:{count}" for profile_name, count in sorted(effective_profile_totals.items())]
         print(f"backfill_effective_profile_totals={'|'.join(profile_parts)}")
         if aggregate_error_type_totals:
@@ -506,6 +562,16 @@ def run_zip_backfill(
                 "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
                 "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
                 "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
+                "raw_retention_cleanup_status": raw_retention_summary["status"],
+                "raw_retention_cleanup_reason": raw_retention_summary["reason"],
+                "raw_retention_reference_month": raw_retention_summary["reference_month"],
+                "raw_retention_keep_from_month": raw_retention_summary["keep_from_month"],
+                "raw_retention_deleted_zip_dirs": raw_retention_summary["deleted_zip_dirs"],
+                "raw_retention_deleted_xbrl_dirs": raw_retention_summary["deleted_xbrl_dirs"],
+                "raw_retention_deleted_manifest_files": raw_retention_summary["deleted_manifest_files"],
+                "raw_retention_deleted_total": raw_retention_summary["deleted_total"],
+                "raw_retention_sample_deleted_paths": list(raw_retention_summary["sample_deleted_paths"]),
+                "raw_retention_cleanup_error": raw_retention_summary["error"],
                 "effective_profile_totals": dict(sorted(effective_profile_totals.items())),
                 "error_type_totals": dict(sorted(aggregate_error_type_totals.items())),
             },
@@ -529,6 +595,7 @@ def run_zip_backfill(
         "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
         "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
         "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
+        "raw_retention_summary": dict(raw_retention_summary),
         "effective_profile_totals": dict(sorted(effective_profile_totals.items())),
         "error_type_totals": dict(sorted(aggregate_error_type_totals.items())),
         "monthly_results": monthly_results,
@@ -664,6 +731,7 @@ def main() -> None:
         download_submit_date_to_text=download_submit_date_to_text,
         download_submit_time_from_text=download_submit_time_from_text,
         download_submit_time_to_text=download_submit_time_to_text,
+        raw_retention_cleanup_func=cleanup_old_raw_storage,
     )
 
 
