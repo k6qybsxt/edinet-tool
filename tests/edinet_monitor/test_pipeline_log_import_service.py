@@ -51,6 +51,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             effective_profile_totals_json TEXT,
             error_type_totals_json TEXT,
             raw_retention_summary_json TEXT,
+            summary_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -83,6 +84,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             collect_summary_json TEXT,
             manifest_summary_json TEXT,
             download_summary_json TEXT,
+            summary_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );

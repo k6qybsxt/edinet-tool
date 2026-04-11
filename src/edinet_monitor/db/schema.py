@@ -77,6 +77,28 @@ def _ensure_filings_columns(cur: sqlite3.Cursor) -> None:
     _ensure_table_column(cur, "filings", "accounting_standard TEXT")
     _ensure_table_column(cur, "filings", "document_display_unit TEXT")
 
+
+def _ensure_pipeline_log_columns(cur: sqlite3.Cursor) -> None:
+    run_table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'pipeline_runs'
+        """
+    ).fetchone()
+    if run_table_exists:
+        _ensure_table_column(cur, "pipeline_runs", "summary_json TEXT")
+
+    chunk_table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'pipeline_run_chunks'
+        """
+    ).fetchone()
+    if chunk_table_exists:
+        _ensure_table_column(cur, "pipeline_run_chunks", "summary_json TEXT")
+
 def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
         """
@@ -560,6 +582,7 @@ def create_tables() -> None:
         effective_profile_totals_json TEXT,
         error_type_totals_json TEXT,
         raw_retention_summary_json TEXT,
+        summary_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )
@@ -594,10 +617,12 @@ def create_tables() -> None:
         collect_summary_json TEXT,
         manifest_summary_json TEXT,
         download_summary_json TEXT,
+        summary_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )
     """)
+    _ensure_pipeline_log_columns(cur)
 
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_filings_edinet_code

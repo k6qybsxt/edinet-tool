@@ -182,6 +182,7 @@ def create_base_tables(conn: sqlite3.Connection) -> None:
             effective_profile_totals_json TEXT,
             error_type_totals_json TEXT,
             raw_retention_summary_json TEXT,
+            summary_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -214,6 +215,7 @@ def create_base_tables(conn: sqlite3.Connection) -> None:
             collect_summary_json TEXT,
             manifest_summary_json TEXT,
             download_summary_json TEXT,
+            summary_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -352,6 +354,8 @@ class SummaryViewServiceTest(unittest.TestCase):
         self.assertEqual(counts["normalized_metrics"], 3)
         self.assertEqual(counts["derived_metrics"], 3)
         self.assertEqual(counts["screening_runs"], 1)
+        self.assertEqual(counts["pipeline_runs"], 1)
+        self.assertEqual(counts["pipeline_run_chunks"], 1)
 
     def test_fetch_latest_filing_status_rows_picks_latest_doc(self) -> None:
         rows = fetch_latest_filing_status_rows(self.conn, limit=5)

@@ -15,6 +15,8 @@ def fetch_table_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "screening_runs",
         "screening_results",
         "notifications",
+        "pipeline_runs",
+        "pipeline_run_chunks",
     ]:
         row = conn.execute(f"SELECT COUNT(*) AS row_count FROM {table_name}").fetchone()
         counts[table_name] = int(row["row_count"]) if row else 0
