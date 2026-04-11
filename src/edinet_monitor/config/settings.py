@@ -13,6 +13,27 @@ def _path_from_env(env_name: str, default_path: str) -> Path:
         return Path(value)
     return Path(default_path)
 
+
+def _bool_from_env(env_name: str, default: bool) -> bool:
+    value = os.getenv(env_name, "").strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _int_from_env(env_name: str, default: int) -> int:
+    value = os.getenv(env_name, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
 # =========================================================
 # edinet_monitor 保存先
 #   - DB は C ドライブ側に置く
@@ -56,8 +77,8 @@ EDINET_API_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2"
 
 DOCUMENT_TYPE_ZIP = 1
 RAW_SAVE_YEARS = 10
-XBRL_RETENTION_ENABLED = False
-XBRL_RETENTION_MONTHS = 3
+XBRL_RETENTION_ENABLED = _bool_from_env("EDINET_XBRL_RETENTION_ENABLED", True)
+XBRL_RETENTION_MONTHS = _int_from_env("EDINET_XBRL_RETENTION_MONTHS", 3)
 DOWNLOAD_PROFILE_DEFAULT = "normal"
 DOWNLOAD_CONNECT_TIMEOUT_SEC = 10
 DOWNLOAD_READ_TIMEOUT_SEC = 30
