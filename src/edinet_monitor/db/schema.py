@@ -252,6 +252,132 @@ def ensure_summary_views(conn: sqlite3.Connection) -> None:
         FROM screening_runs sr
         LEFT JOIN screening_result_agg sra
             ON sra.screening_run_id = sr.id;
+
+        DROP VIEW IF EXISTS pipeline_status_summary;
+        CREATE VIEW pipeline_status_summary AS
+        WITH filing_counts AS (
+            SELECT
+                COUNT(*) AS filing_count,
+                SUM(CASE WHEN download_status = 'downloaded' THEN 1 ELSE 0 END) AS downloaded_count,
+                SUM(CASE WHEN xbrl_path IS NOT NULL AND xbrl_path <> '' THEN 1 ELSE 0 END) AS xbrl_path_count,
+                SUM(CASE WHEN parse_status = 'raw_facts_saved' THEN 1 ELSE 0 END) AS raw_facts_saved_count,
+                SUM(CASE WHEN parse_status = 'normalized_metrics_saved' THEN 1 ELSE 0 END) AS normalized_metrics_saved_count,
+                SUM(CASE WHEN parse_status = 'derived_metrics_saved' THEN 1 ELSE 0 END) AS derived_metrics_saved_count,
+                SUM(CASE WHEN parse_status = 'raw_facts_error' THEN 1 ELSE 0 END) AS raw_facts_error_count,
+                SUM(CASE WHEN parse_status = 'normalized_metrics_error' THEN 1 ELSE 0 END) AS normalized_metrics_error_count,
+                SUM(CASE WHEN parse_status = 'derived_metrics_error' THEN 1 ELSE 0 END) AS derived_metrics_error_count,
+                MAX(submit_date) AS latest_submit_date,
+                MAX(CASE WHEN parse_status = 'derived_metrics_saved' THEN submit_date END) AS latest_derived_saved_submit_date
+            FROM filings
+        ),
+        issuer_counts AS (
+            SELECT
+                COUNT(*) AS issuer_count,
+                SUM(CASE WHEN is_listed = 1 THEN 1 ELSE 0 END) AS listed_issuer_count
+            FROM issuer_master
+        )
+        SELECT
+            ic.issuer_count,
+            ic.listed_issuer_count,
+            fc.filing_count,
+            fc.downloaded_count,
+            fc.xbrl_path_count,
+            fc.raw_facts_saved_count,
+            fc.normalized_metrics_saved_count,
+            fc.derived_metrics_saved_count,
+            fc.raw_facts_error_count,
+            fc.normalized_metrics_error_count,
+            fc.derived_metrics_error_count,
+            fc.latest_submit_date,
+            fc.latest_derived_saved_submit_date
+        FROM issuer_counts ic
+        CROSS JOIN filing_counts fc;
+
+        DROP VIEW IF EXISTS data_quality_summary;
+        CREATE VIEW data_quality_summary AS
+        WITH raw_fact_doc_counts AS (
+            SELECT doc_id, COUNT(*) AS row_count
+            FROM raw_facts
+            GROUP BY doc_id
+        ),
+        normalized_doc_counts AS (
+            SELECT doc_id, COUNT(*) AS row_count
+            FROM normalized_metrics
+            GROUP BY doc_id
+        ),
+        derived_doc_counts AS (
+            SELECT
+                doc_id,
+                COUNT(*) AS row_count,
+                SUM(CASE WHEN calc_status = 'ok' THEN 1 ELSE 0 END) AS ok_row_count
+            FROM derived_metrics
+            GROUP BY doc_id
+        )
+        SELECT
+            'filings_missing_accounting_standard' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings
+        WHERE accounting_standard IS NULL OR accounting_standard = ''
+
+        UNION ALL
+
+        SELECT
+            'filings_missing_document_display_unit' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings
+        WHERE document_display_unit IS NULL OR document_display_unit = ''
+
+        UNION ALL
+
+        SELECT
+            'filings_missing_zip_path' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings
+        WHERE zip_path IS NULL OR zip_path = ''
+
+        UNION ALL
+
+        SELECT
+            'raw_facts_saved_without_raw_rows' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings f
+        LEFT JOIN raw_fact_doc_counts rfd
+            ON rfd.doc_id = f.doc_id
+        WHERE f.parse_status = 'raw_facts_saved'
+          AND COALESCE(rfd.row_count, 0) = 0
+
+        UNION ALL
+
+        SELECT
+            'normalized_saved_without_normalized_rows' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings f
+        LEFT JOIN normalized_doc_counts ndc
+            ON ndc.doc_id = f.doc_id
+        WHERE f.parse_status IN ('normalized_metrics_saved', 'derived_metrics_saved')
+          AND COALESCE(ndc.row_count, 0) = 0
+
+        UNION ALL
+
+        SELECT
+            'derived_saved_without_derived_rows' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings f
+        LEFT JOIN derived_doc_counts ddc
+            ON ddc.doc_id = f.doc_id
+        WHERE f.parse_status = 'derived_metrics_saved'
+          AND COALESCE(ddc.row_count, 0) = 0
+
+        UNION ALL
+
+        SELECT
+            'derived_saved_without_derived_ok_rows' AS check_name,
+            COUNT(*) AS affected_count
+        FROM filings f
+        LEFT JOIN derived_doc_counts ddc
+            ON ddc.doc_id = f.doc_id
+        WHERE f.parse_status = 'derived_metrics_saved'
+          AND COALESCE(ddc.ok_row_count, 0) = 0;
         """
     )
 
@@ -405,6 +531,75 @@ def create_tables() -> None:
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+        run_id TEXT PRIMARY KEY,
+        run_type TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        elapsed_seconds REAL,
+        run_status TEXT,
+        run_error TEXT,
+        target_date TEXT,
+        date_from TEXT,
+        date_to TEXT,
+        manifest_prefix TEXT,
+        manifest_granularity TEXT,
+        requested_download_profile TEXT,
+        download_auto_peak_threshold INTEGER,
+        prepare_only INTEGER,
+        overwrite_manifests INTEGER,
+        chunks INTEGER,
+        manifest_rows_total INTEGER,
+        downloaded_total INTEGER,
+        existing_total INTEGER,
+        error_total INTEGER,
+        cooldown_total INTEGER,
+        download_elapsed_seconds REAL,
+        retry_wait_elapsed_seconds REAL,
+        cooldown_elapsed_seconds REAL,
+        effective_profile_totals_json TEXT,
+        error_type_totals_json TEXT,
+        raw_retention_summary_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pipeline_run_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        run_type TEXT NOT NULL,
+        chunk_key TEXT NOT NULL,
+        chunk_granularity TEXT,
+        chunk_date_from TEXT,
+        chunk_date_to TEXT,
+        manifest_name TEXT,
+        manifest_path TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        elapsed_seconds REAL,
+        chunk_status TEXT,
+        chunk_error TEXT,
+        manifest_rows INTEGER,
+        effective_download_profile TEXT,
+        downloaded_total INTEGER,
+        existing_total INTEGER,
+        error_total INTEGER,
+        cooldown_count INTEGER,
+        download_elapsed_seconds REAL,
+        retry_wait_elapsed_seconds REAL,
+        cooldown_elapsed_seconds REAL,
+        error_type_totals_json TEXT,
+        collect_summary_json TEXT,
+        manifest_summary_json TEXT,
+        download_summary_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_filings_edinet_code
     ON filings(edinet_code)
     """)
@@ -492,6 +687,21 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_screening_results_code
     ON screening_results(edinet_code, security_code)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_type_started_at
+    ON pipeline_runs(run_type, started_at)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_pipeline_run_chunks_run_id
+    ON pipeline_run_chunks(run_id)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_pipeline_run_chunks_identity
+    ON pipeline_run_chunks(run_id, chunk_key, manifest_name)
     """)
 
     ensure_summary_views(conn)

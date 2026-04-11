@@ -6,9 +6,13 @@ from typing import Iterable
 from edinet_monitor.config.settings import DB_PATH
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.summary_view_service import (
+    fetch_data_quality_rows,
     fetch_latest_filing_status_rows,
     fetch_metric_coverage_rows,
     fetch_monthly_collection_status_rows,
+    fetch_recent_pipeline_chunk_rows,
+    fetch_recent_pipeline_run_rows,
+    fetch_pipeline_status_summary,
     fetch_screening_hit_summary_rows,
     fetch_table_counts,
 )
@@ -26,6 +30,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--metric-key-like", default="")
     parser.add_argument("--screening-limit", type=int, default=10)
+    parser.add_argument("--pipeline-run-limit", type=int, default=10)
+    parser.add_argument("--pipeline-chunk-limit", type=int, default=10)
+    parser.add_argument(
+        "--all-data-quality-checks",
+        action="store_true",
+        help="Show zero-count quality checks too.",
+    )
     parser.add_argument(
         "--all-issuers",
         action="store_true",
@@ -50,6 +61,11 @@ def main() -> None:
     conn = get_connection()
     try:
         counts = fetch_table_counts(conn)
+        pipeline_status = fetch_pipeline_status_summary(conn)
+        data_quality_rows = fetch_data_quality_rows(
+            conn,
+            only_issues=not args.all_data_quality_checks,
+        )
         latest_rows = fetch_latest_filing_status_rows(
             conn,
             limit=args.latest_limit,
@@ -69,12 +85,52 @@ def main() -> None:
             conn,
             limit=args.screening_limit,
         )
+        pipeline_run_rows = fetch_recent_pipeline_run_rows(
+            conn,
+            limit=args.pipeline_run_limit,
+        )
+        pipeline_chunk_rows = fetch_recent_pipeline_chunk_rows(
+            conn,
+            limit=args.pipeline_chunk_limit,
+        )
 
         print(f"db_path={DB_PATH}")
 
         print_section("table_counts")
         for table_name, count in counts.items():
             print(f"{table_name}={count}")
+
+        print_section("pipeline_status_summary")
+        if pipeline_status is None:
+            print("none")
+        else:
+            print(
+                " | ".join(
+                    [
+                        f"issuers={pipeline_status['issuer_count']}",
+                        f"listed={pipeline_status['listed_issuer_count']}",
+                        f"filings={pipeline_status['filing_count']}",
+                        f"downloaded={pipeline_status['downloaded_count']}",
+                        f"xbrl_path={pipeline_status['xbrl_path_count']}",
+                        f"raw_saved={pipeline_status['raw_facts_saved_count']}",
+                        f"normalized_saved={pipeline_status['normalized_metrics_saved_count']}",
+                        f"derived_saved={pipeline_status['derived_metrics_saved_count']}",
+                        f"errors={pipeline_status['raw_facts_error_count'] + pipeline_status['normalized_metrics_error_count'] + pipeline_status['derived_metrics_error_count']}",
+                        f"latest_submit_date={pipeline_status['latest_submit_date'] or ''}",
+                    ]
+                )
+            )
+
+        print_section("data_quality_summary")
+        if not data_quality_rows:
+            print("none")
+        else:
+            print_rows(
+                (
+                    f"{row['check_name']}={row['affected_count']}"
+                    for row in data_quality_rows
+                )
+            )
 
         print_section("issuer_latest_filing_status")
         if not latest_rows:
@@ -157,6 +213,55 @@ def main() -> None:
                         ]
                     )
                     for row in screening_rows
+                )
+            )
+
+        print_section("recent_pipeline_runs")
+        if not pipeline_run_rows:
+            print("none")
+        else:
+            print_rows(
+                (
+                    " | ".join(
+                        [
+                            f"run_id={row['run_id']}",
+                            f"type={row['run_type']}",
+                            f"started_at={row['started_at'] or ''}",
+                            f"elapsed={round(float(row['elapsed_seconds'] or 0.0), 3)}",
+                            f"status={row['run_status'] or ''}",
+                            f"date_from={row['date_from'] or ''}",
+                            f"date_to={row['date_to'] or ''}",
+                            f"profile={row['requested_download_profile'] or ''}",
+                            f"downloaded={row['downloaded_total']}",
+                            f"existing={row['existing_total']}",
+                            f"errors={row['error_total']}",
+                        ]
+                    )
+                    for row in pipeline_run_rows
+                )
+            )
+
+        print_section("recent_pipeline_run_chunks")
+        if not pipeline_chunk_rows:
+            print("none")
+        else:
+            print_rows(
+                (
+                    " | ".join(
+                        [
+                            f"run_id={row['run_id']}",
+                            f"chunk={row['chunk_key']}",
+                            f"granularity={row['chunk_granularity'] or ''}",
+                            f"started_at={row['started_at'] or ''}",
+                            f"elapsed={round(float(row['elapsed_seconds'] or 0.0), 3)}",
+                            f"status={row['chunk_status'] or ''}",
+                            f"profile={row['effective_download_profile'] or ''}",
+                            f"downloaded={row['downloaded_total']}",
+                            f"existing={row['existing_total']}",
+                            f"errors={row['error_total']}",
+                        ]
+                    )
+                    for row in pipeline_chunk_rows
                 )
             )
     finally:

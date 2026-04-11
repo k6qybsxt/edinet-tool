@@ -106,3 +106,90 @@ def fetch_screening_hit_summary_rows(
         (limit,),
     ).fetchall()
 
+
+def fetch_pipeline_status_summary(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM pipeline_status_summary
+        LIMIT 1
+        """
+    ).fetchone()
+
+
+def fetch_data_quality_rows(
+    conn: sqlite3.Connection,
+    *,
+    only_issues: bool = False,
+) -> list[sqlite3.Row]:
+    where_sql = "WHERE affected_count > 0" if only_issues else ""
+    return conn.execute(
+        f"""
+        SELECT *
+        FROM data_quality_summary
+        {where_sql}
+        ORDER BY affected_count DESC, check_name
+        """
+    ).fetchall()
+
+
+def fetch_recent_pipeline_run_rows(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 10,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT
+            run_id,
+            run_type,
+            started_at,
+            finished_at,
+            elapsed_seconds,
+            run_status,
+            date_from,
+            date_to,
+            manifest_granularity,
+            requested_download_profile,
+            downloaded_total,
+            existing_total,
+            error_total,
+            cooldown_total
+        FROM pipeline_runs
+        ORDER BY COALESCE(started_at, '') DESC, run_id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+
+def fetch_recent_pipeline_chunk_rows(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 10,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT
+            run_id,
+            chunk_key,
+            chunk_granularity,
+            chunk_date_from,
+            chunk_date_to,
+            manifest_name,
+            started_at,
+            finished_at,
+            elapsed_seconds,
+            chunk_status,
+            effective_download_profile,
+            downloaded_total,
+            existing_total,
+            error_total,
+            cooldown_count
+        FROM pipeline_run_chunks
+        ORDER BY COALESCE(started_at, '') DESC, run_id DESC, chunk_key DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+

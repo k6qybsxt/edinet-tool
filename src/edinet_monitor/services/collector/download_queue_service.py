@@ -39,6 +39,7 @@ def fetch_downloaded_filings_without_xbrl(conn: sqlite3.Connection, limit: int =
             ON f.edinet_code = im.edinet_code
         WHERE f.download_status = 'downloaded'
           AND (f.xbrl_path IS NULL OR f.xbrl_path = '')
+          AND f.parse_status IN ('pending', 'xbrl_extract_error')
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
         ORDER BY f.submit_date ASC, f.doc_id ASC

@@ -13,9 +13,13 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.db.schema import ensure_summary_views  # noqa: E402
 from edinet_monitor.services.summary_view_service import (  # noqa: E402
+    fetch_data_quality_rows,
     fetch_latest_filing_status_rows,
     fetch_metric_coverage_rows,
     fetch_monthly_collection_status_rows,
+    fetch_recent_pipeline_chunk_rows,
+    fetch_recent_pipeline_run_rows,
+    fetch_pipeline_status_summary,
     fetch_screening_hit_summary_rows,
     fetch_table_counts,
 )
@@ -148,6 +152,71 @@ def create_base_tables(conn: sqlite3.Connection) -> None:
             sent_at TEXT,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE pipeline_runs (
+            run_id TEXT PRIMARY KEY,
+            run_type TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            elapsed_seconds REAL,
+            run_status TEXT,
+            run_error TEXT,
+            target_date TEXT,
+            date_from TEXT,
+            date_to TEXT,
+            manifest_prefix TEXT,
+            manifest_granularity TEXT,
+            requested_download_profile TEXT,
+            download_auto_peak_threshold INTEGER,
+            prepare_only INTEGER,
+            overwrite_manifests INTEGER,
+            chunks INTEGER,
+            manifest_rows_total INTEGER,
+            downloaded_total INTEGER,
+            existing_total INTEGER,
+            error_total INTEGER,
+            cooldown_total INTEGER,
+            download_elapsed_seconds REAL,
+            retry_wait_elapsed_seconds REAL,
+            cooldown_elapsed_seconds REAL,
+            effective_profile_totals_json TEXT,
+            error_type_totals_json TEXT,
+            raw_retention_summary_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE pipeline_run_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            run_type TEXT NOT NULL,
+            chunk_key TEXT NOT NULL,
+            chunk_granularity TEXT,
+            chunk_date_from TEXT,
+            chunk_date_to TEXT,
+            manifest_name TEXT,
+            manifest_path TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            elapsed_seconds REAL,
+            chunk_status TEXT,
+            chunk_error TEXT,
+            manifest_rows INTEGER,
+            effective_download_profile TEXT,
+            downloaded_total INTEGER,
+            existing_total INTEGER,
+            error_total INTEGER,
+            cooldown_count INTEGER,
+            download_elapsed_seconds REAL,
+            retry_wait_elapsed_seconds REAL,
+            cooldown_elapsed_seconds REAL,
+            error_type_totals_json TEXT,
+            collect_summary_json TEXT,
+            manifest_summary_json TEXT,
+            download_summary_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -229,6 +298,46 @@ class SummaryViewServiceTest(unittest.TestCase):
             (1, '2026-04-11', 'annual_growth_quality_check', 'v1', 'E00002', '22220', 'Beta', '2025-12-31', 0, 1.0, '{}', '2026-04-11 00:00:00')
             """
         )
+        self.conn.execute(
+            """
+            INSERT INTO pipeline_runs (
+                run_id, run_type, started_at, finished_at, elapsed_seconds, run_status,
+                run_error, target_date, date_from, date_to, manifest_prefix, manifest_granularity,
+                requested_download_profile, download_auto_peak_threshold, prepare_only,
+                overwrite_manifests, chunks, manifest_rows_total, downloaded_total,
+                existing_total, error_total, cooldown_total, download_elapsed_seconds,
+                retry_wait_elapsed_seconds, cooldown_elapsed_seconds, effective_profile_totals_json,
+                error_type_totals_json, raw_retention_summary_json, created_at, updated_at
+            ) VALUES (
+                'run_001', 'zip_backfill', '2026-04-11 09:00:00', '2026-04-11 09:05:00', 300.0, 'completed',
+                '', '', '2026-04-01', '2026-04-30', 'document_manifest', 'month',
+                'auto', 100, 0, 0, 1, 12, 12,
+                0, 0, 0, 280.0,
+                10.0, 10.0, '{"normal": 1}',
+                '{}', '{}', '2026-04-11 09:00:00', '2026-04-11 09:05:00'
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO pipeline_run_chunks (
+                run_id, run_type, chunk_key, chunk_granularity, chunk_date_from, chunk_date_to,
+                manifest_name, manifest_path, started_at, finished_at, elapsed_seconds, chunk_status,
+                chunk_error, manifest_rows, effective_download_profile, downloaded_total,
+                existing_total, error_total, cooldown_count, download_elapsed_seconds,
+                retry_wait_elapsed_seconds, cooldown_elapsed_seconds, error_type_totals_json,
+                collect_summary_json, manifest_summary_json, download_summary_json, created_at, updated_at
+            ) VALUES (
+                'run_001', 'zip_backfill', '2026-04', 'month', '2026-04-01', '2026-04-30',
+                'document_manifest_2026-04', 'D:\\EDINET_Data\\edinet_monitor\\raw\\manifests\\document_manifest_2026-04.jsonl',
+                '2026-04-11 09:00:00', '2026-04-11 09:05:00', 300.0, 'completed',
+                '', 12, 'normal', 12,
+                0, 0, 0, 280.0,
+                10.0, 10.0, '{}',
+                '{}', '{}', '{}', '2026-04-11 09:00:00', '2026-04-11 09:05:00'
+            )
+            """
+        )
         self.conn.commit()
         ensure_summary_views(self.conn)
 
@@ -280,6 +389,40 @@ class SummaryViewServiceTest(unittest.TestCase):
         self.assertEqual(rows[0]["rule_name"], "annual_growth_quality_check")
         self.assertAlmostEqual(rows[0]["hit_ratio"], 0.5)
         self.assertAlmostEqual(rows[0]["avg_hit_score"], 3.5)
+
+    def test_fetch_pipeline_status_summary_returns_single_row(self) -> None:
+        row = fetch_pipeline_status_summary(self.conn)
+
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["issuer_count"], 2)
+        self.assertEqual(row["listed_issuer_count"], 2)
+        self.assertEqual(row["filing_count"], 3)
+        self.assertEqual(row["derived_metrics_saved_count"], 2)
+        self.assertEqual(row["xbrl_path_count"], 2)
+
+    def test_fetch_data_quality_rows_returns_issues(self) -> None:
+        rows = fetch_data_quality_rows(self.conn, only_issues=True)
+
+        result = {row["check_name"]: row["affected_count"] for row in rows}
+        self.assertEqual(result["normalized_saved_without_normalized_rows"], 1)
+        self.assertEqual(result["derived_saved_without_derived_rows"], 1)
+        self.assertEqual(result["derived_saved_without_derived_ok_rows"], 1)
+
+    def test_fetch_recent_pipeline_run_rows_returns_latest_runs(self) -> None:
+        rows = fetch_recent_pipeline_run_rows(self.conn, limit=5)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["run_id"], "run_001")
+        self.assertEqual(rows[0]["downloaded_total"], 12)
+
+    def test_fetch_recent_pipeline_chunk_rows_returns_latest_chunks(self) -> None:
+        rows = fetch_recent_pipeline_chunk_rows(self.conn, limit=5)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["chunk_key"], "2026-04")
+        self.assertEqual(rows[0]["effective_download_profile"], "normal")
+
 
 
 if __name__ == "__main__":
