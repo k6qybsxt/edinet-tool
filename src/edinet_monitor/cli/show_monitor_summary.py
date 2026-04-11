@@ -16,6 +16,10 @@ from edinet_monitor.services.summary_view_service import (
     fetch_screening_hit_summary_rows,
     fetch_table_counts,
 )
+from edinet_pipeline.domain.metric_labels import (
+    metric_group_to_display_name,
+    metric_key_to_display_name,
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -185,7 +189,9 @@ def main() -> None:
                         [
                             f"source={row['metric_source']}",
                             f"group={row['metric_group'] or ''}",
+                            f"group_label={metric_group_to_display_name(row['metric_group'])}",
                             f"metric={row['metric_key']}",
+                            f"metric_label={metric_key_to_display_name(row['metric_key'])}",
                             f"docs={row['doc_count']}",
                             f"issuers={row['issuer_count']}",
                             f"ok_rows={row['ok_row_count']}",

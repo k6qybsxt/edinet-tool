@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from edinet_pipeline.domain.metric_labels import (
+    metric_base_to_display_name,
+    metric_group_to_display_name,
+    metric_key_to_display_name,
+    tag_name_to_display_name,
+)
+
 
 ComparisonOperator = Literal["exists", "gt", "gte", "lt", "lte"]
 PeriodScope = Literal["annual", "half"]
@@ -251,6 +258,7 @@ def _evaluate_metric_check(
     return {
         "check_name": check_definition.check_name,
         "metric_key": check_definition.metric_key,
+        "metric_label": metric_key_to_display_name(check_definition.metric_key),
         "operator": check_definition.operator,
         "threshold": check_definition.threshold,
         "weight": float(check_definition.weight),
@@ -261,13 +269,16 @@ def _evaluate_metric_check(
         "period_end": metric_row.get("period_end"),
         "metric_source": metric_row.get("metric_source"),
         "metric_base": metric_row.get("metric_base"),
+        "metric_base_label": metric_base_to_display_name(metric_row.get("metric_base")),
         "metric_group": metric_row.get("metric_group"),
+        "metric_group_label": metric_group_to_display_name(metric_row.get("metric_group")),
         "period_scope": metric_row.get("period_scope"),
         "value_unit": metric_row.get("value_unit"),
         "calc_status": metric_row.get("calc_status"),
         "document_display_unit": metric_row.get("document_display_unit"),
         "accounting_standard": metric_row.get("accounting_standard"),
         "source_tag": metric_row.get("source_tag"),
+        "source_tag_label": tag_name_to_display_name(metric_row.get("source_tag")),
         "consolidation": metric_row.get("consolidation"),
     }
 
