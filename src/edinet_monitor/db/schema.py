@@ -103,6 +103,158 @@ def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
 
     cur.execute("DROP TABLE IF EXISTS issuer_master")
 
+
+def ensure_summary_views(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.executescript(
+        """
+        DROP VIEW IF EXISTS issuer_latest_filing_status;
+        CREATE VIEW issuer_latest_filing_status AS
+        WITH latest_filing AS (
+            SELECT
+                f.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY f.edinet_code
+                    ORDER BY COALESCE(f.submit_date, '') DESC,
+                             COALESCE(f.period_end, '') DESC,
+                             f.doc_id DESC
+                ) AS row_num
+            FROM filings f
+        ),
+        normalized_counts AS (
+            SELECT
+                doc_id,
+                COUNT(*) AS normalized_metric_count
+            FROM normalized_metrics
+            GROUP BY doc_id
+        ),
+        derived_counts AS (
+            SELECT
+                doc_id,
+                COUNT(*) AS derived_metric_count,
+                SUM(CASE WHEN calc_status = 'ok' THEN 1 ELSE 0 END) AS derived_metric_ok_count
+            FROM derived_metrics
+            GROUP BY doc_id
+        )
+        SELECT
+            im.edinet_code,
+            COALESCE(lf.security_code, im.security_code) AS security_code,
+            im.company_name,
+            im.market,
+            im.exchange,
+            im.industry_33,
+            im.industry_17,
+            im.is_listed,
+            lf.doc_id,
+            lf.form_type,
+            lf.period_end,
+            lf.submit_date,
+            lf.download_status,
+            lf.parse_status,
+            lf.amendment_flag,
+            lf.doc_info_edit_status,
+            lf.legal_status,
+            lf.accounting_standard,
+            lf.document_display_unit,
+            CASE
+                WHEN lf.xbrl_path IS NOT NULL AND lf.xbrl_path <> '' THEN 1
+                ELSE 0
+            END AS has_xbrl_path,
+            COALESCE(nc.normalized_metric_count, 0) AS normalized_metric_count,
+            COALESCE(dc.derived_metric_count, 0) AS derived_metric_count,
+            COALESCE(dc.derived_metric_ok_count, 0) AS derived_metric_ok_count
+        FROM issuer_master im
+        LEFT JOIN latest_filing lf
+            ON lf.edinet_code = im.edinet_code
+           AND lf.row_num = 1
+        LEFT JOIN normalized_counts nc
+            ON nc.doc_id = lf.doc_id
+        LEFT JOIN derived_counts dc
+            ON dc.doc_id = lf.doc_id;
+
+        DROP VIEW IF EXISTS monthly_collection_status;
+        CREATE VIEW monthly_collection_status AS
+        SELECT
+            substr(submit_date, 1, 7) AS submit_month,
+            COUNT(*) AS filing_count,
+            COUNT(DISTINCT edinet_code) AS issuer_count,
+            SUM(CASE WHEN download_status = 'downloaded' THEN 1 ELSE 0 END) AS downloaded_count,
+            SUM(CASE WHEN parse_status = 'xbrl_ready' THEN 1 ELSE 0 END) AS xbrl_ready_count,
+            SUM(CASE WHEN parse_status = 'raw_facts_saved' THEN 1 ELSE 0 END) AS raw_facts_saved_count,
+            SUM(CASE WHEN parse_status = 'normalized_metrics_saved' THEN 1 ELSE 0 END) AS normalized_metrics_saved_count,
+            SUM(CASE WHEN parse_status = 'derived_metrics_saved' THEN 1 ELSE 0 END) AS derived_metrics_saved_count,
+            SUM(CASE WHEN parse_status = 'raw_facts_error' THEN 1 ELSE 0 END) AS raw_facts_error_count,
+            SUM(CASE WHEN parse_status = 'normalized_metrics_error' THEN 1 ELSE 0 END) AS normalized_metrics_error_count,
+            SUM(CASE WHEN parse_status = 'derived_metrics_error' THEN 1 ELSE 0 END) AS derived_metrics_error_count
+        FROM filings
+        WHERE submit_date IS NOT NULL
+          AND submit_date <> ''
+        GROUP BY substr(submit_date, 1, 7);
+
+        DROP VIEW IF EXISTS metric_coverage_summary;
+        CREATE VIEW metric_coverage_summary AS
+        SELECT
+            'normalized_metrics' AS metric_source,
+            NULL AS metric_group,
+            metric_key,
+            COUNT(*) AS row_count,
+            COUNT(DISTINCT doc_id) AS doc_count,
+            COUNT(DISTINCT edinet_code) AS issuer_count,
+            COUNT(*) AS ok_row_count,
+            MIN(period_end) AS min_period_end,
+            MAX(period_end) AS max_period_end
+        FROM normalized_metrics
+        GROUP BY metric_key
+
+        UNION ALL
+
+        SELECT
+            'derived_metrics' AS metric_source,
+            metric_group,
+            metric_key,
+            COUNT(*) AS row_count,
+            COUNT(DISTINCT doc_id) AS doc_count,
+            COUNT(DISTINCT edinet_code) AS issuer_count,
+            SUM(CASE WHEN calc_status = 'ok' THEN 1 ELSE 0 END) AS ok_row_count,
+            MIN(period_end) AS min_period_end,
+            MAX(period_end) AS max_period_end
+        FROM derived_metrics
+        GROUP BY metric_group, metric_key;
+
+        DROP VIEW IF EXISTS screening_hit_summary;
+        CREATE VIEW screening_hit_summary AS
+        WITH screening_result_agg AS (
+            SELECT
+                screening_run_id,
+                COUNT(*) AS result_count,
+                SUM(CASE WHEN result_flag = 1 THEN 1 ELSE 0 END) AS hit_result_count,
+                AVG(CASE WHEN result_flag = 1 THEN score END) AS avg_hit_score,
+                MAX(period_end) AS latest_period_end
+            FROM screening_results
+            GROUP BY screening_run_id
+        )
+        SELECT
+            sr.id AS screening_run_id,
+            sr.screening_date,
+            sr.rule_name,
+            sr.rule_version,
+            sr.target_count,
+            sr.hit_count,
+            CASE
+                WHEN sr.target_count > 0 THEN CAST(sr.hit_count AS REAL) / sr.target_count
+                ELSE 0.0
+            END AS hit_ratio,
+            COALESCE(sra.result_count, 0) AS stored_result_count,
+            COALESCE(sra.hit_result_count, 0) AS stored_hit_result_count,
+            sra.avg_hit_score,
+            sra.latest_period_end,
+            sr.created_at
+        FROM screening_runs sr
+        LEFT JOIN screening_result_agg sra
+            ON sra.screening_run_id = sr.id;
+        """
+    )
+
 def create_tables() -> None:
     conn = get_connection()
     cur = conn.cursor()
@@ -341,6 +493,8 @@ def create_tables() -> None:
     CREATE INDEX IF NOT EXISTS idx_screening_results_code
     ON screening_results(edinet_code, security_code)
     """)
+
+    ensure_summary_views(conn)
 
     conn.commit()
     conn.close()
