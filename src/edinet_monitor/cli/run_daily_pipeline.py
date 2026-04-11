@@ -10,7 +10,10 @@ from edinet_monitor.cli.run_screening import run_screening
 from edinet_monitor.cli.save_derived_metrics import run_save_derived_metrics
 from edinet_monitor.cli.save_normalized_metrics import run_save_normalized_metrics
 from edinet_monitor.cli.save_raw_facts import run_save_raw_facts
+from edinet_monitor.config.settings import XBRL_RETENTION_ENABLED, XBRL_RETENTION_MONTHS
+from edinet_monitor.db.schema import get_connection
 from edinet_monitor.services.collector.target_date_service import resolve_target_dates
+from edinet_monitor.services.storage.xbrl_retention_service import cleanup_old_xbrl_storage
 from edinet_monitor.screening.screening_rule_service import DEFAULT_RULE_NAME, list_rule_names
 
 
@@ -81,6 +84,15 @@ def main() -> None:
         screening_date=args.screening_date or None,
         rule_name=args.screening_rule_name or None,
     )
+    retention_conn = get_connection()
+    try:
+        xbrl_retention_summary = cleanup_old_xbrl_storage(
+            retention_conn,
+            enabled=XBRL_RETENTION_ENABLED,
+            keep_months=XBRL_RETENTION_MONTHS,
+        )
+    finally:
+        retention_conn.close()
 
     print("daily_pipeline_completed=1")
     print(f"daily_target_dates={','.join(collect_summary['target_dates'])}")
@@ -93,6 +105,16 @@ def main() -> None:
     print(f"daily_screening_rule_name={screening_summary['rule_name']}")
     print(f"daily_screening_target_count={screening_summary['target_count']}")
     print(f"daily_screening_hit_count={screening_summary['hit_count']}")
+    print(f"daily_xbrl_retention_enabled={int(XBRL_RETENTION_ENABLED)}")
+    print(f"daily_xbrl_retention_months={XBRL_RETENTION_MONTHS}")
+    print(f"daily_xbrl_retention_status={xbrl_retention_summary['status']}")
+    print(f"daily_xbrl_retention_reason={xbrl_retention_summary['reason']}")
+    print(f"daily_xbrl_retention_reference_month={xbrl_retention_summary['reference_month']}")
+    print(f"daily_xbrl_retention_keep_from_month={xbrl_retention_summary['keep_from_month']}")
+    print(f"daily_xbrl_retention_target_total={xbrl_retention_summary['target_total']}")
+    print(f"daily_xbrl_retention_deleted_total={xbrl_retention_summary['deleted_total']}")
+    print(f"daily_xbrl_retention_missing_file_total={xbrl_retention_summary['missing_file_total']}")
+    print(f"daily_xbrl_retention_error_total={xbrl_retention_summary['error_total']}")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _path_from_env(env_name: str, default_path: str) -> Path:
+    value = os.getenv(env_name, "").strip()
+    if value:
+        return Path(value)
+    return Path(default_path)
 
 # =========================================================
 # edinet_monitor 保存先
 #   - DB は C ドライブ側に置く
 #   - ZIP / XBRL / logs は D ドライブ側に置く
 # =========================================================
-MONITOR_DB_ROOT = PROJECT_ROOT / "data" / "edinet_monitor"
+MONITOR_DB_ROOT = _path_from_env(
+    "EDINET_MONITOR_DB_ROOT",
+    r"E:\EDINET_Data\edinet_monitor\db",
+)
 DB_PATH = MONITOR_DB_ROOT / "edinet_monitor.db"
 
 MONITOR_STORAGE_ROOT = Path(r"D:\EDINET_Data") / "edinet_monitor"
@@ -45,6 +56,8 @@ EDINET_API_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2"
 
 DOCUMENT_TYPE_ZIP = 1
 RAW_SAVE_YEARS = 10
+XBRL_RETENTION_ENABLED = False
+XBRL_RETENTION_MONTHS = 3
 DOWNLOAD_PROFILE_DEFAULT = "normal"
 DOWNLOAD_CONNECT_TIMEOUT_SEC = 10
 DOWNLOAD_READ_TIMEOUT_SEC = 30
