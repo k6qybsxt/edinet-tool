@@ -24,6 +24,7 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(metric_base_to_display_name("NetSales"), "\u58f2\u4e0a\u9ad8")
         self.assertEqual(metric_base_to_display_name("CostOfSales"), "\u58f2\u4e0a\u539f\u4fa1")
         self.assertEqual(metric_base_to_display_name("CashAndCashEquivalents"), "\u671f\u672b\u6b8b")
+        self.assertEqual(metric_base_to_display_name("OutstandingShares"), "\u767a\u884c\u682a\u6570")
         self.assertEqual(
             metric_base_to_display_name("EstimatedNetIncome"),
             "\u63a8\u5b9a\u7d14\u5229\u76ca(\u7d4c\u5e38\u5229\u76ca*0.7)",
@@ -54,6 +55,7 @@ class MetricLabelsTest(unittest.TestCase):
     def test_metric_group_to_display_name_returns_japanese_label(self) -> None:
         self.assertEqual(metric_group_to_display_name("growth"), "\u6210\u9577")
         self.assertEqual(metric_group_to_display_name("cashflow"), "\u30ad\u30e3\u30c3\u30b7\u30e5\u30d5\u30ed\u30fc")
+        self.assertEqual(metric_group_to_display_name("share"), "\u682a\u5f0f")
 
 
 if __name__ == "__main__":

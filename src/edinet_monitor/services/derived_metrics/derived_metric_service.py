@@ -153,6 +153,18 @@ def _difference_status(
     return left_value - right_value, "ok"
 
 
+def _outstanding_shares_status(
+    *,
+    issued_shares: float | None,
+    treasury_shares: float | None,
+) -> tuple[float | None, str, float]:
+    if issued_shares is None:
+        return None, "missing_input", 0.0
+    if treasury_shares is None or treasury_shares < 1000:
+        return issued_shares, "ok", 0.0
+    return issued_shares - treasury_shares, "ok", treasury_shares
+
+
 def _sum_status(
     *,
     left_value: float | None,
@@ -239,6 +251,7 @@ def _append_difference_rows(
     metric_group: str,
     formula_name: str,
     display_formula: str,
+    value_unit: str,
     accounting_standard: str,
     document_display_unit: str,
     rule_version: str,
@@ -264,7 +277,7 @@ def _append_difference_rows(
                 metric_group=metric_group,
                 suffix=suffix,
                 value_num=value_num,
-                value_unit="yen",
+                value_unit=value_unit,
                 calc_status=calc_status,
                 formula_name=formula_name,
                 source_detail=_build_source_detail(
@@ -384,6 +397,60 @@ def _append_scaled_rows(
                     inputs={source_key: source_value},
                     display_formula=display_formula,
                     stored_formula=f"{source_key} * {scale}",
+                    calc_status=calc_status,
+                    document_display_unit=document_display_unit,
+                ),
+                accounting_standard=accounting_standard,
+                document_display_unit=document_display_unit,
+                rule_version=rule_version,
+            )
+        )
+
+
+def _append_outstanding_shares_rows(
+    out_rows: list[dict[str, Any]],
+    *,
+    metric_rows: dict[str, dict[str, Any]],
+    sample_row: dict[str, Any],
+    accounting_standard: str,
+    document_display_unit: str,
+    rule_version: str,
+) -> None:
+    for suffix in FULL_SUFFIXES:
+        issued_key = _build_metric_key("IssuedShares", suffix)
+        treasury_key = _build_metric_key("TreasuryShares", suffix)
+        issued_value = _metric_value(metric_rows, issued_key)
+        treasury_value = _metric_value(metric_rows, treasury_key)
+        value_num, calc_status, effective_treasury_value = _outstanding_shares_status(
+            issued_shares=issued_value,
+            treasury_shares=treasury_value,
+        )
+        reference_row = _pick_reference_row(metric_rows, [issued_key, treasury_key, sample_row["metric_key"]])
+
+        out_rows.append(
+            _build_derived_row(
+                sample_row={
+                    **sample_row,
+                    "fiscal_year": reference_row.get("fiscal_year"),
+                    "period_end": reference_row.get("period_end"),
+                    "consolidation": reference_row.get("consolidation"),
+                    "period_scope": sample_row["period_scope"],
+                },
+                metric_base="OutstandingShares",
+                metric_group="share",
+                suffix=suffix,
+                value_num=value_num,
+                value_unit="shares",
+                calc_status=calc_status,
+                formula_name="outstanding_shares",
+                source_detail=_build_source_detail(
+                    inputs={
+                        issued_key: issued_value,
+                        treasury_key: treasury_value,
+                        f"{treasury_key}_effective": effective_treasury_value,
+                    },
+                    display_formula="issued_shares - treasury_shares (treat blank or <1000 treasury_shares as 0)",
+                    stored_formula="issued_shares - treasury_shares_effective",
                     calc_status=calc_status,
                     document_display_unit=document_display_unit,
                 ),
@@ -531,6 +598,15 @@ def calculate_derived_metrics(
         rule_version=rule_version,
     )
 
+    _append_outstanding_shares_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+
     _append_difference_rows(
         out_rows,
         metric_rows=metric_rows,
@@ -541,6 +617,7 @@ def calculate_derived_metrics(
         metric_group="profitability",
         formula_name="gross_profit",
         display_formula="net_sales - cost_of_sales",
+        value_unit="yen",
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

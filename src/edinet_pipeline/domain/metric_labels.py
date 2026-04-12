@@ -18,6 +18,7 @@ METRIC_BASE_LABELS = {
     "CashAndCashEquivalents": "\u671f\u672b\u6b8b",
     "IssuedShares": "\u767a\u884c\u6e08\u682a\u5f0f\u6570",
     "TreasuryShares": "\u81ea\u5df1\u682a\u5f0f\u6570",
+    "OutstandingShares": "\u767a\u884c\u682a\u6570",
     "NetSalesGrowthRate": "\u58f2\u4e0a\u9ad8\u6210\u9577\u7387",
     "OrdinaryIncomeGrowthRate": "\u7d4c\u5e38\u5229\u76ca\u6210\u9577\u7387",
     "CashBalanceGrowthRate": "\u73fe\u91d1\u6b8b\u9ad8\u6210\u9577\u7387",
@@ -43,6 +44,7 @@ METRIC_GROUP_LABELS = {
     "efficiency": "\u52b9\u7387\u6027",
     "estimated": "\u63a8\u5b9a",
     "return": "\u53ce\u76ca\u6307\u6a19",
+    "share": "\u682a\u5f0f",
     "dummy": "\u30c6\u30b9\u30c8",
 }
 

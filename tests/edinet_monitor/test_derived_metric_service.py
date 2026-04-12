@@ -74,6 +74,16 @@ class DerivedMetricServiceTest(unittest.TestCase):
             build_normalized_row("CashAndCashEquivalentsPrior2", 200_000),
             build_normalized_row("CashAndCashEquivalentsPrior3", 160_000),
             build_normalized_row("CashAndCashEquivalentsPrior4", 140_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("IssuedSharesPrior1", 1_000_000),
+            build_normalized_row("IssuedSharesPrior2", 1_000_000),
+            build_normalized_row("IssuedSharesPrior3", 980_000),
+            build_normalized_row("IssuedSharesPrior4", 960_000),
+            build_normalized_row("TreasurySharesCurrent", 50_000),
+            build_normalized_row("TreasurySharesPrior1", 52_000),
+            build_normalized_row("TreasurySharesPrior2", 53_000),
+            build_normalized_row("TreasurySharesPrior3", 48_000),
+            build_normalized_row("TreasurySharesPrior4", 40_000),
             build_normalized_row("OperatingCashCurrent", 90_000),
             build_normalized_row("OperatingCashPrior1", 80_000),
             build_normalized_row("OperatingCashPrior2", 70_000),
@@ -110,7 +120,63 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["EstimatedNetIncomeCurrent"]["value_num"], 168_000)
         self.assertEqual(by_key["EquityRatioCurrent"]["value_num"], 0.5)
         self.assertEqual(by_key["FCFCurrent"]["value_num"], 70_000)
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 950_000)
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["metric_group"], "share")
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["value_unit"], "shares")
         self.assertEqual(by_key["GrossProfitCurrent"]["document_display_unit"], "百万円")
+
+    def test_outstanding_shares_treats_missing_treasury_as_zero(self) -> None:
+        normalized_rows = [
+            build_normalized_row("IssuedSharesCurrent", 10_000),
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 100_000),
+            build_normalized_row("CostOfSalesCurrent", 400_000),
+            build_normalized_row("SellingExpensesCurrent", 200_000),
+            build_normalized_row("OperatingIncomeCurrent", 150_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 100_000),
+            build_normalized_row("OperatingCashCurrent", 70_000),
+            build_normalized_row("InvestmentCashCurrent", -10_000),
+            build_normalized_row("TotalAssetsCurrent", 1_500_000),
+            build_normalized_row("NetAssetsCurrent", 700_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="千円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 10_000)
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["calc_status"], "ok")
+
+    def test_outstanding_shares_treats_small_treasury_as_zero(self) -> None:
+        normalized_rows = [
+            build_normalized_row("IssuedSharesCurrent", 10_000),
+            build_normalized_row("TreasurySharesCurrent", 100),
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 100_000),
+            build_normalized_row("CostOfSalesCurrent", 400_000),
+            build_normalized_row("SellingExpensesCurrent", 200_000),
+            build_normalized_row("OperatingIncomeCurrent", 150_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 100_000),
+            build_normalized_row("OperatingCashCurrent", 70_000),
+            build_normalized_row("InvestmentCashCurrent", -10_000),
+            build_normalized_row("TotalAssetsCurrent", 1_500_000),
+            build_normalized_row("NetAssetsCurrent", 700_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="千円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 10_000)
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["calc_status"], "ok")
 
     def test_growth_rate_uses_null_when_prior_is_zero_or_negative(self) -> None:
         normalized_rows = [
@@ -129,6 +195,7 @@ class DerivedMetricServiceTest(unittest.TestCase):
             build_normalized_row("CashAndCashEquivalentsPrior2", 60_000),
             build_normalized_row("CashAndCashEquivalentsPrior3", 50_000),
             build_normalized_row("CashAndCashEquivalentsPrior4", 40_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
             build_normalized_row("CostOfSalesCurrent", 400_000),
             build_normalized_row("SellingExpensesCurrent", 200_000),
             build_normalized_row("OperatingIncomeCurrent", 150_000),
@@ -151,3 +218,31 @@ class DerivedMetricServiceTest(unittest.TestCase):
             by_key["NetSalesGrowthRateCurrent"]["calc_status"],
             "zero_or_negative_base",
         )
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 1_000_000)
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["calc_status"], "ok")
+
+    def test_outstanding_shares_requires_issued_shares(self) -> None:
+        normalized_rows = [
+            build_normalized_row("TreasurySharesCurrent", 100),
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 100_000),
+            build_normalized_row("CostOfSalesCurrent", 400_000),
+            build_normalized_row("SellingExpensesCurrent", 200_000),
+            build_normalized_row("OperatingIncomeCurrent", 150_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 100_000),
+            build_normalized_row("OperatingCashCurrent", 70_000),
+            build_normalized_row("InvestmentCashCurrent", -10_000),
+            build_normalized_row("TotalAssetsCurrent", 1_500_000),
+            build_normalized_row("NetAssetsCurrent", 700_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="千円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertIsNone(by_key["OutstandingSharesCurrent"]["value_num"])
+        self.assertEqual(by_key["OutstandingSharesCurrent"]["calc_status"], "missing_input")
