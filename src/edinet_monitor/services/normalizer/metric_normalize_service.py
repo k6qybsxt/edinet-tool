@@ -68,8 +68,23 @@ def _build_source_tag_priority_map() -> dict[str, dict[str, int]]:
 
 SOURCE_TAG_PRIORITY_MAP = _build_source_tag_priority_map()
 
+SOURCE_TAG_PRIORITY_OVERRIDES = {
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": {
+        "OperatingExpensesIFRS": 0,
+        "ElectricUtilityOperatingExpensesELE": 0,
+        "ElectricUtilityOperatingExpenses": 0,
+        "OperatingExpensesOILTelecommunications": 0,
+        "BusinessExpenses": 0,
+        "OperatingCostsAndExpensesCOSExpOA": 0,
+        "OperatingExpenses": 1,
+    },
+}
+
 
 def _get_source_tag_priority(metric_base: str, tag_name: str) -> int:
+    override_map = SOURCE_TAG_PRIORITY_OVERRIDES.get(metric_base, {})
+    if tag_name in override_map:
+        return override_map[tag_name]
     metric_map = SOURCE_TAG_PRIORITY_MAP.get(metric_base, {})
     return metric_map.get(tag_name, 9999)
 

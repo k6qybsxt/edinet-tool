@@ -65,6 +65,13 @@ TAG_ALIAS = {
     "CostOfRawMaterialsCOS": "CostOfSales",
     "CostOfCompletedWorkCOSExpOA": "CostOfSales",
     "CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OperatingExpensesIFRS": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OperatingExpenses": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OperatingExpensesOILTelecommunications": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "ElectricUtilityOperatingExpensesELE": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "ElectricUtilityOperatingExpenses": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "BusinessExpenses": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OperatingCostsAndExpensesCOSExpOA": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
 
     # GrossProfit　売上総利益
     "GrossProfit": "GrossProfit",

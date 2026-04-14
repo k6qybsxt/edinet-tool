@@ -9,6 +9,8 @@ class TagAliasTest(unittest.TestCase):
             "NetSalesOfCompletedConstructionContractsCNS",
             "OperatingRevenuesSummaryOfBusinessResults",
             "BusinessRevenueSummaryOfBusinessResults",
+            "RevenueIFRSSummaryOfBusinessResults",
+            "OperatingRevenueSummaryOfBusinessResults",
             "OrdinaryIncomeBNK",
             "InsurancePremiumsAndOtherOIINS",
         ]
@@ -50,11 +52,24 @@ class TagAliasTest(unittest.TestCase):
             with self.subTest(tag_name=tag_name):
                 self.assertEqual(normalize_tag_to_metric(tag_name), "GrossProfit")
 
-    def test_combined_cost_and_sga_tag_maps_to_combined_metric(self) -> None:
-        self.assertEqual(
-            normalize_tag_to_metric("CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS"),
-            "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
-        )
+    def test_combined_cost_and_sga_tags_map_to_combined_metric(self) -> None:
+        cases = [
+            "CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS",
+            "OperatingExpensesIFRS",
+            "OperatingExpenses",
+            "OperatingExpensesOILTelecommunications",
+            "ElectricUtilityOperatingExpensesELE",
+            "ElectricUtilityOperatingExpenses",
+            "BusinessExpenses",
+            "OperatingCostsAndExpensesCOSExpOA",
+        ]
+
+        for tag_name in cases:
+            with self.subTest(tag_name=tag_name):
+                self.assertEqual(
+                    normalize_tag_to_metric(tag_name),
+                    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+                )
 
 
 if __name__ == "__main__":

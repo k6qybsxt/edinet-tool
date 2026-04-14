@@ -340,6 +340,42 @@ class DerivedMetricServiceTest(unittest.TestCase):
             20_000,
         )
 
+    def test_combined_cost_and_sga_accepts_operating_expenses_ifrs_tag(self) -> None:
+        normalized_rows = [
+            build_normalized_row(
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
+                820_000,
+                source_tag="OperatingExpensesIFRS",
+            ),
+            build_normalized_row("CostOfSalesCurrent", 500_000, source_tag="CostOfSales"),
+            build_normalized_row("SellingExpensesCurrent", 300_000, source_tag="SellingGeneralAndAdministrativeExpenses"),
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 240_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("OperatingCashCurrent", 90_000),
+            build_normalized_row("InvestmentCashCurrent", -20_000),
+            build_normalized_row("TotalAssetsCurrent", 2_000_000),
+            build_normalized_row("NetAssetsCurrent", 1_000_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="ifrs",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(
+            by_key["CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent"]["value_num"],
+            820_000,
+        )
+        self.assertEqual(
+            by_key["CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent"]["source_detail_json"]["selected_source"],
+            "combined_expense_tag",
+        )
+
     def test_outstanding_shares_treats_missing_treasury_as_zero(self) -> None:
         normalized_rows = [
             build_normalized_row("IssuedSharesCurrent", 10_000),

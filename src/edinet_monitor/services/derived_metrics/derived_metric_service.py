@@ -58,6 +58,13 @@ SAFE_GROSS_PROFIT_SOURCE_TAGS = {
 
 SAFE_COMBINED_COST_AND_SGA_SOURCE_TAGS = {
     "CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS",
+    "OperatingExpensesIFRS",
+    "OperatingExpenses",
+    "OperatingExpensesOILTelecommunications",
+    "ElectricUtilityOperatingExpensesELE",
+    "ElectricUtilityOperatingExpenses",
+    "BusinessExpenses",
+    "OperatingCostsAndExpensesCOSExpOA",
 }
 
 
