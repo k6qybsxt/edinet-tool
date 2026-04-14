@@ -125,6 +125,46 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized_rows[0]["source_tag"], "OperatingExpensesIFRS")
         self.assertEqual(normalized_rows[0]["value_num"], 120.0)
 
+    def test_usgaap_operating_cash_maps_to_operating_cash(self) -> None:
+        row = build_raw_fact(
+            tag_name="CashFlowsFromUsedInOperatingActivitiesUSGAAPSummaryOfBusinessResults",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="7751",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "OperatingCashCurrent")
+        self.assertEqual(
+            normalized["source_tag"],
+            "CashFlowsFromUsedInOperatingActivitiesUSGAAPSummaryOfBusinessResults",
+        )
+
+    def test_usgaap_cash_and_cash_equivalents_maps_to_cash_and_cash_equivalents(self) -> None:
+        row = build_raw_fact(
+            tag_name="CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults",
+            context_ref="CurrentYearInstant",
+            period_type="instant",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="7751",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "CashAndCashEquivalentsCurrent")
+        self.assertEqual(
+            normalized["source_tag"],
+            "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

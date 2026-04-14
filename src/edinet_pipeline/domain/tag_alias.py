@@ -149,6 +149,7 @@ TAG_ALIAS = {
     "NetCashProvidedByUsedInOperatingActivities": "OperatingCash",
     "NetCashProvidedByUsedInOperatingActivitiesIFRS": "OperatingCash",
     "CashFlowsFromUsedInOperatingActivitiesIFRSSummaryOfBusinessResults": "OperatingCash",
+    "CashFlowsFromUsedInOperatingActivitiesUSGAAPSummaryOfBusinessResults": "OperatingCash",
 
     # 投資CF
     "NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults": "InvestmentCash",
@@ -156,12 +157,14 @@ TAG_ALIAS = {
     "NetCashProvidedByUsedInInvestingActivities": "InvestmentCash",
     "NetCashProvidedByUsedInInvestingActivitiesIFRS": "InvestmentCash",
     "CashFlowsFromUsedInInvestingActivitiesIFRSSummaryOfBusinessResults": "InvestmentCash",
+    "CashFlowsFromUsedInInvestingActivitiesUSGAAPSummaryOfBusinessResults": "InvestmentCash",
 
     # 財務CF
     "NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults": "FinancingCash",
     "NetCashProvidedByUsedInFinancingActivities": "FinancingCash",
     "NetCashProvidedByUsedInFinancingActivitiesIFRS": "FinancingCash",
     "CashFlowsFromUsedInFinancingActivitiesIFRSSummaryOfBusinessResults": "FinancingCash",
+    "CashFlowsFromUsedInFinancingActivitiesUSGAAPSummaryOfBusinessResults": "FinancingCash",
 
     # 資産
     "TotalAssetsSummaryOfBusinessResults": "TotalAssets",
@@ -182,6 +185,7 @@ TAG_ALIAS = {
     "CashAndCashEquivalentsSummaryOfBusinessResults": "CashAndCashEquivalents",
     "CashAndCashEquivalentsIFRSSummaryOfBusinessResults": "CashAndCashEquivalents",
     "CashAndCashEquivalentsIFRS": "CashAndCashEquivalents",
+    "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults": "CashAndCashEquivalents",
 
     # 発行株数
     "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",

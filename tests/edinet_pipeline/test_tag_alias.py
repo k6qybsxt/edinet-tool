@@ -71,6 +71,18 @@ class TagAliasTest(unittest.TestCase):
                     "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
                 )
 
+    def test_usgaap_cashflow_tags_map_to_cashflow_metrics(self) -> None:
+        cases = {
+            "CashFlowsFromUsedInOperatingActivitiesUSGAAPSummaryOfBusinessResults": "OperatingCash",
+            "CashFlowsFromUsedInInvestingActivitiesUSGAAPSummaryOfBusinessResults": "InvestmentCash",
+            "CashFlowsFromUsedInFinancingActivitiesUSGAAPSummaryOfBusinessResults": "FinancingCash",
+            "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults": "CashAndCashEquivalents",
+        }
+
+        for tag_name, metric_name in cases.items():
+            with self.subTest(tag_name=tag_name):
+                self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
+
 
 if __name__ == "__main__":
     unittest.main()
