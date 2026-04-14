@@ -23,6 +23,10 @@ class MetricLabelsTest(unittest.TestCase):
     def test_metric_base_to_display_name_returns_japanese_label(self) -> None:
         self.assertEqual(metric_base_to_display_name("NetSales"), "\u58f2\u4e0a\u9ad8")
         self.assertEqual(metric_base_to_display_name("CostOfSales"), "\u58f2\u4e0a\u539f\u4fa1")
+        self.assertEqual(
+            metric_base_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpenses"),
+            "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
+        )
         self.assertEqual(metric_base_to_display_name("CashAndCashEquivalents"), "\u671f\u672b\u6b8b")
         self.assertEqual(metric_base_to_display_name("OutstandingShares"), "\u767a\u884c\u682a\u6570")
         self.assertEqual(
@@ -51,6 +55,10 @@ class MetricLabelsTest(unittest.TestCase):
     def test_tag_name_to_display_name_normalizes_original_tag(self) -> None:
         self.assertEqual(tag_name_to_display_name("NetSalesIFRS"), "\u58f2\u4e0a\u9ad8")
         self.assertEqual(tag_name_to_display_name("CostOfSales"), "\u58f2\u4e0a\u539f\u4fa1")
+        self.assertEqual(
+            tag_name_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS"),
+            "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
+        )
 
     def test_metric_group_to_display_name_returns_japanese_label(self) -> None:
         self.assertEqual(metric_group_to_display_name("growth"), "\u6210\u9577")

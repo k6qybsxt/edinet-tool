@@ -6,6 +6,7 @@ from edinet_pipeline.domain.tag_alias import normalize_tag_to_metric
 METRIC_BASE_LABELS = {
     "NetSales": "\u58f2\u4e0a\u9ad8",
     "CostOfSales": "\u58f2\u4e0a\u539f\u4fa1",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
     "SellingExpenses": "\u8ca9\u7ba1\u8cbb",
     "OperatingIncome": "\u55b6\u696d\u5229\u76ca",
     "OrdinaryIncome": "\u7d4c\u5e38\u5229\u76ca",
