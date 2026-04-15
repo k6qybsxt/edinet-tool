@@ -75,8 +75,18 @@ SOURCE_TAG_PRIORITY_OVERRIDES = {
         "ElectricUtilityOperatingExpenses": 0,
         "OperatingExpensesOILTelecommunications": 0,
         "BusinessExpenses": 0,
+        "OperatingExpensesOE": 0,
         "OperatingCostsAndExpensesCOSExpOA": 0,
         "OperatingExpenses": 1,
+    },
+    "SellingExpenses": {
+        "SellingGeneralAndAdministrativeExpensesIFRS": 0,
+        "SellingGeneralAndAdministrativeExpenses": 0,
+        "SellingExpensesAndGeneralAdministrativeExpensesIFRS": 0,
+        "SellingExpensesAndGeneralAdministrativeExpenses": 0,
+        "GeneralAndAdministrativeExpensesSGA": 1,
+        "GeneralAndAdministrativeExpensesIFRS": 1,
+        "GeneralAndAdministrativeExpenses": 1,
     },
 }
 
@@ -166,6 +176,43 @@ def _dedupe_sort_key(row: dict[str, Any]) -> tuple:
     )
 
 
+def _rewrite_service_operating_expenses_as_cost_of_sales(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    selling_groups = {
+        _dedupe_group_key(row)
+        for row in rows
+        if str(row.get("_metric_base") or "") == "SellingExpenses"
+    }
+
+    rewritten: list[dict[str, Any]] = []
+    for row in rows:
+        candidate = dict(row)
+        if (
+            str(candidate.get("_metric_base") or "") == "CostOfSalesAndSellingGeneralAndAdministrativeExpenses"
+            and str(candidate.get("source_tag") or "") == "OperatingExpenses"
+            and _dedupe_group_key(candidate) in selling_groups
+        ):
+            metric_key = str(candidate.get("metric_key") or "")
+            if metric_key.endswith("Current"):
+                suffix = "Current"
+            elif metric_key.endswith("Prior1"):
+                suffix = "Prior1"
+            elif metric_key.endswith("Prior2"):
+                suffix = "Prior2"
+            elif metric_key.endswith("Prior3"):
+                suffix = "Prior3"
+            elif metric_key.endswith("Prior4"):
+                suffix = "Prior4"
+            else:
+                suffix = ""
+            candidate["metric_key"] = _build_metric_key("CostOfSales", suffix)
+            candidate["_metric_base"] = "CostOfSales"
+            candidate["_tag_priority"] = _get_source_tag_priority("CostOfSales", "OperatingExpenses")
+        rewritten.append(candidate)
+    return rewritten
+
+
 def dedupe_normalized_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     best_by_key: dict[tuple, dict[str, Any]] = {}
 
@@ -216,4 +263,5 @@ def normalize_raw_fact_rows(
         if normalized is not None:
             candidates.append(normalized)
 
+    candidates = _rewrite_service_operating_expenses_as_cost_of_sales(candidates)
     return dedupe_normalized_metrics(candidates)

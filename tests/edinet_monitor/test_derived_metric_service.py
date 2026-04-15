@@ -240,6 +240,44 @@ class DerivedMetricServiceTest(unittest.TestCase):
             "unsafe_cost_of_sales_source_tag",
         )
 
+    def test_gross_profit_uses_bank_funding_profit_formula(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 10_960_514, source_tag="OrdinaryIncomeBNK"),
+            build_normalized_row("FundingIncomeCurrent", 8_467_719, source_tag="InterestIncomeOIBNK"),
+            build_normalized_row("CostOfSalesCurrent", 5_591_266, source_tag="FinancingExpensesOpeCFBNK"),
+            build_normalized_row("SellingExpensesCurrent", 3_166_035, source_tag="GeneralAndAdministrativeExpensesOEBNK"),
+            build_normalized_row(
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
+                10_960_514,
+                source_tag="OrdinaryExpensesBNK",
+            ),
+            build_normalized_row("OrdinaryIncomeCurrent", 2_669_483),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("OperatingCashCurrent", 90_000),
+            build_normalized_row("InvestmentCashCurrent", -20_000),
+            build_normalized_row("TotalAssetsCurrent", 2_000_000),
+            build_normalized_row("NetAssetsCurrent", 1_000_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["GrossProfitCurrent"]["value_num"], 2_876_453)
+        self.assertEqual(
+            by_key["GrossProfitCurrent"]["source_detail_json"]["selected_source"],
+            "funding_income_minus_financing_expenses",
+        )
+        self.assertEqual(
+            by_key["GrossProfitCurrent"]["source_detail_json"]["funding_income_source_tag"],
+            "InterestIncomeOIBNK",
+        )
+
     def test_gross_profit_calculates_with_operating_cost_source(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000, source_tag="RevenueIFRSSummaryOfBusinessResults"),

@@ -31,6 +31,9 @@ class TagAliasTest(unittest.TestCase):
             "CostOfBusinessRevenueCOSExpOA",
             "CostOfRawMaterialsCOS",
             "CostOfCompletedWorkCOSExpOA",
+            "CostOfFinishedGoodsSold",
+            "GoodsConsignmentMerchandiseCostOfFinishedGoodsSoldCOS",
+            "FinancingExpensesOpeCFBNK",
         ]
 
         for tag_name in cases:
@@ -62,6 +65,7 @@ class TagAliasTest(unittest.TestCase):
             "ElectricUtilityOperatingExpenses",
             "BusinessExpenses",
             "OperatingCostsAndExpensesCOSExpOA",
+            "OrdinaryExpensesBNK",
         ]
 
         for tag_name in cases:
@@ -70,6 +74,17 @@ class TagAliasTest(unittest.TestCase):
                     normalize_tag_to_metric(tag_name),
                     "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
                 )
+
+    def test_banking_tags_map_to_expected_metrics(self) -> None:
+        cases = {
+            "GeneralAndAdministrativeExpensesOEBNK": "SellingExpenses",
+            "InterestIncomeOIBNK": "FundingIncome",
+            "FeesAndCommissionsOIBNK": "FeesAndCommissionsIncome",
+        }
+
+        for tag_name, metric_name in cases.items():
+            with self.subTest(tag_name=tag_name):
+                self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
 
     def test_usgaap_cashflow_tags_map_to_cashflow_metrics(self) -> None:
         cases = {

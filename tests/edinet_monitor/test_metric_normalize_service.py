@@ -80,6 +80,37 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "CostOfSalesCurrent")
         self.assertEqual(normalized["source_tag"], "CostOfCompletedWorkCOSExpOA")
 
+    def test_cost_of_finished_goods_sold_maps_to_cost_of_sales(self) -> None:
+        row = build_raw_fact(tag_name="CostOfFinishedGoodsSold")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="4888",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "CostOfSalesCurrent")
+        self.assertEqual(normalized["source_tag"], "CostOfFinishedGoodsSold")
+
+    def test_goods_consignment_merchandise_cost_tag_maps_to_cost_of_sales(self) -> None:
+        row = build_raw_fact(tag_name="GoodsConsignmentMerchandiseCostOfFinishedGoodsSoldCOS")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="4558",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "CostOfSalesCurrent")
+        self.assertEqual(
+            normalized["source_tag"],
+            "GoodsConsignmentMerchandiseCostOfFinishedGoodsSoldCOS",
+        )
+
     def test_business_expenses_maps_to_combined_cost_and_sga(self) -> None:
         row = build_raw_fact(tag_name="BusinessExpenses")
 
@@ -96,6 +127,73 @@ class MetricNormalizeServiceTest(unittest.TestCase):
             "CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
         )
         self.assertEqual(normalized["source_tag"], "BusinessExpenses")
+
+    def test_banking_financing_expenses_maps_to_cost_of_sales(self) -> None:
+        row = build_raw_fact(tag_name="FinancingExpensesOpeCFBNK")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="8306",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "CostOfSalesCurrent")
+        self.assertEqual(normalized["source_tag"], "FinancingExpensesOpeCFBNK")
+
+    def test_banking_general_and_administrative_expenses_maps_to_selling_expenses(self) -> None:
+        row = build_raw_fact(tag_name="GeneralAndAdministrativeExpensesOEBNK")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="8306",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "SellingExpensesCurrent")
+        self.assertEqual(normalized["source_tag"], "GeneralAndAdministrativeExpensesOEBNK")
+
+    def test_banking_ordinary_expenses_maps_to_combined_cost_and_sga(self) -> None:
+        row = build_raw_fact(tag_name="OrdinaryExpensesBNK")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="8306",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(
+            normalized["metric_key"],
+            "CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
+        )
+        self.assertEqual(normalized["source_tag"], "OrdinaryExpensesBNK")
+
+    def test_banking_income_tags_map_to_bank_specific_metrics(self) -> None:
+        funding_row = build_raw_fact(tag_name="InterestIncomeOIBNK")
+        fees_row = build_raw_fact(tag_name="FeesAndCommissionsOIBNK")
+
+        funding = normalize_raw_fact_row(
+            funding_row,
+            edinet_code="E00000",
+            security_code="8306",
+        )
+        fees = normalize_raw_fact_row(
+            fees_row,
+            edinet_code="E00000",
+            security_code="8306",
+        )
+
+        self.assertIsNotNone(funding)
+        self.assertIsNotNone(fees)
+        assert funding is not None
+        assert fees is not None
+        self.assertEqual(funding["metric_key"], "FundingIncomeCurrent")
+        self.assertEqual(fees["metric_key"], "FeesAndCommissionsIncomeCurrent")
 
     def test_combined_cost_and_sga_prefers_total_operating_expenses_tag(self) -> None:
         rows = [

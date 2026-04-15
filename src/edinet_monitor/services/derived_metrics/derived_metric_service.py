@@ -64,7 +64,9 @@ SAFE_COMBINED_COST_AND_SGA_SOURCE_TAGS = {
     "ElectricUtilityOperatingExpensesELE",
     "ElectricUtilityOperatingExpenses",
     "BusinessExpenses",
+    "OperatingExpensesOE",
     "OperatingCostsAndExpensesCOSExpOA",
+    "OrdinaryExpensesBNK",
 }
 
 
@@ -257,6 +259,19 @@ def _is_safe_cost_of_sales_source(source_tag: str | None) -> bool:
     return str(source_tag or "") in SAFE_COST_OF_SALES_SOURCE_TAGS
 
 
+def _is_safe_cost_of_sales_row(
+    metric_rows: dict[str, dict[str, Any]],
+    metric_key: str,
+) -> bool:
+    source_tag = _metric_source_tag(metric_rows, metric_key)
+    if _is_safe_cost_of_sales_source(source_tag):
+        return True
+    if source_tag != "OperatingExpenses":
+        return False
+    suffix = metric_key.replace("CostOfSales", "", 1)
+    return _metric_row(metric_rows, _build_metric_key("SellingExpenses", suffix)) is not None
+
+
 def _is_safe_gross_profit_source(source_tag: str | None) -> bool:
     return str(source_tag or "") in SAFE_GROSS_PROFIT_SOURCE_TAGS
 
@@ -265,6 +280,7 @@ def _gross_profit_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> 
     gross_profit_key = _build_metric_key("GrossProfit", suffix)
     net_sales_key = _build_metric_key("NetSales", suffix)
     cost_of_sales_key = _build_metric_key("CostOfSales", suffix)
+    funding_income_key = _build_metric_key("FundingIncome", suffix)
 
     tag_value = _metric_value(metric_rows, gross_profit_key)
     gross_profit_source_tag = _metric_source_tag(metric_rows, gross_profit_key)
@@ -272,8 +288,14 @@ def _gross_profit_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> 
     net_sales_source_tag = _metric_source_tag(metric_rows, net_sales_key)
     cost_of_sales = _metric_value(metric_rows, cost_of_sales_key)
     cost_of_sales_source_tag = _metric_source_tag(metric_rows, cost_of_sales_key)
+    funding_income = _metric_value(metric_rows, funding_income_key)
+    funding_income_source_tag = _metric_source_tag(metric_rows, funding_income_key)
     calculated_value, calculated_status = _difference_status(
         left_value=net_sales,
+        right_value=cost_of_sales,
+    )
+    funding_profit_value, funding_profit_status = _difference_status(
+        left_value=funding_income,
         right_value=cost_of_sales,
     )
 
@@ -288,39 +310,69 @@ def _gross_profit_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> 
                 gross_profit_key: tag_value,
                 net_sales_key: net_sales,
                 cost_of_sales_key: cost_of_sales,
+                funding_income_key: funding_income,
             },
-            "reference_keys": [gross_profit_key, net_sales_key, cost_of_sales_key],
+            "reference_keys": [gross_profit_key, net_sales_key, cost_of_sales_key, funding_income_key],
             "detail_extra": {
                 "selected_source": "gross_profit_tag",
                 "tag_metric_key": gross_profit_key,
                 "gross_profit_source_tag": gross_profit_source_tag,
                 "net_sales_source_tag": net_sales_source_tag,
                 "cost_of_sales_source_tag": cost_of_sales_source_tag,
+                "funding_income_source_tag": funding_income_source_tag,
                 "tag_value": tag_value,
                 "calculated_value": calculated_value,
+                "funding_profit_value": funding_profit_value,
                 "difference_tag_minus_calculated": difference_value,
             },
             "display_formula": "gross_profit_tag",
             "stored_formula": "gross_profit_tag",
         }
 
-    if not _is_safe_cost_of_sales_source(cost_of_sales_source_tag):
+    if cost_of_sales_source_tag == "FinancingExpensesOpeCFBNK" and funding_income is not None:
+        return {
+            "value_num": funding_profit_value,
+            "calc_status": funding_profit_status,
+            "detail_inputs": {
+                funding_income_key: funding_income,
+                cost_of_sales_key: cost_of_sales,
+            },
+            "reference_keys": [funding_income_key, cost_of_sales_key],
+            "detail_extra": {
+                "selected_source": "funding_income_minus_financing_expenses",
+                "tag_metric_key": gross_profit_key,
+                "gross_profit_source_tag": gross_profit_source_tag,
+                "net_sales_source_tag": net_sales_source_tag,
+                "cost_of_sales_source_tag": cost_of_sales_source_tag,
+                "funding_income_source_tag": funding_income_source_tag,
+                "tag_value": tag_value,
+                "calculated_value": funding_profit_value,
+                "difference_tag_minus_calculated": None,
+            },
+            "display_formula": "funding_income - financing_expenses",
+            "stored_formula": "funding_income - financing_expenses",
+        }
+
+    if not _is_safe_cost_of_sales_row(metric_rows, cost_of_sales_key):
         return {
             "value_num": None,
             "calc_status": "missing_input",
             "detail_inputs": {
                 net_sales_key: net_sales,
                 cost_of_sales_key: cost_of_sales,
+                funding_income_key: funding_income,
             },
-            "reference_keys": [net_sales_key, cost_of_sales_key],
+            "reference_keys": [net_sales_key, cost_of_sales_key, funding_income_key],
             "detail_extra": {
                 "selected_source": "missing_input",
                 "tag_metric_key": gross_profit_key,
                 "gross_profit_source_tag": gross_profit_source_tag,
                 "net_sales_source_tag": net_sales_source_tag,
                 "cost_of_sales_source_tag": cost_of_sales_source_tag,
+                "funding_income_source_tag": funding_income_source_tag,
                 "tag_value": tag_value,
                 "calculated_value": calculated_value,
+                "funding_profit_value": funding_profit_value,
                 "difference_tag_minus_calculated": None,
                 "missing_reason": "unsafe_cost_of_sales_source_tag",
             },

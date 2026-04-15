@@ -34,6 +34,32 @@ class MetricLabelsTest(unittest.TestCase):
             "\u63a8\u5b9a\u7d14\u5229\u76ca(\u7d4c\u5e38\u5229\u76ca*0.7)",
         )
         self.assertEqual(metric_base_to_display_name("EstimatedNetMargin"), "\u7d14\u5229\u76ca\u7387")
+        self.assertEqual(metric_base_to_display_name("FundingIncome"), "\u8cc7\u91d1\u904b\u7528\u53ce\u76ca")
+        self.assertEqual(
+            metric_base_to_display_name("FeesAndCommissionsIncome"),
+            "\u5f79\u52d9\u53d6\u5f15\u7b49\u53ce\u76ca",
+        )
+
+    def test_metric_base_to_display_name_uses_bank_labels_for_bank_industry(self) -> None:
+        self.assertEqual(
+            metric_base_to_display_name("CostOfSales", "\u9280\u884c\u696d"),
+            "\u8cc7\u91d1\u8abf\u9054\u8cbb\u7528",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("SellingExpenses", "\u9280\u884c\u696d"),
+            "\u55b6\u696d\u7d4c\u8cbb",
+        )
+        self.assertEqual(
+            metric_base_to_display_name(
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+                "\u9280\u884c\u696d",
+            ),
+            "\u7d4c\u5e38\u8cbb\u7528",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("GrossProfit", "\u9280\u884c\u696d"),
+            "\u8cc7\u91d1\u5229\u76ca",
+        )
 
     def test_metric_key_to_display_name_appends_period_suffix(self) -> None:
         self.assertEqual(
@@ -58,6 +84,10 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(
             tag_name_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS"),
             "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
+        )
+        self.assertEqual(
+            tag_name_to_display_name("FinancingExpensesOpeCFBNK", "\u9280\u884c\u696d"),
+            "\u8cc7\u91d1\u8abf\u9054\u8cbb\u7528",
         )
 
     def test_metric_group_to_display_name_returns_japanese_label(self) -> None:

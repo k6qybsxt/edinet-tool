@@ -238,5 +238,107 @@ class CompanyExportServiceTest(unittest.TestCase):
         self.assertEqual(raw_fact_row["tag_label"], "売上高")
 
 
+    def test_export_company_latest_dataset_uses_bank_labels_and_placeholder(self) -> None:
+        self.conn.execute("DELETE FROM screening_results")
+        self.conn.execute("DELETE FROM raw_facts")
+        self.conn.execute("DELETE FROM derived_metrics")
+        self.conn.execute("DELETE FROM normalized_metrics")
+        self.conn.execute("DELETE FROM filings")
+        self.conn.execute("DELETE FROM issuer_master")
+
+        self.conn.execute(
+            """
+            INSERT INTO issuer_master (
+                edinet_code, security_code, company_name, market, industry_33, industry_17,
+                is_listed, exchange, listing_category_raw, listing_source, updated_at
+            ) VALUES (
+                'E00001', '8306', 'Bank Example', 'Prime', '銀行業', '金融',
+                1, 'TSE', 'Prime', 'csv', '2026-04-15 00:00:00'
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES (
+                'S100BANK', 'E00001', '83060', '030000', '2025-03-31', '2025-06-25 15:30',
+                0, '0', '1', 'Japan GAAP', '百万円', 'zip', 'xbrl', 'downloaded', 'derived_metrics_saved',
+                '2026-04-15 00:00:00', '2026-04-15 00:00:00'
+            )
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "S100BANK", "E00001", "83060", "CostOfSalesCurrent", 2024, "2025-03-31",
+                    5_591_266_000_000.0, "FinancingExpensesOpeCFBNK", "consolidated", "v1",
+                    "2026-04-15 00:00:00", "2026-04-15 00:00:00",
+                ),
+                (
+                    "S100BANK", "E00001", "83060", "SellingExpensesCurrent", 2024, "2025-03-31",
+                    3_166_035_000_000.0, "GeneralAndAdministrativeExpensesOEBNK", "consolidated", "v1",
+                    "2026-04-15 00:00:00", "2026-04-15 00:00:00",
+                ),
+                (
+                    "S100BANK", "E00001", "83060", "FundingIncomeCurrent", 2024, "2025-03-31",
+                    8_467_719_000_000.0, "InterestIncomeOIBNK", "consolidated", "v1",
+                    "2026-04-15 00:00:00", "2026-04-15 00:00:00",
+                ),
+                (
+                    "S100BANK", "E00001", "83060", "FeesAndCommissionsIncomeCurrent", 2024, "2025-03-31",
+                    2_360_111_000_000.0, "FeesAndCommissionsOIBNK", "consolidated", "v1",
+                    "2026-04-15 00:00:00", "2026-04-15 00:00:00",
+                ),
+            ],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO derived_metrics (
+                doc_id, edinet_code, security_code, metric_key, metric_base, metric_group,
+                fiscal_year, period_end, period_scope, period_offset, consolidation,
+                accounting_standard, document_display_unit, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                'S100BANK', 'E00001', '83060', 'GrossProfitCurrent', 'GrossProfit', 'profitability',
+                2024, '2025-03-31', 'annual', 0, 'consolidated',
+                'Japan GAAP', '百万円', 2876453000000.0, 'yen', 'ok',
+                'funding_income_minus_financing_expenses', '{}', 'v1',
+                '2026-04-15 00:00:00', '2026-04-15 00:00:00'
+            )
+            """
+        )
+        self.conn.commit()
+
+        payload = export_company_latest_dataset(
+            self.conn,
+            security_code="8306",
+            years=1,
+            screening_limit=5,
+        )
+
+        normalized_rows = {row["metric_key"]: row for row in payload["正規化指標"]}
+        derived_rows = {row["metric_key"]: row for row in payload["派生指標"]}
+
+        self.assertEqual(normalized_rows["CostOfSalesCurrent"]["metric_label"], "資金調達費用（当期）")
+        self.assertEqual(normalized_rows["SellingExpensesCurrent"]["metric_label"], "営業経費（当期）")
+        self.assertEqual(normalized_rows["FundingIncomeCurrent"]["metric_label"], "資金運用収益（当期）")
+        self.assertEqual(
+            normalized_rows["FeesAndCommissionsIncomeCurrent"]["metric_label"],
+            "役務取引等収益（当期）",
+        )
+        self.assertEqual(normalized_rows["OperatingIncomeCurrent"]["display_value_num"], "-")
+        self.assertEqual(derived_rows["GrossProfitCurrent"]["metric_label"], "資金利益（当期）")
+
+
 if __name__ == "__main__":
     unittest.main()

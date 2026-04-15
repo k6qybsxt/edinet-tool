@@ -134,9 +134,10 @@ def _build_normalized_metric_payload(row: sqlite3.Row, filing_by_doc_id: dict[st
     item = dict(row)
     filing = filing_by_doc_id.get(str(row["doc_id"]), {})
     document_display_unit = filing.get("document_display_unit")
-    item["metric_label"] = metric_key_to_display_name(row["metric_key"])
-    item["metric_base"] = metric_key_to_display_name(row["metric_key"]).split("\uff08", 1)[0]
-    item["source_tag_label"] = tag_name_to_display_name(item.get("source_tag"))
+    industry_33 = filing.get("industry_33")
+    item["metric_label"] = metric_key_to_display_name(row["metric_key"], industry_33)
+    item["metric_base"] = metric_key_to_display_name(row["metric_key"], industry_33).split("\uff08", 1)[0]
+    item["source_tag_label"] = tag_name_to_display_name(item.get("source_tag"), industry_33)
     item["document_display_unit"] = document_display_unit
     item["display_value_num"] = _scale_value_for_display(
         row["value_num"],
@@ -146,22 +147,23 @@ def _build_normalized_metric_payload(row: sqlite3.Row, filing_by_doc_id: dict[st
     return item
 
 
-def _build_derived_metric_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _build_derived_metric_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
-    item["metric_label"] = metric_key_to_display_name(row["metric_key"])
-    item["metric_base_label"] = metric_base_to_display_name(row["metric_base"])
+    industry_33 = item.get("industry_33")
+    item["metric_label"] = metric_key_to_display_name(item["metric_key"], industry_33)
+    item["metric_base_label"] = metric_base_to_display_name(item["metric_base"], industry_33)
     item["metric_group_label"] = metric_group_to_display_name(row["metric_group"])
     item["display_value_num"] = _scale_value_for_display(
-        row["value_num"],
+        item["value_num"],
         value_unit=item.get("value_unit"),
         document_display_unit=item.get("document_display_unit"),
     )
     return item
 
 
-def _build_raw_fact_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _build_raw_fact_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
-    item["tag_label"] = tag_name_to_display_name(row["tag_name"])
+    item["tag_label"] = tag_name_to_display_name(item["tag_name"], item.get("industry_33"))
     return item
 
 
@@ -187,6 +189,9 @@ def export_company_latest_dataset(
         years=years,
     )
     filing_payloads = [_build_filing_payload(row) for row in filings]
+    issuer_industry_33 = str(issuer["industry_33"] or "").strip()
+    for filing_payload in filing_payloads:
+        filing_payload["industry_33"] = issuer_industry_33
     filing_by_doc_id = {
         str(row["doc_id"]): payload
         for row, payload in zip(filings, filing_payloads)
@@ -217,24 +222,56 @@ def export_company_latest_dataset(
         limit=screening_limit,
     )
 
+    normalized_payloads = [
+        _build_normalized_metric_payload(row, filing_by_doc_id) for row in normalized_rows
+    ]
+
+    if issuer_industry_33 == "\u9280\u884c\u696d":
+        existing_keys = {
+            (str(item.get("doc_id") or ""), str(item.get("metric_key") or ""))
+            for item in normalized_payloads
+        }
+        for filing_payload in filing_payloads:
+            placeholder_key = (str(filing_payload["doc_id"]), "OperatingIncomeCurrent")
+            if placeholder_key in existing_keys:
+                continue
+            normalized_payloads.append(
+                {
+                    "doc_id": filing_payload["doc_id"],
+                    "edinet_code": filing_payload["edinet_code"],
+                    "security_code": filing_payload["security_code"],
+                    "metric_key": "OperatingIncomeCurrent",
+                    "fiscal_year": None,
+                    "period_end": filing_payload.get("period_end"),
+                    "value_num": None,
+                    "source_tag": None,
+                    "source_tag_label": "",
+                    "consolidation": None,
+                    "rule_version": None,
+                    "metric_label": metric_key_to_display_name("OperatingIncomeCurrent", issuer_industry_33),
+                    "metric_base": metric_key_to_display_name("OperatingIncomeCurrent", issuer_industry_33).split("\uff08", 1)[0],
+                    "document_display_unit": filing_payload.get("document_display_unit"),
+                    "display_value_num": "-",
+                    "industry_33": issuer_industry_33,
+                }
+            )
+
     return {
         "\u4f1a\u793e\u60c5\u5831": dict(issuer),
         "\u63d0\u51fa\u66f8\u985e": filing_payloads,
-        "\u6b63\u898f\u5316\u6307\u6a19": [
-            _build_normalized_metric_payload(row, filing_by_doc_id) for row in normalized_rows
-        ],
+        "\u6b63\u898f\u5316\u6307\u6a19": normalized_payloads,
         "\u6d3e\u751f\u6307\u6a19": [
-            _build_derived_metric_payload(row) for row in derived_rows
+            _build_derived_metric_payload(dict(row) | {"industry_33": issuer_industry_33}) for row in derived_rows
         ],
         "\u751f\u30d5\u30a1\u30af\u30c8": [
-            _build_raw_fact_payload(row) for row in raw_fact_rows
+            _build_raw_fact_payload(dict(row) | {"industry_33": issuer_industry_33}) for row in raw_fact_rows
         ],
         "\u76f4\u8fd1screening\u7d50\u679c": [
             _build_screening_result_payload(row) for row in screening_rows
         ],
         "\u4ef6\u6570": {
             "\u63d0\u51fa\u66f8\u985e": len(filing_payloads),
-            "\u6b63\u898f\u5316\u6307\u6a19": len(normalized_rows),
+            "\u6b63\u898f\u5316\u6307\u6a19": len(normalized_payloads),
             "\u6d3e\u751f\u6307\u6a19": len(derived_rows),
             "\u751f\u30d5\u30a1\u30af\u30c8": len(raw_fact_rows),
             "\u76f4\u8fd1screening\u7d50\u679c": len(screening_rows),

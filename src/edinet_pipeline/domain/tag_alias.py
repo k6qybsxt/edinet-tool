@@ -40,6 +40,8 @@ TAG_ALIAS = {
     "PremiumAndOtherIncomeSummaryOfBusinessResults": "NetSales",
     "InsuranceRevenueIFRS": "NetSales",
     "InsuranceRevenueIFRSKeyFinancialData": "NetSales",
+    "InterestIncomeOIBNK": "FundingIncome",
+    "FeesAndCommissionsOIBNK": "FeesAndCommissionsIncome",
 
     # CostOfSales　売上原価
     "CostOfSales": "CostOfSales",
@@ -64,6 +66,9 @@ TAG_ALIAS = {
     "CostOfBusinessRevenueCOSExpOA": "CostOfSales",
     "CostOfRawMaterialsCOS": "CostOfSales",
     "CostOfCompletedWorkCOSExpOA": "CostOfSales",
+    "CostOfFinishedGoodsSold": "CostOfSales",
+    "GoodsConsignmentMerchandiseCostOfFinishedGoodsSoldCOS": "CostOfSales",
+    "FinancingExpensesOpeCFBNK": "CostOfSales",
     "CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "OperatingExpensesIFRS": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "OperatingExpenses": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
@@ -71,7 +76,9 @@ TAG_ALIAS = {
     "ElectricUtilityOperatingExpensesELE": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "ElectricUtilityOperatingExpenses": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "BusinessExpenses": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OperatingExpensesOE": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "OperatingCostsAndExpensesCOSExpOA": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OrdinaryExpensesBNK": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
 
     # GrossProfit　売上総利益
     "GrossProfit": "GrossProfit",
@@ -98,9 +105,11 @@ TAG_ALIAS = {
     "SalesAndMarketingExpenses": "SellingExpenses",
     "SalesAndMarketingExpensesIFRS": "SellingExpenses",
     "GeneralAndAdministrativeExpensesIFRS": "SellingExpenses",
+    "GeneralAndAdministrativeExpensesSGA": "SellingExpenses",
     "SellingGeneralAndAdministrativeExpense": "SellingExpenses",
     "GeneralAndAdministrativeExpenses": "SellingExpenses",
     "SellingGeneralAdministrativeExpenses": "SellingExpenses",
+    "GeneralAndAdministrativeExpensesOEBNK": "SellingExpenses",
 
     # OperatingIncome　営業利益
     "OperatingIncome": "OperatingIncome",

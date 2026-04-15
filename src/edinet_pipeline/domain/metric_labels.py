@@ -35,6 +35,17 @@ METRIC_BASE_LABELS = {
     "ROE": "ROE",
     "EquityRatio": "\u81ea\u5df1\u8cc7\u672c\u6bd4\u7387",
     "FCF": "FCF",
+    "FundingIncome": "\u8cc7\u91d1\u904b\u7528\u53ce\u76ca",
+    "FeesAndCommissionsIncome": "\u5f79\u52d9\u53d6\u5f15\u7b49\u53ce\u76ca",
+}
+
+BANK_INDUSTRY_LABEL = "\u9280\u884c\u696d"
+
+BANK_METRIC_BASE_LABELS = {
+    "CostOfSales": "\u8cc7\u91d1\u8abf\u9054\u8cbb\u7528",
+    "SellingExpenses": "\u55b6\u696d\u7d4c\u8cbb",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u7d4c\u5e38\u8cbb\u7528",
+    "GrossProfit": "\u8cc7\u91d1\u5229\u76ca",
 }
 
 METRIC_GROUP_LABELS = {
@@ -60,10 +71,12 @@ METRIC_SUFFIX_LABELS = {
 _SORTED_SUFFIXES = sorted(METRIC_SUFFIX_LABELS.keys(), key=len, reverse=True)
 
 
-def metric_base_to_display_name(metric_base: str | None) -> str:
+def metric_base_to_display_name(metric_base: str | None, industry_33: str | None = None) -> str:
     text = str(metric_base or "").strip()
     if not text:
         return ""
+    if str(industry_33 or "").strip() == BANK_INDUSTRY_LABEL and text in BANK_METRIC_BASE_LABELS:
+        return BANK_METRIC_BASE_LABELS[text]
     return METRIC_BASE_LABELS.get(text, text)
 
 
@@ -86,21 +99,21 @@ def split_metric_key(metric_key: str | None) -> tuple[str, str | None]:
     return text, None
 
 
-def metric_key_to_display_name(metric_key: str | None) -> str:
+def metric_key_to_display_name(metric_key: str | None, industry_33: str | None = None) -> str:
     base_key, suffix = split_metric_key(metric_key)
-    base_label = metric_base_to_display_name(base_key)
+    base_label = metric_base_to_display_name(base_key, industry_33)
     if not suffix:
         return base_label
     suffix_label = METRIC_SUFFIX_LABELS.get(suffix, suffix)
     return f"{base_label}\uff08{suffix_label}\uff09"
 
 
-def tag_name_to_display_name(tag_name: str | None) -> str:
+def tag_name_to_display_name(tag_name: str | None, industry_33: str | None = None) -> str:
     text = str(tag_name or "").strip()
     if not text:
         return ""
 
     normalized = normalize_tag_to_metric(text)
     if normalized:
-        return metric_base_to_display_name(normalized)
+        return metric_base_to_display_name(normalized, industry_33)
     return text
