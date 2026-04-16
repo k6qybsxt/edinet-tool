@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+import shutil
 
 from edinet_monitor.services.normalizer.metric_normalize_service import (
+    build_normalization_candidates,
     normalize_raw_fact_row,
     normalize_raw_fact_rows,
 )
@@ -21,6 +24,20 @@ def build_raw_fact(*, doc_id: str = "DOC1", tag_name: str, value_text: str = "12
         "consolidation": consolidation,
         "value_text": value_text,
     }
+
+
+LAB_XML_FOR_PRIORITY = """<?xml version="1.0" encoding="utf-8"?>
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/link">
+    <link:loc xlink:type="locator" xlink:href="sample.xsd#jppfs_cor_GeneralAndAdministrativeExpensesSGA" xlink:label="GeneralAndAdministrativeExpensesSGA" />
+    <link:loc xlink:type="locator" xlink:href="sample.xsd#jppfs_cor_GeneralAndAdministrativeExpenses" xlink:label="GeneralAndAdministrativeExpenses" />
+    <link:label xlink:type="resource" xlink:label="label_sga" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="ja">販売費及び一般管理費</link:label>
+    <link:label xlink:type="resource" xlink:label="label_ga" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="ja">一般管理費</link:label>
+    <link:labelArc xlink:type="arc" xlink:from="GeneralAndAdministrativeExpensesSGA" xlink:to="label_sga" />
+    <link:labelArc xlink:type="arc" xlink:from="GeneralAndAdministrativeExpenses" xlink:to="label_ga" />
+  </link:labelLink>
+</link:linkbase>
+"""
 
 
 class MetricNormalizeServiceTest(unittest.TestCase):
@@ -291,6 +308,80 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         )
         self.assertEqual(normalized_rows[0]["source_tag"], "OperatingExpensesIFRS")
         self.assertEqual(normalized_rows[0]["value_num"], 120.0)
+
+    def test_structure_priority_prefers_sga_heading_over_general_expense_when_tag_priority_ties(self) -> None:
+        rows = [
+            build_raw_fact(
+                doc_id="DOC3",
+                tag_name="GeneralAndAdministrativeExpenses",
+                value_text="100",
+            ),
+            build_raw_fact(
+                doc_id="DOC3",
+                tag_name="GeneralAndAdministrativeExpensesSGA",
+                value_text="120",
+            ),
+        ]
+
+        tmp_dir = Path("tests") / "_tmp_metric_normalize_structure_priority"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            xbrl_path = tmp_dir / "sample.xbrl"
+            xbrl_path.write_text("<xbrli:xbrl/>", encoding="utf-8")
+            (tmp_dir / "sample_lab.xml").write_text(LAB_XML_FOR_PRIORITY, encoding="utf-8")
+
+            normalized_rows = normalize_raw_fact_rows(
+                rows,
+                edinet_code="E00000",
+                security_code="0000",
+                xbrl_path=str(xbrl_path),
+            )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        self.assertEqual(len(normalized_rows), 1)
+        self.assertEqual(normalized_rows[0]["metric_key"], "SellingExpensesCurrent")
+        self.assertEqual(normalized_rows[0]["source_tag"], "GeneralAndAdministrativeExpensesSGA")
+        self.assertEqual(normalized_rows[0]["value_num"], 120.0)
+
+    def test_build_normalization_candidates_exposes_structure_details(self) -> None:
+        rows = [
+            build_raw_fact(
+                doc_id="DOC4",
+                tag_name="GeneralAndAdministrativeExpenses",
+                value_text="100",
+            ),
+            build_raw_fact(
+                doc_id="DOC4",
+                tag_name="GeneralAndAdministrativeExpensesSGA",
+                value_text="120",
+            ),
+        ]
+
+        tmp_dir = Path("tests") / "_tmp_metric_normalize_candidates"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            xbrl_path = tmp_dir / "sample.xbrl"
+            xbrl_path.write_text("<xbrli:xbrl/>", encoding="utf-8")
+            (tmp_dir / "sample_lab.xml").write_text(LAB_XML_FOR_PRIORITY, encoding="utf-8")
+
+            candidates = build_normalization_candidates(
+                rows,
+                edinet_code="E00000",
+                security_code="0000",
+                xbrl_path=str(xbrl_path),
+            )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        self.assertEqual(len(candidates), 2)
+        sga_row = next(row for row in candidates if row["source_tag"] == "GeneralAndAdministrativeExpensesSGA")
+        ga_row = next(row for row in candidates if row["source_tag"] == "GeneralAndAdministrativeExpenses")
+        self.assertEqual(sga_row["_structure_role"], "expense")
+        self.assertEqual(sga_row["_structure_confidence"], "high")
+        self.assertLess(sga_row["_structure_priority"], ga_row["_structure_priority"])
 
     def test_usgaap_operating_cash_maps_to_operating_cash(self) -> None:
         row = build_raw_fact(

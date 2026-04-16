@@ -195,7 +195,9 @@ def fetch_raw_facts_saved_filings(conn: sqlite3.Connection, limit: int = 10) -> 
         SELECT
             f.doc_id,
             f.edinet_code,
-            f.security_code
+            f.security_code,
+            f.xbrl_path,
+            f.zip_path
         FROM filings f
         INNER JOIN issuer_master im
             ON f.edinet_code = im.edinet_code

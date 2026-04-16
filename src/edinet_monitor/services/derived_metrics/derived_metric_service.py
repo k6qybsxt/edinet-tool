@@ -47,6 +47,7 @@ SAFE_GROSS_PROFIT_SOURCE_TAGS = {
     "GrossProfitIFRS",
     "GrossProfitSummaryOfBusinessResults",
     "GrossProfitIFRSSummaryOfBusinessResults",
+    "NetRevenueSummaryOfBusinessResults",
     "GrossProfitOnCompletedConstructionContractsCNS",
     "GrossProfitOnCompletedConstructionContractsSummaryOfBusinessResults",
     "BusinessGrossProfitOrLoss",

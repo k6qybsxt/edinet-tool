@@ -212,6 +212,46 @@ class DerivedMetricServiceTest(unittest.TestCase):
             "gross_profit_tag",
         )
 
+    def test_gross_profit_accepts_net_revenue_summary_tag(self) -> None:
+        normalized_rows = [
+            build_normalized_row(
+                "NetSalesCurrent",
+                1_892_485,
+                source_tag="NetRevenueSummaryOfBusinessResults",
+            ),
+            build_normalized_row(
+                "GrossProfitCurrent",
+                1_892_485,
+                source_tag="NetRevenueSummaryOfBusinessResults",
+            ),
+            build_normalized_row("OrdinaryIncomeCurrent", 240_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("OperatingCashCurrent", 90_000),
+            build_normalized_row("InvestmentCashCurrent", -20_000),
+            build_normalized_row("TotalAssetsCurrent", 2_000_000),
+            build_normalized_row("NetAssetsCurrent", 1_000_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="ifrs",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["GrossProfitCurrent"]["value_num"], 1_892_485)
+        self.assertEqual(by_key["GrossProfitCurrent"]["calc_status"], "ok")
+        self.assertEqual(
+            by_key["GrossProfitCurrent"]["source_detail_json"]["selected_source"],
+            "gross_profit_tag",
+        )
+        self.assertEqual(
+            by_key["GrossProfitCurrent"]["source_detail_json"]["gross_profit_source_tag"],
+            "NetRevenueSummaryOfBusinessResults",
+        )
+
     def test_gross_profit_does_not_calculate_with_unsafe_cost_source(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

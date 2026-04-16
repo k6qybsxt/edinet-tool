@@ -66,6 +66,8 @@ def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
                 doc_id = filing["doc_id"]
                 edinet_code = filing["edinet_code"]
                 security_code = filing["security_code"]
+                xbrl_path = str(filing.get("xbrl_path") or "")
+                zip_path = str(filing.get("zip_path") or "")
 
                 print(f"[DEBUG] target_doc_id={doc_id}")
 
@@ -75,6 +77,8 @@ def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
                         raw_rows,
                         edinet_code=edinet_code,
                         security_code=security_code,
+                        xbrl_path=xbrl_path,
+                        zip_path=zip_path,
                     )
 
                     print(

@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from edinet_monitor.config.settings import DEFAULT_RULE_VERSION
+from edinet_monitor.services.normalizer.structure_classifier import classify_structure
 from edinet_pipeline.domain.tag_alias import normalize_tag_to_metric
+from edinet_pipeline.services.linkbase_analyzer import analyze_linkbase_structure
 from edinet_pipeline.services.xbrl_parser import METRICS
 
 
@@ -68,7 +70,7 @@ def _build_source_tag_priority_map() -> dict[str, dict[str, int]]:
 
 SOURCE_TAG_PRIORITY_MAP = _build_source_tag_priority_map()
 
-SOURCE_TAG_PRIORITY_OVERRIDES = {
+MANUAL_SOURCE_TAG_PRIORITY_OVERRIDES = {
     "CostOfSales": {
         "FinancialExpensesSEC": 0,
     },
@@ -96,11 +98,61 @@ SOURCE_TAG_PRIORITY_OVERRIDES = {
 
 
 def _get_source_tag_priority(metric_base: str, tag_name: str) -> int:
-    override_map = SOURCE_TAG_PRIORITY_OVERRIDES.get(metric_base, {})
-    if tag_name in override_map:
-        return override_map[tag_name]
     metric_map = SOURCE_TAG_PRIORITY_MAP.get(metric_base, {})
     return metric_map.get(tag_name, 9999)
+
+
+def _get_manual_source_tag_priority(metric_base: str, tag_name: str) -> int:
+    override_map = MANUAL_SOURCE_TAG_PRIORITY_OVERRIDES.get(metric_base, {})
+    return override_map.get(tag_name, 9999)
+
+
+def _structure_priority(metric_base: str, tag_name: str, structure_info: dict[str, Any] | None) -> int:
+    classification = classify_structure(
+        metric_base=metric_base,
+        tag_name=tag_name,
+        structure_info=structure_info,
+    )
+    text = str(classification["text"])
+    is_total = bool(classification["is_total"])
+    confidence = str(classification["confidence"])
+    role = str(classification["role"])
+
+    if metric_base == "CostOfSales":
+        if role == "cost":
+            return 0 if is_total else 1
+        if confidence == "medium" and any(keyword in text for keyword in ("売上原価", "原価", "金融費用", "資金調達費用")):
+            return 2
+        return 9999
+
+    if metric_base == "SellingExpenses":
+        if "販売費及び一般管理費合計" in text:
+            return 0
+        if role == "expense" and ("販売費及び一般管理費" in text or "販管費" in text):
+            return 1
+        if role == "expense" and ("一般管理費" in text or "営業経費" in text):
+            return 2
+        return 9999
+
+    if metric_base == "CostOfSalesAndSellingGeneralAndAdministrativeExpenses":
+        if role == "combined_expense" and any(keyword in text for keyword in ("費用合計", "経常費用", "営業費用合計", "事業費用合計")):
+            return 0
+        if role in {"combined_expense", "expense"} and any(keyword in text for keyword in ("営業費用", "事業費用", "電気事業営業費用", "業務費")):
+            return 1 if is_total else 2
+        if is_total and "費用" in text:
+            return 2
+        return 9999
+
+    if metric_base == "GrossProfit":
+        if role == "profit" and any(keyword in text for keyword in ("売上総利益", "粗利益", "資金利益", "純収益")):
+            return 0
+        if role == "profit" and "控除後" in text and "収益" in text:
+            return 1
+        if role == "profit" and "利益" in text:
+            return 2
+        return 9999
+
+    return 9999
 
 
 def _consolidation_rank(consolidation: str | None) -> int:
@@ -120,6 +172,7 @@ def normalize_raw_fact_row(
     *,
     edinet_code: str,
     security_code: str,
+    structure_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     tag_name = str(row.get("tag_name") or "")
     metric_base = normalize_tag_to_metric(tag_name)
@@ -146,6 +199,7 @@ def normalize_raw_fact_row(
 
     period_end = row.get("period_end") or row.get("instant_date")
     fiscal_year = _extract_fiscal_year(period_end)
+    structure_info = (structure_map or {}).get(tag_name)
 
     return {
         "doc_id": row["doc_id"],
@@ -160,6 +214,8 @@ def normalize_raw_fact_row(
         "rule_version": DEFAULT_RULE_VERSION,
         "_metric_base": metric_base,
         "_tag_priority": _get_source_tag_priority(metric_base, tag_name),
+        "_structure_priority": _structure_priority(metric_base, tag_name, structure_info),
+        "_manual_override_priority": _get_manual_source_tag_priority(metric_base, tag_name),
         "_consolidation_rank": _consolidation_rank(consolidation),
     }
 
@@ -176,12 +232,16 @@ def _dedupe_sort_key(row: dict[str, Any]) -> tuple:
     return (
         row.get("_consolidation_rank", 9999),
         row.get("_tag_priority", 9999),
+        row.get("_structure_priority", 9999),
+        row.get("_manual_override_priority", 9999),
         str(row.get("source_tag") or ""),
     )
 
 
 def _rewrite_service_operating_expenses_as_cost_of_sales(
     rows: list[dict[str, Any]],
+    *,
+    structure_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     selling_groups = {
         _dedupe_group_key(row)
@@ -213,11 +273,96 @@ def _rewrite_service_operating_expenses_as_cost_of_sales(
             candidate["metric_key"] = _build_metric_key("CostOfSales", suffix)
             candidate["_metric_base"] = "CostOfSales"
             candidate["_tag_priority"] = _get_source_tag_priority("CostOfSales", "OperatingExpenses")
+            candidate["_structure_priority"] = _structure_priority(
+                "CostOfSales",
+                "OperatingExpenses",
+                (structure_map or {}).get("OperatingExpenses"),
+            )
+            candidate["_manual_override_priority"] = _get_manual_source_tag_priority(
+                "CostOfSales",
+                "OperatingExpenses",
+            )
         rewritten.append(candidate)
     return rewritten
 
 
+def build_normalization_candidates(
+    raw_rows: list[dict[str, Any]],
+    *,
+    edinet_code: str,
+    security_code: str,
+    xbrl_path: str | None = None,
+    zip_path: str | None = None,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    structure_map = analyze_linkbase_structure(
+        xbrl_path=xbrl_path,
+        zip_path=zip_path,
+    )
+
+    for row in raw_rows:
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code=edinet_code,
+            security_code=security_code,
+            structure_map=structure_map,
+        )
+        if normalized is not None:
+            candidates.append(normalized)
+
+    candidates = _rewrite_service_operating_expenses_as_cost_of_sales(
+        candidates,
+        structure_map=structure_map,
+    )
+
+    enriched: list[dict[str, Any]] = []
+    for candidate in candidates:
+        structure_info = structure_map.get(str(candidate.get("source_tag") or ""))
+        classification = classify_structure(
+            metric_base=str(candidate.get("_metric_base") or ""),
+            tag_name=str(candidate.get("source_tag") or ""),
+            structure_info=structure_info,
+        )
+        enriched_candidate = dict(candidate)
+        enriched_candidate["_structure_role"] = classification["role"]
+        enriched_candidate["_structure_confidence"] = classification["confidence"]
+        enriched_candidate["_structure_is_total"] = classification["is_total"]
+        enriched_candidate["_structure_parent_labels"] = classification["presentation_parent_labels"]
+        enriched_candidate["_structure_text"] = classification["text"]
+        enriched.append(enriched_candidate)
+
+    return enriched
+
+
 def dedupe_normalized_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_rows = select_best_normalization_candidates(rows)
+    out: list[dict[str, Any]] = []
+
+    for row in best_rows:
+        cleaned = dict(row)
+        cleaned.pop("_metric_base", None)
+        cleaned.pop("_tag_priority", None)
+        cleaned.pop("_structure_priority", None)
+        cleaned.pop("_manual_override_priority", None)
+        cleaned.pop("_consolidation_rank", None)
+        cleaned.pop("_structure_role", None)
+        cleaned.pop("_structure_confidence", None)
+        cleaned.pop("_structure_is_total", None)
+        cleaned.pop("_structure_parent_labels", None)
+        cleaned.pop("_structure_text", None)
+        out.append(cleaned)
+
+    out.sort(
+        key=lambda x: (
+            str(x.get("doc_id") or ""),
+            str(x.get("metric_key") or ""),
+            str(x.get("period_end") or ""),
+        )
+    )
+    return out
+
+
+def select_best_normalization_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     best_by_key: dict[tuple, dict[str, Any]] = {}
 
     for row in rows:
@@ -231,15 +376,7 @@ def dedupe_normalized_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         if _dedupe_sort_key(row) < _dedupe_sort_key(current):
             best_by_key[key] = row
 
-    out: list[dict[str, Any]] = []
-
-    for row in best_by_key.values():
-        cleaned = dict(row)
-        cleaned.pop("_metric_base", None)
-        cleaned.pop("_tag_priority", None)
-        cleaned.pop("_consolidation_rank", None)
-        out.append(cleaned)
-
+    out = list(best_by_key.values())
     out.sort(
         key=lambda x: (
             str(x.get("doc_id") or ""),
@@ -255,17 +392,14 @@ def normalize_raw_fact_rows(
     *,
     edinet_code: str,
     security_code: str,
+    xbrl_path: str | None = None,
+    zip_path: str | None = None,
 ) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-
-    for row in raw_rows:
-        normalized = normalize_raw_fact_row(
-            row,
-            edinet_code=edinet_code,
-            security_code=security_code,
-        )
-        if normalized is not None:
-            candidates.append(normalized)
-
-    candidates = _rewrite_service_operating_expenses_as_cost_of_sales(candidates)
+    candidates = build_normalization_candidates(
+        raw_rows,
+        edinet_code=edinet_code,
+        security_code=security_code,
+        xbrl_path=xbrl_path,
+        zip_path=zip_path,
+    )
     return dedupe_normalized_metrics(candidates)
