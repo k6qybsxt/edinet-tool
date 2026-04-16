@@ -195,6 +195,75 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(funding["metric_key"], "FundingIncomeCurrent")
         self.assertEqual(fees["metric_key"], "FeesAndCommissionsIncomeCurrent")
 
+    def test_insurance_specific_tags_map_to_expected_metrics(self) -> None:
+        cases = [
+            ("InsuranceClaimsAndOthersSummaryOfBusinessResults", "InsuranceClaimsPaymentsCurrent"),
+            ("ProvisionOfPolicyReserveAndOtherOEINS", "PolicyReserveProvisionCurrent"),
+            ("InvestmentExpensesOEINS", "InvestmentExpensesCurrent"),
+            ("ProjectExpensesINS", "ProjectExpensesCurrent"),
+            (
+                "OperatingExpensesINS",
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
+            ),
+        ]
+
+        for tag_name, expected_key in cases:
+            with self.subTest(tag_name=tag_name):
+                row = build_raw_fact(tag_name=tag_name)
+                normalized = normalize_raw_fact_row(
+                    row,
+                    edinet_code="E00000",
+                    security_code="7181",
+                )
+                self.assertIsNotNone(normalized)
+                assert normalized is not None
+                self.assertEqual(normalized["metric_key"], expected_key)
+
+    def test_securities_financial_expenses_maps_to_cost_of_sales(self) -> None:
+        row = build_raw_fact(tag_name="FinancialExpensesSEC")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="8604",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "CostOfSalesCurrent")
+        self.assertEqual(normalized["source_tag"], "FinancialExpensesSEC")
+
+    def test_securities_expense_ifrs_maps_to_combined_cost_and_sga(self) -> None:
+        row = build_raw_fact(tag_name="ExpenseIFRS")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="8473",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(
+            normalized["metric_key"],
+            "CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
+        )
+        self.assertEqual(normalized["source_tag"], "ExpenseIFRS")
+
+    def test_securities_net_revenue_maps_to_gross_profit(self) -> None:
+        row = build_raw_fact(tag_name="NetRevenueSummaryOfBusinessResults")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="8604",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "GrossProfitCurrent")
+        self.assertEqual(normalized["source_tag"], "NetRevenueSummaryOfBusinessResults")
+
     def test_combined_cost_and_sga_prefers_total_operating_expenses_tag(self) -> None:
         rows = [
             build_raw_fact(

@@ -69,7 +69,11 @@ def _build_source_tag_priority_map() -> dict[str, dict[str, int]]:
 SOURCE_TAG_PRIORITY_MAP = _build_source_tag_priority_map()
 
 SOURCE_TAG_PRIORITY_OVERRIDES = {
+    "CostOfSales": {
+        "FinancialExpensesSEC": 0,
+    },
     "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": {
+        "ExpenseIFRS": 0,
         "OperatingExpensesIFRS": 0,
         "ElectricUtilityOperatingExpensesELE": 0,
         "ElectricUtilityOperatingExpenses": 0,

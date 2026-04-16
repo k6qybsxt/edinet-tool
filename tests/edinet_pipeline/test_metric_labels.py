@@ -25,7 +25,7 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(metric_base_to_display_name("CostOfSales"), "\u58f2\u4e0a\u539f\u4fa1")
         self.assertEqual(
             metric_base_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpenses"),
-            "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
+            "\u8cbb\u7528\u5408\u8a08",
         )
         self.assertEqual(metric_base_to_display_name("CashAndCashEquivalents"), "\u671f\u672b\u6b8b")
         self.assertEqual(metric_base_to_display_name("OutstandingShares"), "\u767a\u884c\u682a\u6570")
@@ -38,6 +38,22 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(
             metric_base_to_display_name("FeesAndCommissionsIncome"),
             "\u5f79\u52d9\u53d6\u5f15\u7b49\u53ce\u76ca",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("InsuranceClaimsPayments"),
+            "\u4fdd\u967a\u91d1\u7b49\u652f\u6255\u91d1",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("PolicyReserveProvision"),
+            "\u8cac\u4efb\u6e96\u5099\u91d1\u7b49\u7e70\u5165\u984d",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("InvestmentExpenses"),
+            "\u8cc7\u7523\u904b\u7528\u8cbb\u7528",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("ProjectExpenses"),
+            "\u4e8b\u696d\u8cbb",
         )
 
     def test_metric_base_to_display_name_uses_bank_labels_for_bank_industry(self) -> None:
@@ -54,11 +70,35 @@ class MetricLabelsTest(unittest.TestCase):
                 "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
                 "\u9280\u884c\u696d",
             ),
-            "\u7d4c\u5e38\u8cbb\u7528",
+            "\u8cbb\u7528\u5408\u8a08",
         )
         self.assertEqual(
             metric_base_to_display_name("GrossProfit", "\u9280\u884c\u696d"),
             "\u8cc7\u91d1\u5229\u76ca",
+        )
+
+    def test_metric_base_to_display_name_uses_securities_labels_for_securities_industry(self) -> None:
+        self.assertEqual(
+            metric_base_to_display_name("CostOfSales", "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d"),
+            "\u91d1\u878d\u8cbb\u7528",
+        )
+        self.assertEqual(
+            metric_base_to_display_name(
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+                "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d",
+            ),
+            "\u8cbb\u7528\u5408\u8a08",
+        )
+        self.assertEqual(
+            metric_base_to_display_name("GrossProfit", "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d"),
+            "\u7d14\u53ce\u76ca",
+        )
+        self.assertEqual(
+            metric_base_to_display_name(
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+                "\u4fdd\u967a\u696d",
+            ),
+            "\u8cbb\u7528\u5408\u8a08",
         )
 
     def test_metric_key_to_display_name_appends_period_suffix(self) -> None:
@@ -83,11 +123,23 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(tag_name_to_display_name("CostOfSales"), "\u58f2\u4e0a\u539f\u4fa1")
         self.assertEqual(
             tag_name_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpensesIFRS"),
-            "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
+            "\u8cbb\u7528\u5408\u8a08",
         )
         self.assertEqual(
             tag_name_to_display_name("FinancingExpensesOpeCFBNK", "\u9280\u884c\u696d"),
             "\u8cc7\u91d1\u8abf\u9054\u8cbb\u7528",
+        )
+        self.assertEqual(
+            tag_name_to_display_name("FinancialExpensesSEC", "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d"),
+            "\u91d1\u878d\u8cbb\u7528",
+        )
+        self.assertEqual(
+            tag_name_to_display_name("ExpenseIFRS", "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d"),
+            "\u8cbb\u7528\u5408\u8a08",
+        )
+        self.assertEqual(
+            tag_name_to_display_name("OperatingExpensesINS", "\u4fdd\u967a\u696d"),
+            "\u8cbb\u7528\u5408\u8a08",
         )
 
     def test_metric_group_to_display_name_returns_japanese_label(self) -> None:

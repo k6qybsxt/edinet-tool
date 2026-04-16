@@ -34,6 +34,7 @@ class TagAliasTest(unittest.TestCase):
             "CostOfFinishedGoodsSold",
             "GoodsConsignmentMerchandiseCostOfFinishedGoodsSoldCOS",
             "FinancingExpensesOpeCFBNK",
+            "FinancialExpensesSEC",
         ]
 
         for tag_name in cases:
@@ -49,6 +50,7 @@ class TagAliasTest(unittest.TestCase):
             "OperatingGrossProfitNetGP",
             "GrossProfitOnCompletedConstructionContractsCNS",
             "BusinessGrossProfitOrLoss",
+            "NetRevenueSummaryOfBusinessResults",
         ]
 
         for tag_name in cases:
@@ -64,8 +66,10 @@ class TagAliasTest(unittest.TestCase):
             "ElectricUtilityOperatingExpensesELE",
             "ElectricUtilityOperatingExpenses",
             "BusinessExpenses",
+            "OperatingExpensesINS",
             "OperatingCostsAndExpensesCOSExpOA",
             "OrdinaryExpensesBNK",
+            "ExpenseIFRS",
         ]
 
         for tag_name in cases:
@@ -80,6 +84,19 @@ class TagAliasTest(unittest.TestCase):
             "GeneralAndAdministrativeExpensesOEBNK": "SellingExpenses",
             "InterestIncomeOIBNK": "FundingIncome",
             "FeesAndCommissionsOIBNK": "FeesAndCommissionsIncome",
+        }
+
+        for tag_name, metric_name in cases.items():
+            with self.subTest(tag_name=tag_name):
+                self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
+
+    def test_insurance_tags_map_to_expected_metrics(self) -> None:
+        cases = {
+            "InsuranceClaimsAndOthersSummaryOfBusinessResults": "InsuranceClaimsPayments",
+            "ProvisionOfPolicyReserveAndOtherOEINS": "PolicyReserveProvision",
+            "InvestmentExpensesOEINS": "InvestmentExpenses",
+            "ProjectExpensesINS": "ProjectExpenses",
+            "OperatingExpensesINS": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
         }
 
         for tag_name, metric_name in cases.items():

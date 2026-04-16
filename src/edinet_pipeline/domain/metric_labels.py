@@ -6,7 +6,7 @@ from edinet_pipeline.domain.tag_alias import normalize_tag_to_metric
 METRIC_BASE_LABELS = {
     "NetSales": "\u58f2\u4e0a\u9ad8",
     "CostOfSales": "\u58f2\u4e0a\u539f\u4fa1",
-    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u58f2\u4e0a\u539f\u4fa1\u4e26\u3073\u306b\u8ca9\u58f2\u8cbb\u53ca\u3073\u4e00\u822c\u7ba1\u7406\u8cbb",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u8cbb\u7528\u5408\u8a08",
     "SellingExpenses": "\u8ca9\u7ba1\u8cbb",
     "OperatingIncome": "\u55b6\u696d\u5229\u76ca",
     "OrdinaryIncome": "\u7d4c\u5e38\u5229\u76ca",
@@ -37,15 +37,31 @@ METRIC_BASE_LABELS = {
     "FCF": "FCF",
     "FundingIncome": "\u8cc7\u91d1\u904b\u7528\u53ce\u76ca",
     "FeesAndCommissionsIncome": "\u5f79\u52d9\u53d6\u5f15\u7b49\u53ce\u76ca",
+    "InsuranceClaimsPayments": "\u4fdd\u967a\u91d1\u7b49\u652f\u6255\u91d1",
+    "PolicyReserveProvision": "\u8cac\u4efb\u6e96\u5099\u91d1\u7b49\u7e70\u5165\u984d",
+    "InvestmentExpenses": "\u8cc7\u7523\u904b\u7528\u8cbb\u7528",
+    "ProjectExpenses": "\u4e8b\u696d\u8cbb",
 }
 
 BANK_INDUSTRY_LABEL = "\u9280\u884c\u696d"
+SECURITIES_INDUSTRY_LABEL = "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d"
+INSURANCE_INDUSTRY_LABEL = "\u4fdd\u967a\u696d"
 
 BANK_METRIC_BASE_LABELS = {
     "CostOfSales": "\u8cc7\u91d1\u8abf\u9054\u8cbb\u7528",
     "SellingExpenses": "\u55b6\u696d\u7d4c\u8cbb",
-    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u7d4c\u5e38\u8cbb\u7528",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u8cbb\u7528\u5408\u8a08",
     "GrossProfit": "\u8cc7\u91d1\u5229\u76ca",
+}
+
+SECURITIES_METRIC_BASE_LABELS = {
+    "CostOfSales": "\u91d1\u878d\u8cbb\u7528",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u8cbb\u7528\u5408\u8a08",
+    "GrossProfit": "\u7d14\u53ce\u76ca",
+}
+
+INSURANCE_METRIC_BASE_LABELS = {
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u8cbb\u7528\u5408\u8a08",
 }
 
 METRIC_GROUP_LABELS = {
@@ -75,8 +91,13 @@ def metric_base_to_display_name(metric_base: str | None, industry_33: str | None
     text = str(metric_base or "").strip()
     if not text:
         return ""
-    if str(industry_33 or "").strip() == BANK_INDUSTRY_LABEL and text in BANK_METRIC_BASE_LABELS:
+    industry = str(industry_33 or "").strip()
+    if industry == BANK_INDUSTRY_LABEL and text in BANK_METRIC_BASE_LABELS:
         return BANK_METRIC_BASE_LABELS[text]
+    if industry == SECURITIES_INDUSTRY_LABEL and text in SECURITIES_METRIC_BASE_LABELS:
+        return SECURITIES_METRIC_BASE_LABELS[text]
+    if industry == INSURANCE_INDUSTRY_LABEL and text in INSURANCE_METRIC_BASE_LABELS:
+        return INSURANCE_METRIC_BASE_LABELS[text]
     return METRIC_BASE_LABELS.get(text, text)
 
 

@@ -65,8 +65,10 @@ SAFE_COMBINED_COST_AND_SGA_SOURCE_TAGS = {
     "ElectricUtilityOperatingExpenses",
     "BusinessExpenses",
     "OperatingExpensesOE",
+    "OperatingExpensesINS",
     "OperatingCostsAndExpensesCOSExpOA",
     "OrdinaryExpensesBNK",
+    "ExpenseIFRS",
 }
 
 
