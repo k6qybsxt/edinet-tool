@@ -69,6 +69,9 @@ config/edinet_pipeline.local.json
 src/edinet_tool/
 scripts/株価日付変更.py
 folder_tree.txt
+/managed_metrics*.txt
+/tmp_metric_list_test.txt
+/tmp_import_status*/
 
 *.xbrl
 *.zip
