@@ -29,6 +29,29 @@ class MetricLabelsTest(unittest.TestCase):
         )
         self.assertEqual(metric_base_to_display_name("CashAndCashEquivalents"), "\u671f\u672b\u6b8b")
         self.assertEqual(metric_base_to_display_name("OutstandingShares"), "\u767a\u884c\u682a\u6570")
+        self.assertEqual(metric_base_to_display_name("EPS"), "EPS")
+        self.assertEqual(metric_base_to_display_name("EPSGrowthRate"), "\u0045\u0050\u0053\u5897\u52a0\u7387")
+        self.assertEqual(metric_base_to_display_name("BPS"), "BPS")
+        self.assertEqual(metric_base_to_display_name("AssetsPerShare"), "1\u682a\u8cc7\u7523")
+        self.assertEqual(metric_base_to_display_name("LiabilitiesPerShare"), "1\u682a\u8ca0\u50b5")
+        self.assertEqual(metric_base_to_display_name("OperatingCashPerShare"), "1\u682a\u55b6\u696dCF")
+        self.assertEqual(metric_base_to_display_name("InvestmentCashPerShare"), "1\u682a\u6295\u8cc7CF")
+        self.assertEqual(metric_base_to_display_name("FinancingCashPerShare"), "1\u682a\u8ca1\u52d9CF")
+        self.assertEqual(metric_base_to_display_name("FCFPerShare"), "1\u682aFCF")
+        self.assertEqual(
+            metric_base_to_display_name("FinancialLeverageAdjustment"),
+            "\u8ca1\u52d9\u30ec\u30d0\u30ec\u30c3\u30b8\u88dc\u6b63",
+        )
+        self.assertEqual(metric_base_to_display_name("AssetValue"), "\u8cc7\u7523\u4fa1\u5024")
+        self.assertEqual(metric_base_to_display_name("BusinessValue"), "\u4e8b\u696d\u4fa1\u5024")
+        self.assertEqual(metric_base_to_display_name("TheoreticalSharePrice"), "\u7406\u8ad6\u682a\u4fa1")
+        self.assertEqual(
+            metric_base_to_display_name("UpperBoundTheoreticalSharePrice"),
+            "\u4e0a\u9650\u7406\u8ad6\u682a\u4fa1",
+        )
+        self.assertEqual(metric_base_to_display_name("TheoreticalPBR"), "\u7406\u8ad6PBR")
+        self.assertEqual(metric_base_to_display_name("TheoreticalPER"), "\u7406\u8ad6PER")
+        self.assertEqual(metric_base_to_display_name("TheoreticalPCFR"), "\u7406\u8ad6PCFR")
         self.assertEqual(
             metric_base_to_display_name("EstimatedNetIncome"),
             "\u63a8\u5b9a\u7d14\u5229\u76ca(\u7d4c\u5e38\u5229\u76ca*0.7)",
@@ -146,6 +169,7 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(metric_group_to_display_name("growth"), "\u6210\u9577")
         self.assertEqual(metric_group_to_display_name("cashflow"), "\u30ad\u30e3\u30c3\u30b7\u30e5\u30d5\u30ed\u30fc")
         self.assertEqual(metric_group_to_display_name("share"), "\u682a\u5f0f")
+        self.assertEqual(metric_group_to_display_name("valuation"), "\u8a55\u4fa1")
 
 
 if __name__ == "__main__":

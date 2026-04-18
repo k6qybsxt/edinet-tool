@@ -94,6 +94,11 @@ class DerivedMetricServiceTest(unittest.TestCase):
             build_normalized_row("InvestmentCashPrior2", -16_000),
             build_normalized_row("InvestmentCashPrior3", -14_000),
             build_normalized_row("InvestmentCashPrior4", -12_000),
+            build_normalized_row("FinancingCashCurrent", -10_000),
+            build_normalized_row("FinancingCashPrior1", -8_000),
+            build_normalized_row("FinancingCashPrior2", -6_000),
+            build_normalized_row("FinancingCashPrior3", -4_000),
+            build_normalized_row("FinancingCashPrior4", -2_000),
             build_normalized_row("TotalAssetsCurrent", 2_000_000),
             build_normalized_row("TotalAssetsPrior1", 1_800_000),
             build_normalized_row("TotalAssetsPrior2", 1_600_000),
@@ -131,7 +136,105 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 950_000)
         self.assertEqual(by_key["OutstandingSharesCurrent"]["metric_group"], "share")
         self.assertEqual(by_key["OutstandingSharesCurrent"]["value_unit"], "shares")
+        self.assertAlmostEqual(by_key["EPSCurrent"]["value_num"], 168_000 / 950_000)
+        self.assertAlmostEqual(
+            by_key["EPSGrowthRateCurrent"]["value_num"],
+            (168_000 / 950_000) / (140_000 / 948_000),
+        )
+        self.assertAlmostEqual(by_key["BPSCurrent"]["value_num"], 1_000_000 / 950_000)
+        self.assertAlmostEqual(by_key["AssetsPerShareCurrent"]["value_num"], 2_000_000 / 950_000)
+        self.assertAlmostEqual(
+            by_key["LiabilitiesPerShareCurrent"]["value_num"],
+            (2_000_000 - 1_000_000) / 950_000,
+        )
+        self.assertAlmostEqual(by_key["OperatingCashPerShareCurrent"]["value_num"], 90_000 / 950_000)
+        self.assertAlmostEqual(by_key["InvestmentCashPerShareCurrent"]["value_num"], -20_000 / 950_000)
+        self.assertAlmostEqual(by_key["FinancingCashPerShareCurrent"]["value_num"], -10_000 / 950_000)
+        self.assertAlmostEqual(by_key["FCFPerShareCurrent"]["value_num"], 70_000 / 950_000)
+        self.assertEqual(by_key["EPSCurrent"]["value_unit"], "yen_per_share")
+        self.assertEqual(by_key["OperatingCashPerShareCurrent"]["metric_group"], "cashflow")
+        self.assertAlmostEqual(
+            by_key["FinancialLeverageAdjustmentCurrent"]["value_num"],
+            1 / (0.5 + 0.33),
+        )
+        self.assertAlmostEqual(
+            by_key["AssetValueCurrent"]["value_num"],
+            (1_000_000 / 950_000) * 0.7,
+        )
+        self.assertAlmostEqual(
+            by_key["BusinessValueCurrent"]["value_num"],
+            (168_000 / 950_000) * ((168_000 / 2_000_000) * 150 * (1 / (0.5 + 0.33))),
+        )
+        self.assertAlmostEqual(
+            by_key["TheoreticalSharePriceCurrent"]["value_num"],
+            by_key["AssetValueCurrent"]["value_num"] + by_key["BusinessValueCurrent"]["value_num"],
+        )
+        self.assertAlmostEqual(
+            by_key["UpperBoundTheoreticalSharePriceCurrent"]["value_num"],
+            by_key["AssetValueCurrent"]["value_num"] + (by_key["BusinessValueCurrent"]["value_num"] * 2),
+        )
+        self.assertAlmostEqual(
+            by_key["TheoreticalPBRCurrent"]["value_num"],
+            by_key["TheoreticalSharePriceCurrent"]["value_num"] / by_key["BPSCurrent"]["value_num"],
+        )
+        self.assertAlmostEqual(
+            by_key["TheoreticalPERCurrent"]["value_num"],
+            by_key["TheoreticalSharePriceCurrent"]["value_num"] / by_key["EPSCurrent"]["value_num"],
+        )
+        self.assertAlmostEqual(
+            by_key["TheoreticalPCFRCurrent"]["value_num"],
+            by_key["TheoreticalSharePriceCurrent"]["value_num"] / by_key["OperatingCashPerShareCurrent"]["value_num"],
+        )
+        self.assertEqual(by_key["TheoreticalSharePriceCurrent"]["metric_group"], "valuation")
         self.assertEqual(by_key["GrossProfitCurrent"]["document_display_unit"], "百万円")
+
+    def test_financial_leverage_adjustment_matches_formula(self) -> None:
+        normalized_rows = [
+            build_normalized_row("OrdinaryIncomeCurrent", 120_000_000),
+            build_normalized_row("NetAssetsCurrent", 375_114_000_000),
+            build_normalized_row("TotalAssetsCurrent", 600_057_000_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("OperatingCashCurrent", 90_000_000),
+            build_normalized_row("InvestmentCashCurrent", -20_000_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertAlmostEqual(
+            by_key["FinancialLeverageAdjustmentCurrent"]["value_num"],
+            1.0469772267967,
+        )
+        self.assertEqual(
+            by_key["FinancialLeverageAdjustmentCurrent"]["calc_status"],
+            "ok",
+        )
+
+    def test_financial_leverage_adjustment_returns_zero_when_balance_sheet_product_is_nonpositive(self) -> None:
+        normalized_rows = [
+            build_normalized_row("OrdinaryIncomeCurrent", 120_000_000),
+            build_normalized_row("NetAssetsCurrent", -100_000_000),
+            build_normalized_row("TotalAssetsCurrent", 600_000_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("OperatingCashCurrent", 90_000_000),
+            build_normalized_row("InvestmentCashCurrent", -20_000_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["FinancialLeverageAdjustmentCurrent"]["value_num"], 0)
+        self.assertEqual(by_key["BusinessValueCurrent"]["value_num"], 0)
 
     def test_combined_cost_and_sga_sums_cost_and_selling_expenses(self) -> None:
         normalized_rows = [
@@ -650,3 +753,7 @@ class DerivedMetricServiceTest(unittest.TestCase):
 
         self.assertIsNone(by_key["OutstandingSharesCurrent"]["value_num"])
         self.assertEqual(by_key["OutstandingSharesCurrent"]["calc_status"], "missing_input")
+        self.assertIsNone(by_key["EPSCurrent"]["value_num"])
+        self.assertEqual(by_key["EPSCurrent"]["calc_status"], "missing_input")
+        self.assertIsNone(by_key["BPSCurrent"]["value_num"])
+        self.assertEqual(by_key["BPSCurrent"]["calc_status"], "missing_input")
