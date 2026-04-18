@@ -1,0 +1,54 @@
+﻿generated_at: 2026-04-18T15:56:37
+db_path: E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db
+period_mode: all
+period_from: all
+period_to: all
+industry_33: 化学
+security_codes: all
+status_filter: FILING_MISSING
+annual_gap_detection: on
+rows: 40
+status_summary: FILING_MISSING=40
+
+証券コード | 会社名                                   | 業種 | 期末日     | doc_id | 提出日 | filing | zip | 正規化 | 派生 | parse_status | 状況          
+-----------+------------------------------------------+------+------------+--------+--------+--------+-----+--------+------+--------------+---------------
+2930       | 北の達人コーポレーション                 | 化学 | 2024-02-28 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+2930       | 北の達人コーポレーション                 | 化学 | 2020-02-28 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4008       | 住友精化                                 | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4046       | 大阪ソーダ                               | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4094       | 日本化学産業                             | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4099       | 四国化成ホールディングス                 | 化学 | 2021-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4099       | 四国化成ホールディングス                 | 化学 | 2020-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4099       | 四国化成ホールディングス                 | 化学 | 2019-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4099       | 四国化成ホールディングス                 | 化学 | 2018-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4099       | 四国化成ホールディングス                 | 化学 | 2017-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4099       | 四国化成ホールディングス                 | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4109       | ステラ　ケミファ                         | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4186       | 東京応化工業                             | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4231       | タイガースポリマー                       | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4235       | ウルトラファブリックス・ホールディングス | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4240       | クラスターテクノロジー                   | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4360       | マナック・ケミカル・パートナーズ         | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4613       | 関西ペイント                             | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4615       | 神東塗料                                 | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4629       | 大伸化学                                 | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4634       | ａｒｔｉｅｎｃｅ                         | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4901       | 富士フイルムホールディングス             | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4918       | アイビー化粧品                           | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4919       | ミルボン                                 | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4920       | 日本色材工業研究所                       | 化学 | 2024-02-28 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4920       | 日本色材工業研究所                       | 化学 | 2020-02-28 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4922       | コーセーホールディングス                 | 化学 | 2020-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4922       | コーセーホールディングス                 | 化学 | 2019-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4922       | コーセーホールディングス                 | 化学 | 2018-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4922       | コーセーホールディングス                 | 化学 | 2017-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4922       | コーセーホールディングス                 | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4932       | アルマード                               | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4971       | メック                                   | 化学 | 2016-12-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4990       | 昭和化学工業                             | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4997       | 日本農薬                                 | 化学 | 2019-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4997       | 日本農薬                                 | 化学 | 2018-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4997       | 日本農薬                                 | 化学 | 2017-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+4998       | フマキラー                               | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+5208       | 有沢製作所                               | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING
+7886       | ヤマト　モビリティ　＆　Ｍｆｇ．         | 化学 | 2024-03-31 |        |        | N      | N   |      0 |    0 |              | FILING_MISSING

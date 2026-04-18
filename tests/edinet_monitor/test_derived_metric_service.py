@@ -69,6 +69,11 @@ class DerivedMetricServiceTest(unittest.TestCase):
             build_normalized_row("OperatingIncomePrior2", 120_000),
             build_normalized_row("OperatingIncomePrior3", 100_000),
             build_normalized_row("OperatingIncomePrior4", 90_000),
+            build_normalized_row("ProfitLossCurrent", 180_000),
+            build_normalized_row("ProfitLossPrior1", 150_000),
+            build_normalized_row("ProfitLossPrior2", 130_000),
+            build_normalized_row("ProfitLossPrior3", 110_000),
+            build_normalized_row("ProfitLossPrior4", 100_000),
             build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
             build_normalized_row("CashAndCashEquivalentsPrior1", 250_000),
             build_normalized_row("CashAndCashEquivalentsPrior2", 200_000),
@@ -131,6 +136,7 @@ class DerivedMetricServiceTest(unittest.TestCase):
         )
         self.assertEqual(by_key["CostOfSalesRatioCurrent"]["value_num"], 500_000 / 1_200_000)
         self.assertEqual(by_key["EstimatedNetIncomeCurrent"]["value_num"], 168_000)
+        self.assertEqual(by_key["EstimatedNetMarginCurrent"]["value_num"], 180_000 / 1_200_000)
         self.assertEqual(by_key["EquityRatioCurrent"]["value_num"], 0.5)
         self.assertEqual(by_key["FCFCurrent"]["value_num"], 70_000)
         self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 950_000)

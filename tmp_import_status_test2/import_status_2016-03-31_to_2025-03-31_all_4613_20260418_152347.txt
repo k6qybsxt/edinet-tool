@@ -1,0 +1,23 @@
+﻿generated_at: 2026-04-18T15:23:47
+db_path: E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db
+period_mode: range
+period_from: 2016-03-31
+period_to: 2025-03-31
+industry_33: all
+security_codes: 4613
+annual_gap_detection: on
+rows: 10
+status_summary: FILING_MISSING=1 | OK=9
+
+証券コード | 会社名       | 業種 | 期末日     | doc_id   | 提出日           | filing | zip | 正規化 | 派生 | parse_status          | 状況          
+-----------+--------------+------+------------+----------+------------------+--------+-----+--------+------+-----------------------+---------------
+4613       | 関西ペイント | 化学 | 2025-03-31 | S100W5YL | 2025-06-26 09:03 | Y      | Y   |     59 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2024-03-31 |          |                  | N      | N   |      0 |    0 |                       | FILING_MISSING
+4613       | 関西ペイント | 化学 | 2023-03-31 | S100R7SL | 2023-06-30 09:19 | Y      | Y   |     59 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2022-03-31 | S100OIVI | 2022-06-30 09:36 | Y      | Y   |     59 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2021-03-31 | S100LUIC | 2021-06-30 13:03 | Y      | Y   |     59 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2020-03-31 | S100J2GX | 2020-06-29 09:23 | Y      | Y   |     59 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2019-03-31 | S100GD91 | 2019-06-28 13:20 | Y      | Y   |     59 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2018-03-31 | S100DIRZ | 2018-06-29 09:06 | Y      | Y   |     58 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2017-03-31 | S100ARH6 | 2017-06-30 09:19 | Y      | Y   |     58 |  166 | derived_metrics_saved | OK
+4613       | 関西ペイント | 化学 | 2016-03-31 | S10082JO | 2016-06-30 10:33 | Y      | Y   |     58 |  166 | derived_metrics_saved | OK
