@@ -1217,6 +1217,58 @@ def parse_xbrl_file_raw(path=None, xbrl_bytes=None, mode="full", logger=None):
 
     source = BytesIO(xbrl_bytes) if xbrl_bytes else path
 
+    def _attr_by_local(el, name: str) -> str | None:
+        value = el.get(name)
+        if value is not None:
+            return value
+        for attr_name, attr_value in el.attrib.items():
+            if str(attr_name).split("}")[-1] == name:
+                return attr_value
+        return None
+
+    def _namespace_uri_from_tag(tag_text: str) -> str:
+        if tag_text.startswith("{") and "}" in tag_text:
+            return tag_text[1:].split("}", 1)[0]
+        return ""
+
+    def _prefix_for_element(el, namespace_uri: str) -> str:
+        if getattr(el, "prefix", None):
+            return str(el.prefix)
+        if namespace_uri:
+            for prefix, uri in (el.nsmap or {}).items():
+                if prefix and uri == namespace_uri:
+                    return str(prefix)
+            for prefix, uri in nsmap.items():
+                if prefix and uri == namespace_uri:
+                    return str(prefix)
+        return ""
+
+    def _tag_qname(prefix: str, namespace_uri: str, local_name: str) -> str:
+        if prefix:
+            return f"{prefix}:{local_name}"
+        if namespace_uri:
+            return f"{{{namespace_uri}}}{local_name}"
+        return local_name
+
+    def _taxonomy_kind(namespace_uri: str, prefix: str, local_name: str) -> str:
+        text = f"{namespace_uri} {prefix} {local_name}".lower()
+        if "ifrs" in text:
+            return "ifrs"
+        if prefix.startswith("jpdei") or "jpdei" in text or local_name.endswith("DEI"):
+            return "dei"
+        if prefix.startswith(("jpcrp", "jppfs")) or "/jpcrp/" in text or "/jppfs/" in text:
+            return "jp_standard"
+        if namespace_uri:
+            return "extension"
+        return ""
+
+    def _context_container(el) -> str:
+        for ancestor in el.iterancestors():
+            ancestor_local = str(ancestor.tag).split("}")[-1]
+            if ancestor_local in {"scenario", "segment"}:
+                return ancestor_local
+        return ""
+
     for event, elem in etree.iterparse(source, events=("start", "end"), recover=True, huge_tree=True):
         tag = elem.tag
         local = str(tag).split("}")[-1]
@@ -1248,6 +1300,11 @@ def parse_xbrl_file_raw(path=None, xbrl_bytes=None, mode="full", logger=None):
             if cid:
                 start_s = end_s = inst_s = None
                 members = []
+                explicit_members = []
+                typed_members = []
+                axis_members = {}
+                has_scenario = False
+                has_segment = False
 
                 for p in elem.iter():
                     pl = str(p.tag).split("}")[-1]
@@ -1257,10 +1314,33 @@ def parse_xbrl_file_raw(path=None, xbrl_bytes=None, mode="full", logger=None):
                         end_s = (p.text or "").strip() or None
                     elif pl == "instant":
                         inst_s = (p.text or "").strip() or None
+                    elif pl == "scenario":
+                        has_scenario = True
+                    elif pl == "segment":
+                        has_segment = True
                     elif pl == "explicitMember":
+                        dimension = (_attr_by_local(p, "dimension") or "").strip()
                         t = (p.text or "").strip()
                         if t:
                             members.append(t)
+                        explicit_members.append(
+                            {
+                                "dimension": dimension,
+                                "member": t,
+                                "container": _context_container(p),
+                            }
+                        )
+                        if dimension and t:
+                            axis_members.setdefault(dimension, []).append(t)
+                    elif pl == "typedMember":
+                        dimension = (_attr_by_local(p, "dimension") or "").strip()
+                        typed_members.append(
+                            {
+                                "dimension": dimension,
+                                "value": "".join(p.itertext()).strip(),
+                                "container": _context_container(p),
+                            }
+                        )
 
                 is_noncon = any("NonConsolidatedMember" in t for t in members)
                 dim = "NonConsolidated" if is_noncon else "Consolidated"
@@ -1270,6 +1350,13 @@ def parse_xbrl_file_raw(path=None, xbrl_bytes=None, mode="full", logger=None):
                     "end": end_s,
                     "instant": inst_s,
                     "dim": dim,
+                    "dimensions": {
+                        "axis_members": axis_members,
+                        "explicit_members": explicit_members,
+                        "typed_members": typed_members,
+                        "has_scenario": has_scenario,
+                        "has_segment": has_segment,
+                    },
                 }
 
         elif local == "unit":
@@ -1300,13 +1387,21 @@ def parse_xbrl_file_raw(path=None, xbrl_bytes=None, mode="full", logger=None):
             text = (elem.text or "").strip()
 
             if context_ref:
+                namespace_uri = _namespace_uri_from_tag(str(tag))
+                namespace_prefix = _prefix_for_element(elem, namespace_uri)
+                nil_value = (_attr_by_local(elem, "nil") or "").strip().lower()
                 facts.append({
                     "tag": str(tag),
                     "local": local,
+                    "qname": _tag_qname(namespace_prefix, namespace_uri, local),
+                    "namespace_uri": namespace_uri,
+                    "namespace_prefix": namespace_prefix,
+                    "taxonomy_kind": _taxonomy_kind(namespace_uri, namespace_prefix, local),
                     "text": text,
                     "contextRef": context_ref,
-                    "unitRef": elem.get("unitRef"),
-                    "decimals": elem.get("decimals"),
+                    "unitRef": _attr_by_local(elem, "unitRef"),
+                    "decimals": _attr_by_local(elem, "decimals"),
+                    "is_nil": nil_value in {"1", "true"},
                 })
 
             if "dei" in str(tag).lower() and text:

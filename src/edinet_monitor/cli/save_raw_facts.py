@@ -43,13 +43,18 @@ def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[s
             for row in rows:
                 doc_id = row["doc_id"]
                 xbrl_path = Path(row["xbrl_path"])
+                xbrl_member_name = str(row["xbrl_member_name"] or "")
 
                 print(f"[DEBUG] target_doc_id={doc_id}")
                 print(f"[DEBUG] xbrl_path={xbrl_path}")
 
                 try:
                     parsed = parse_xbrl_to_raw(xbrl_path)
-                    raw_rows = to_raw_fact_rows(doc_id, parsed)
+                    raw_rows = to_raw_fact_rows(
+                        doc_id,
+                        parsed,
+                        xbrl_member_name=xbrl_member_name,
+                    )
                     parsed_meta = dict(parsed.get("meta") or {})
                     parsed_out = dict(parsed.get("out") or {})
                     accounting_standard = str(parsed_meta.get("accounting_standard") or "")

@@ -144,11 +144,13 @@ def mark_xbrl_extract_error(conn: sqlite3.Connection, doc_id: str) -> None:
 
 def fetch_xbrl_ready_filings(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
     cur = conn.cursor()
+    member_column = "f.xbrl_member_name" if _has_column(conn, "filings", "xbrl_member_name") else "''"
     cur.execute(
-        """
+        f"""
         SELECT
             f.doc_id,
-            f.xbrl_path
+            f.xbrl_path,
+            {member_column} AS xbrl_member_name
         FROM filings f
         INNER JOIN issuer_master im
             ON f.edinet_code = im.edinet_code
