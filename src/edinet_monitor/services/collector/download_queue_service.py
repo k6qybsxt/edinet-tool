@@ -91,7 +91,32 @@ def reset_download_to_pending(conn: sqlite3.Connection, doc_id: str) -> None:
     conn.commit()
 
 
-def mark_xbrl_extract_success(conn: sqlite3.Connection, doc_id: str, xbrl_path: str) -> None:
+def _has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(str(row[1]) == column_name for row in rows)
+
+
+def mark_xbrl_extract_success(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    xbrl_path: str,
+    xbrl_member_name: str | None = None,
+) -> None:
+    if _has_column(conn, "filings", "xbrl_member_name"):
+        conn.execute(
+            """
+            UPDATE filings
+            SET
+                xbrl_path = ?,
+                xbrl_member_name = ?,
+                parse_status = 'xbrl_ready'
+            WHERE doc_id = ?
+            """,
+            (xbrl_path, xbrl_member_name or "", doc_id),
+        )
+        conn.commit()
+        return
+
     conn.execute(
         """
         UPDATE filings

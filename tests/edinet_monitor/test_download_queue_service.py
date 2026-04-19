@@ -13,6 +13,7 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.services.collector.download_queue_service import (  # noqa: E402
     fetch_downloaded_filings_without_xbrl,
+    mark_xbrl_extract_success,
 )
 
 
@@ -39,6 +40,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             document_display_unit TEXT,
             zip_path TEXT,
             xbrl_path TEXT,
+            xbrl_member_name TEXT,
             download_status TEXT NOT NULL,
             parse_status TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -82,6 +84,53 @@ class DownloadQueueServiceTest(unittest.TestCase):
         rows = fetch_downloaded_filings_without_xbrl(conn, limit=10)
 
         self.assertEqual([row["doc_id"] for row in rows], ["S100A001", "S100A003"])
+
+    def test_mark_xbrl_extract_success_saves_member_name_when_column_exists(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        create_tables(conn)
+
+        conn.execute(
+            """
+            INSERT INTO issuer_master (edinet_code, exchange, is_listed)
+            VALUES ('E00001', 'TSE', 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, xbrl_member_name, download_status, parse_status,
+                created_at, updated_at
+            )
+            VALUES (
+                'S100A001', 'E00001', '11110', '030000', '2026-03-31', '2026-04-09 09:00',
+                0, '0', '1', '', '', 'zip1', '', '', 'downloaded', 'pending',
+                '2026-04-11 00:00:00', '2026-04-11 00:00:00'
+            )
+            """
+        )
+        conn.commit()
+
+        mark_xbrl_extract_success(
+            conn,
+            "S100A001",
+            r"D:\EDINET_Data\edinet_monitor\raw\xbrl\2026-04-09\S100A001.xbrl",
+            "XBRL/PublicDoc/jpcrp030000-asr-001_E00001-000_2026-03-31_01_2026-06-28.xbrl",
+        )
+
+        row = conn.execute(
+            "SELECT xbrl_path, xbrl_member_name, parse_status FROM filings WHERE doc_id = ?",
+            ("S100A001",),
+        ).fetchone()
+        self.assertEqual(row["parse_status"], "xbrl_ready")
+        self.assertEqual(
+            row["xbrl_member_name"],
+            "XBRL/PublicDoc/jpcrp030000-asr-001_E00001-000_2026-03-31_01_2026-06-28.xbrl",
+        )
+        self.assertTrue(str(row["xbrl_path"]).endswith("S100A001.xbrl"))
 
 
 if __name__ == "__main__":

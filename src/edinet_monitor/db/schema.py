@@ -76,6 +76,7 @@ def _ensure_filings_columns(cur: sqlite3.Cursor) -> None:
     _ensure_table_column(cur, "filings", "legal_status TEXT")
     _ensure_table_column(cur, "filings", "accounting_standard TEXT")
     _ensure_table_column(cur, "filings", "document_display_unit TEXT")
+    _ensure_table_column(cur, "filings", "xbrl_member_name TEXT")
 
 
 def _ensure_pipeline_log_columns(cur: sqlite3.Cursor) -> None:
@@ -441,6 +442,7 @@ def create_tables() -> None:
         document_display_unit TEXT,
         zip_path TEXT,
         xbrl_path TEXT,
+        xbrl_member_name TEXT,
         download_status TEXT NOT NULL,
         parse_status TEXT NOT NULL,
         created_at TEXT NOT NULL,

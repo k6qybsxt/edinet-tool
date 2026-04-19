@@ -11,7 +11,7 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_xbrl_extract_success,
 )
 from edinet_monitor.services.storage.path_service import build_xbrl_save_path
-from edinet_monitor.services.storage.zip_extract_service import extract_first_xbrl, find_xbrl_member_names
+from edinet_monitor.services.storage.zip_extract_service import extract_preferred_xbrl, find_xbrl_member_names
 
 
 def run_extract_xbrl_from_zips(*, batch_size: int = 20, run_all: bool = False) -> dict[str, Any]:
@@ -45,11 +45,20 @@ def run_extract_xbrl_from_zips(*, batch_size: int = 20, run_all: bool = False) -
                     print(f"[DEBUG] xbrl_members={member_names[:5]}")
 
                     xbrl_path = build_xbrl_save_path(submit_date, doc_id)
-                    saved_path = extract_first_xbrl(zip_path, xbrl_path)
+                    extracted = extract_preferred_xbrl(zip_path, xbrl_path)
 
-                    mark_xbrl_extract_success(conn, doc_id, str(saved_path))
+                    mark_xbrl_extract_success(
+                        conn,
+                        doc_id,
+                        str(extracted.output_path),
+                        extracted.member_name,
+                    )
                     total_extracted += 1
-                    print(f"extracted doc_id={doc_id} xbrl_path={saved_path}")
+                    print(
+                        f"extracted doc_id={doc_id} "
+                        f"xbrl_path={extracted.output_path} "
+                        f"xbrl_member_name={extracted.member_name}"
+                    )
                 except Exception as e:
                     mark_xbrl_extract_error(conn, doc_id)
                     total_errors += 1
