@@ -13,6 +13,7 @@ XLINK_LABEL = f"{{{XLINK_NS}}}label"
 XLINK_FROM = f"{{{XLINK_NS}}}from"
 XLINK_TO = f"{{{XLINK_NS}}}to"
 XLINK_ROLE = f"{{{XLINK_NS}}}role"
+XLINK_ARCROLE = f"{{{XLINK_NS}}}arcrole"
 
 LABEL_ROLE_PRIORITY = {
     "http://www.xbrl.org/2003/role/label": 0,
@@ -111,14 +112,28 @@ def _parse_xml(data: bytes | None) -> etree._Element | None:
 
 
 def _parse_labels(root: etree._Element | None) -> dict[str, str]:
+    labels_by_role = _parse_labels_by_role(root)
+    result: dict[str, str] = {}
+    for concept_name, role_map in labels_by_role.items():
+        resources = [
+            (LABEL_ROLE_PRIORITY.get(role, 999), text)
+            for role, text in role_map.items()
+        ]
+        resources.sort(key=lambda item: (item[0], item[1]))
+        if resources:
+            result[concept_name] = resources[0][1]
+    return result
+
+
+def _parse_labels_by_role(root: etree._Element | None) -> dict[str, dict[str, str]]:
     if root is None:
         return {}
 
-    label_texts: dict[str, list[tuple[int, str]]] = {}
+    label_texts: dict[str, list[tuple[int, str, str]]] = {}
 
     for label_link in root.xpath(".//*[local-name()='labelLink']"):
         concept_by_loc_label: dict[str, str] = {}
-        resource_by_label: dict[str, tuple[int, str]] = {}
+        resource_by_label: dict[str, tuple[int, str, str]] = {}
 
         for loc in label_link.xpath("./*[local-name()='loc']"):
             loc_label = str(loc.get(XLINK_LABEL) or "")
@@ -135,6 +150,7 @@ def _parse_labels(root: etree._Element | None) -> dict[str, str]:
                 continue
             resource_by_label[resource_label] = (
                 LABEL_ROLE_PRIORITY.get(role, 999),
+                role,
                 text,
             )
 
@@ -148,10 +164,12 @@ def _parse_labels(root: etree._Element | None) -> dict[str, str]:
             label_texts.setdefault(concept_name, []).append(resource)
 
     result: dict[str, str] = {}
+    result_by_role: dict[str, dict[str, str]] = {}
     for concept_name, resources in label_texts.items():
-        resources.sort(key=lambda item: (item[0], item[1]))
-        result[concept_name] = resources[0][1]
-    return result
+        resources.sort(key=lambda item: (item[0], item[1], item[2]))
+        for _, role, text in resources:
+            result_by_role.setdefault(concept_name, {}).setdefault(role, text)
+    return result_by_role
 
 
 def _parse_parent_child(root: etree._Element | None, arc_local_name: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -184,6 +202,153 @@ def _parse_parent_child(root: etree._Element | None, arc_local_name: str) -> tup
     return parent_to_children, child_to_parents
 
 
+def _parse_parent_child_roles(root: etree._Element | None, arc_local_name: str) -> dict[str, set[str]]:
+    if root is None:
+        return {}
+
+    concept_roles: dict[str, set[str]] = {}
+    for link in root.xpath(f".//*[local-name()='{arc_local_name[:-3]}Link']"):
+        role = str(link.get(XLINK_ROLE) or "")
+        concept_by_loc_label: dict[str, str] = {}
+
+        for loc in link.xpath("./*[local-name()='loc']"):
+            loc_label = str(loc.get(XLINK_LABEL) or "")
+            href = str(loc.get(XLINK_HREF) or "")
+            concept_name = _concept_name_from_href(href)
+            if loc_label and concept_name:
+                concept_by_loc_label[loc_label] = concept_name
+                if role:
+                    concept_roles.setdefault(concept_name, set()).add(role)
+
+        for arc in link.xpath(f"./*[local-name()='{arc_local_name}']"):
+            for attr_name in (XLINK_FROM, XLINK_TO):
+                concept_name = concept_by_loc_label.get(str(arc.get(attr_name) or ""))
+                if concept_name and role:
+                    concept_roles.setdefault(concept_name, set()).add(role)
+
+    return concept_roles
+
+
+def _parse_calculation_relationships(root: etree._Element | None) -> dict[str, list[dict[str, object]]]:
+    if root is None:
+        return {}
+
+    relationships: dict[str, list[dict[str, object]]] = {}
+    for link in root.xpath(".//*[local-name()='calculationLink']"):
+        role = str(link.get(XLINK_ROLE) or "")
+        concept_by_loc_label: dict[str, str] = {}
+
+        for loc in link.xpath("./*[local-name()='loc']"):
+            loc_label = str(loc.get(XLINK_LABEL) or "")
+            href = str(loc.get(XLINK_HREF) or "")
+            concept_name = _concept_name_from_href(href)
+            if loc_label and concept_name:
+                concept_by_loc_label[loc_label] = concept_name
+
+        for arc in link.xpath("./*[local-name()='calculationArc']"):
+            parent = concept_by_loc_label.get(str(arc.get(XLINK_FROM) or ""))
+            child = concept_by_loc_label.get(str(arc.get(XLINK_TO) or ""))
+            if not parent or not child:
+                continue
+            weight_text = str(arc.get("weight") or "")
+            try:
+                weight: float | str = float(weight_text)
+            except ValueError:
+                weight = weight_text
+            item = {"role": role, "parent": parent, "child": child, "weight": weight}
+            relationships.setdefault(parent, []).append(item)
+            relationships.setdefault(child, []).append(item)
+
+    return relationships
+
+
+def _parse_definition_relationships(root: etree._Element | None) -> dict[str, list[dict[str, str]]]:
+    if root is None:
+        return {}
+
+    relationships: dict[str, list[dict[str, str]]] = {}
+    for link in root.xpath(".//*[local-name()='definitionLink']"):
+        role = str(link.get(XLINK_ROLE) or "")
+        concept_by_loc_label: dict[str, str] = {}
+
+        for loc in link.xpath("./*[local-name()='loc']"):
+            loc_label = str(loc.get(XLINK_LABEL) or "")
+            href = str(loc.get(XLINK_HREF) or "")
+            concept_name = _concept_name_from_href(href)
+            if loc_label and concept_name:
+                concept_by_loc_label[loc_label] = concept_name
+
+        for arc in link.xpath("./*[local-name()='definitionArc']"):
+            parent = concept_by_loc_label.get(str(arc.get(XLINK_FROM) or ""))
+            child = concept_by_loc_label.get(str(arc.get(XLINK_TO) or ""))
+            if not parent or not child:
+                continue
+            item = {
+                "role": role,
+                "arcrole": str(arc.get(XLINK_ARCROLE) or ""),
+                "parent": parent,
+                "child": child,
+            }
+            relationships.setdefault(parent, []).append(item)
+            relationships.setdefault(child, []).append(item)
+
+    return relationships
+
+
+def _load_schema_bytes(
+    *,
+    xbrl_path: str | None,
+    zip_path: str | None,
+) -> list[bytes]:
+    result: list[bytes] = []
+    xbrl_file = Path(str(xbrl_path or "")).expanduser() if xbrl_path else None
+    zip_file = Path(str(zip_path or "")).expanduser() if zip_path else None
+
+    if xbrl_file:
+        adjacent = xbrl_file.with_suffix(".xsd")
+        data = _read_bytes(adjacent)
+        if data is not None:
+            result.append(data)
+
+    if zip_file and zip_file.exists():
+        try:
+            with ZipFile(zip_file) as zf:
+                for entry in zf.infolist():
+                    normalized = entry.filename.replace("\\", "/")
+                    if entry.is_dir():
+                        continue
+                    if normalized.endswith(".xsd") and "/XBRL/PublicDoc/" in normalized:
+                        with zf.open(entry.filename) as handle:
+                            result.append(handle.read())
+        except Exception:
+            return result
+
+    return result
+
+
+def _parse_schema_metadata(schema_roots: list[etree._Element | None]) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for root in schema_roots:
+        if root is None:
+            continue
+        target_namespace = str(root.get("targetNamespace") or "")
+        for element in root.xpath(".//*[local-name()='element']"):
+            concept_name = str(element.get("name") or "")
+            if not concept_name:
+                continue
+            result[concept_name] = {
+                "target_namespace": target_namespace,
+                "type": str(element.get("type") or ""),
+                "substitution_group": str(element.get("substitutionGroup") or ""),
+                "period_type": str(element.get("{http://www.xbrl.org/2003/instance}periodType") or ""),
+                "balance": str(element.get("{http://www.xbrl.org/2003/instance}balance") or ""),
+                "abstract": str(element.get("abstract") or ""),
+                "nillable": str(element.get("nillable") or ""),
+                "id": str(element.get("id") or ""),
+            }
+    return result
+
+
 @lru_cache(maxsize=256)
 def _analyze_cached(xbrl_path_text: str, zip_path_text: str) -> dict[str, dict[str, object]]:
     pre_root = _parse_xml(
@@ -207,16 +372,42 @@ def _analyze_cached(xbrl_path_text: str, zip_path_text: str) -> dict[str, dict[s
             suffix="lab",
         )
     )
+    def_root = _parse_xml(
+        _load_linkbase_bytes(
+            xbrl_path=xbrl_path_text or None,
+            zip_path=zip_path_text or None,
+            suffix="def",
+        )
+    )
+    schema_roots = [
+        _parse_xml(data)
+        for data in _load_schema_bytes(
+            xbrl_path=xbrl_path_text or None,
+            zip_path=zip_path_text or None,
+        )
+    ]
 
     labels = _parse_labels(lab_root)
+    labels_by_role = _parse_labels_by_role(lab_root)
     pre_children, pre_parents = _parse_parent_child(pre_root, "presentationArc")
     cal_children, cal_parents = _parse_parent_child(cal_root, "calculationArc")
+    presentation_roles = _parse_parent_child_roles(pre_root, "presentationArc")
+    calculation_roles = _parse_parent_child_roles(cal_root, "calculationArc")
+    calculation_relationships = _parse_calculation_relationships(cal_root)
+    definition_relationships = _parse_definition_relationships(def_root)
+    schema_metadata = _parse_schema_metadata(schema_roots)
 
     concept_names = set(labels.keys())
+    concept_names.update(labels_by_role.keys())
     concept_names.update(pre_children.keys())
     concept_names.update(pre_parents.keys())
     concept_names.update(cal_children.keys())
     concept_names.update(cal_parents.keys())
+    concept_names.update(presentation_roles.keys())
+    concept_names.update(calculation_roles.keys())
+    concept_names.update(calculation_relationships.keys())
+    concept_names.update(definition_relationships.keys())
+    concept_names.update(schema_metadata.keys())
 
     result: dict[str, dict[str, object]] = {}
     for concept_name in concept_names:
@@ -228,11 +419,22 @@ def _analyze_cached(xbrl_path_text: str, zip_path_text: str) -> dict[str, dict[s
 
         result[concept_name] = {
             "label": label,
+            "labels_by_role": labels_by_role.get(concept_name, {}),
+            "presentation_roles": sorted(presentation_roles.get(concept_name, set())),
             "presentation_parent_tags": parent_tags,
             "presentation_parent_labels": parent_labels,
             "presentation_child_count": len(pre_children.get(concept_name, set())),
+            "calculation_roles": sorted(calculation_roles.get(concept_name, set())),
             "calculation_parent_tags": sorted(cal_parents.get(concept_name, set())),
             "calculation_children_count": calculation_children_count,
+            "calculation_relationships": calculation_relationships.get(concept_name, []),
+            "definition_roles": sorted({
+                str(item.get("role") or "")
+                for item in definition_relationships.get(concept_name, [])
+                if item.get("role")
+            }),
+            "definition_relationships": definition_relationships.get(concept_name, []),
+            "schema": schema_metadata.get(concept_name, {}),
             "is_total": is_total,
         }
 
