@@ -282,6 +282,52 @@ def _annual_period_ends(period_from: str, period_to: str, month_day: str) -> lis
     return period_ends
 
 
+def _month_day_for_gap_detection(period_end: str) -> str:
+    text = str(period_end or "").strip()
+    if len(text) < 10:
+        return ""
+    month_day = text[5:10]
+    if month_day == "02-29":
+        return "02-28"
+    return month_day
+
+
+def _leap_year_actual_period_end(period_end: str, month_day: str) -> str:
+    if month_day != "02-28":
+        return ""
+
+    try:
+        target_date = date.fromisoformat(period_end)
+        leap_candidate = date(target_date.year, 2, 29)
+    except ValueError:
+        return ""
+
+    if target_date.month == 2 and target_date.day == 28:
+        return leap_candidate.isoformat()
+    return ""
+
+
+def _period_end_gap_specs_for_issuer(
+    actual_rows: list[dict[str, Any]],
+) -> list[tuple[str, str, str]]:
+    by_month_day: dict[str, list[str]] = {}
+    for row in actual_rows:
+        period_end = str(row.get("period_end") or "")
+        month_day = _month_day_for_gap_detection(period_end)
+        if not month_day:
+            continue
+        by_month_day.setdefault(month_day, []).append(period_end)
+
+    specs: list[tuple[str, str, str]] = []
+    for month_day, period_ends in by_month_day.items():
+        unique_period_ends = sorted(set(period_ends))
+        if len(unique_period_ends) < 2:
+            continue
+        specs.append((month_day, unique_period_ends[0], unique_period_ends[-1]))
+
+    return sorted(specs, key=lambda item: (item[2], item[0]), reverse=True)
+
+
 def _build_status_label(row: dict[str, Any]) -> str:
     if not row.get("doc_id"):
         return "FILING_MISSING"
@@ -344,6 +390,9 @@ def expand_with_annual_gaps(
         (str(row.get("edinet_code") or ""), str(row.get("period_end") or "")): row
         for row in actual_rows
     }
+    actual_by_issuer: dict[str, list[dict[str, Any]]] = {}
+    for row in actual_rows:
+        actual_by_issuer.setdefault(str(row.get("edinet_code") or ""), []).append(row)
     out_rows: list[dict[str, Any]] = []
 
     for issuer in issuer_specs:
@@ -353,33 +402,37 @@ def expand_with_annual_gaps(
         if not max_period_end or not min_period_end:
             continue
 
-        month_day = max_period_end[5:10]
         if filters.period_mode == "range":
-            range_from = filters.period_from
-            range_to = filters.period_to
+            gap_specs = [(max_period_end[5:10], filters.period_from, filters.period_to)]
         else:
-            range_from = min_period_end
-            range_to = max_period_end
+            gap_specs = _period_end_gap_specs_for_issuer(actual_by_issuer.get(edinet_code, []))
+            if not gap_specs:
+                gap_specs = [(max_period_end[5:10], min_period_end, max_period_end)]
 
-        for period_end in _annual_period_ends(range_from, range_to, month_day):
-            actual = actual_by_key.get((edinet_code, period_end))
-            if actual is None:
-                actual = {
-                    "doc_id": "",
-                    "edinet_code": edinet_code,
-                    "security_code": issuer.get("security_code", ""),
-                    "company_name": issuer.get("company_name", ""),
-                    "industry_33": issuer.get("industry_33", ""),
-                    "period_end": period_end,
-                    "submit_date": "",
-                    "download_status": "",
-                    "parse_status": "",
-                    "zip_path": "",
-                    "xbrl_path": "",
-                    "normalized_count": 0,
-                    "derived_count": 0,
-                }
-            out_rows.append(_decorate_row(actual))
+        for month_day, range_from, range_to in gap_specs:
+            for period_end in _annual_period_ends(range_from, range_to, month_day):
+                actual = actual_by_key.get((edinet_code, period_end))
+                if actual is None:
+                    leap_period_end = _leap_year_actual_period_end(period_end, month_day)
+                    if leap_period_end:
+                        actual = actual_by_key.get((edinet_code, leap_period_end))
+                if actual is None:
+                    actual = {
+                        "doc_id": "",
+                        "edinet_code": edinet_code,
+                        "security_code": issuer.get("security_code", ""),
+                        "company_name": issuer.get("company_name", ""),
+                        "industry_33": issuer.get("industry_33", ""),
+                        "period_end": period_end,
+                        "submit_date": "",
+                        "download_status": "",
+                        "parse_status": "",
+                        "zip_path": "",
+                        "xbrl_path": "",
+                        "normalized_count": 0,
+                        "derived_count": 0,
+                    }
+                out_rows.append(_decorate_row(actual))
 
     out_rows.sort(key=lambda row: str(row.get("period_end") or ""), reverse=True)
     out_rows.sort(key=lambda row: str(row.get("security_code") or ""))

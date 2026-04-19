@@ -35,11 +35,14 @@ def fetch_document_list(
 
     payload = response.json()
 
+    metadata_payload = payload.get("metadata", {}) or {}
+    resultset_payload = metadata_payload.get("resultset", {}) or {}
     metadata = {
-        "date": payload.get("metadata", {}).get("date"),
-        "process_date_time": payload.get("metadata", {}).get("processDateTime"),
-        "status": payload.get("metadata", {}).get("status"),
-        "message": payload.get("metadata", {}).get("message"),
+        "date": metadata_payload.get("date"),
+        "process_date_time": metadata_payload.get("processDateTime"),
+        "status": metadata_payload.get("status"),
+        "message": metadata_payload.get("message"),
+        "resultset_count": resultset_payload.get("count"),
     }
 
     results = payload.get("results", []) or []
