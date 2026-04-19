@@ -79,6 +79,29 @@ def _ensure_filings_columns(cur: sqlite3.Cursor) -> None:
     _ensure_table_column(cur, "filings", "xbrl_member_name TEXT")
 
 
+def _ensure_raw_facts_columns(cur: sqlite3.Cursor) -> None:
+    table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_facts'
+        """
+    ).fetchone()
+
+    if not table_exists:
+        return
+
+    _ensure_table_column(cur, "raw_facts", "tag_qname TEXT")
+    _ensure_table_column(cur, "raw_facts", "namespace_uri TEXT")
+    _ensure_table_column(cur, "raw_facts", "namespace_prefix TEXT")
+    _ensure_table_column(cur, "raw_facts", "taxonomy_kind TEXT")
+    _ensure_table_column(cur, "raw_facts", "decimals TEXT")
+    _ensure_table_column(cur, "raw_facts", "is_nil INTEGER NOT NULL DEFAULT 0")
+    _ensure_table_column(cur, "raw_facts", "context_dimensions_json TEXT")
+    _ensure_table_column(cur, "raw_facts", "unit_measures_json TEXT")
+    _ensure_table_column(cur, "raw_facts", "xbrl_member_name TEXT")
+
+
 def _ensure_pipeline_log_columns(cur: sqlite3.Cursor) -> None:
     run_table_exists = cur.execute(
         """
@@ -456,17 +479,27 @@ def create_tables() -> None:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         doc_id TEXT NOT NULL,
         tag_name TEXT NOT NULL,
+        tag_qname TEXT,
+        namespace_uri TEXT,
+        namespace_prefix TEXT,
+        taxonomy_kind TEXT,
         context_ref TEXT,
         unit_ref TEXT,
+        decimals TEXT,
         period_type TEXT,
         period_start TEXT,
         period_end TEXT,
         instant_date TEXT,
         consolidation TEXT,
+        is_nil INTEGER NOT NULL DEFAULT 0,
+        context_dimensions_json TEXT,
+        unit_measures_json TEXT,
+        xbrl_member_name TEXT,
         value_text TEXT,
         created_at TEXT NOT NULL
     )
     """)
+    _ensure_raw_facts_columns(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS normalized_metrics (
