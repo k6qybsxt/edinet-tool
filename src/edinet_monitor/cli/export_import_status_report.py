@@ -323,6 +323,12 @@ def _period_end_gap_specs_for_issuer(
         unique_period_ends = sorted(set(period_ends))
         if len(unique_period_ends) < 2:
             continue
+        years = sorted({int(period_end[:4]) for period_end in unique_period_ends if len(period_end) >= 4})
+        if not years:
+            continue
+        year_span = years[-1] - years[0] + 1
+        if year_span <= 0 or (len(years) / year_span) < 0.5:
+            continue
         specs.append((month_day, unique_period_ends[0], unique_period_ends[-1]))
 
     return sorted(specs, key=lambda item: (item[2], item[0]), reverse=True)

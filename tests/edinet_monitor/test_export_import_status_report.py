@@ -209,6 +209,92 @@ class ExportImportStatusReportTest(unittest.TestCase):
         self.assertEqual({row["status"] for row in rows}, {"OK"})
         self.assertNotIn("2020-02-28", {row["period_end"] for row in rows})
 
+    def test_all_mode_does_not_bridge_sparse_fiscal_month_day_across_long_gap(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                CREATE TABLE filings (
+                    doc_id TEXT,
+                    edinet_code TEXT,
+                    security_code TEXT,
+                    form_type TEXT,
+                    period_end TEXT,
+                    submit_date TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE issuer_master (
+                    edinet_code TEXT,
+                    security_code TEXT,
+                    company_name TEXT,
+                    industry_33 TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO issuer_master (edinet_code, security_code, company_name, industry_33)
+                VALUES ('E00001', '12340', 'Test Corp', '情報・通信業')
+                """
+            )
+            actual_rows = []
+            for doc_id, period_end in [
+                ("S100AAAA", "2016-03-31"),
+                ("S100BBBB", "2017-06-30"),
+                ("S100CCCC", "2018-06-30"),
+                ("S100DDDD", "2019-06-30"),
+                ("S100EEEE", "2020-06-30"),
+                ("S100FFFF", "2021-06-30"),
+                ("S100GGGG", "2022-06-30"),
+                ("S100HHHH", "2023-06-30"),
+                ("S100IIII", "2024-06-30"),
+                ("S100JJJJ", "2025-03-31"),
+            ]:
+                conn.execute(
+                    """
+                    INSERT INTO filings (doc_id, edinet_code, security_code, form_type, period_end, submit_date)
+                    VALUES (?, 'E00001', '12340', '030000', ?, '2026-01-01 10:00')
+                    """,
+                    (doc_id, period_end),
+                )
+                actual_rows.append(
+                    {
+                        "doc_id": doc_id,
+                        "edinet_code": "E00001",
+                        "security_code": "12340",
+                        "company_name": "Test Corp",
+                        "industry_33": "情報・通信業",
+                        "period_end": period_end,
+                        "submit_date": "2026-01-01 10:00",
+                        "download_status": "downloaded",
+                        "parse_status": "derived_metrics_saved",
+                        "zip_path": "",
+                        "xbrl_path": "",
+                        "normalized_count": 1,
+                        "derived_count": 1,
+                    }
+                )
+            filters = ReportFilters(
+                period_mode="all",
+                period_from="",
+                period_to="",
+                industry_33_list=[],
+                security_codes=[],
+                status_list=["FILING_MISSING"],
+                output_dir=Path("."),
+                db_path=Path(":memory:"),
+            )
+            rows, _ = expand_with_annual_gaps(conn, filters, actual_rows)
+        finally:
+            conn.close()
+
+        self.assertNotIn("2024-03-31", {row["period_end"] for row in rows})
+        self.assertNotIn("FILING_MISSING", {row["status"] for row in rows})
+
 
 if __name__ == "__main__":
     unittest.main()
