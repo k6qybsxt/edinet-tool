@@ -223,6 +223,7 @@ def fetch_raw_facts_saved_filings(conn: sqlite3.Connection, limit: int = 10) -> 
             f.doc_id,
             f.edinet_code,
             f.security_code,
+            f.period_end,
             f.xbrl_path,
             f.zip_path
         FROM filings f

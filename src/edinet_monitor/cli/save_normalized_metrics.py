@@ -41,7 +41,11 @@ def fetch_raw_fact_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
+def run_save_normalized_metrics(
+    *,
+    batch_size: int = 100,
+    enable_period_fallback: bool = False,
+) -> dict[str, Any]:
     create_tables()
 
     conn = get_connection()
@@ -66,6 +70,7 @@ def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
                 doc_id = filing["doc_id"]
                 edinet_code = filing["edinet_code"]
                 security_code = filing["security_code"]
+                filing_period_end = str(filing.get("period_end") or "")
                 xbrl_path = str(filing.get("xbrl_path") or "")
                 zip_path = str(filing.get("zip_path") or "")
 
@@ -79,6 +84,8 @@ def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
                         security_code=security_code,
                         xbrl_path=xbrl_path,
                         zip_path=zip_path,
+                        filing_period_end=filing_period_end,
+                        enable_period_fallback=enable_period_fallback,
                     )
 
                     print(
@@ -110,6 +117,7 @@ def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
     print(f"normalized_metrics_saved_docs_total={total_saved_docs}")
     print(f"normalized_metrics_saved_rows_total={total_saved_rows}")
     print(f"normalized_metrics_error_total={total_errors}")
+    print(f"enable_period_fallback={int(enable_period_fallback)}")
 
     return {
         "loop_count": loop_count,
@@ -117,18 +125,23 @@ def run_save_normalized_metrics(*, batch_size: int = 100) -> dict[str, Any]:
         "saved_docs_total": total_saved_docs,
         "saved_rows_total": total_saved_rows,
         "error_total": total_errors,
+        "enable_period_fallback": int(enable_period_fallback),
     }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--enable-period-fallback", action="store_true")
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    run_save_normalized_metrics(batch_size=args.batch_size)
+    run_save_normalized_metrics(
+        batch_size=args.batch_size,
+        enable_period_fallback=args.enable_period_fallback,
+    )
 
 
 if __name__ == "__main__":
