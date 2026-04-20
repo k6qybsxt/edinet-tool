@@ -347,6 +347,7 @@ def build_metric_audit_rows(
     filing: dict[str, Any],
     raw_rows: list[dict[str, Any]],
     metric_base: str,
+    enforce_candidate_validation: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     structure_map = analyze_linkbase_structure(
         xbrl_path=str(filing.get("xbrl_path") or ""),
@@ -359,6 +360,8 @@ def build_metric_audit_rows(
         security_code=str(filing.get("security_code") or ""),
         xbrl_path=str(filing.get("xbrl_path") or ""),
         zip_path=str(filing.get("zip_path") or ""),
+        filing_period_end=str(filing.get("period_end") or ""),
+        enforce_candidate_validation=enforce_candidate_validation,
     )
     selected = select_best_normalization_candidates(candidates)
     filtered_candidates = [
@@ -420,6 +423,10 @@ def fetch_raw_fact_rows_from_audit_rows(raw_rows: list[dict[str, Any]]) -> list[
             "period_end": row.get("period_end"),
             "instant_date": row.get("instant_date"),
             "consolidation": row.get("consolidation"),
+            "decimals": row.get("decimals"),
+            "is_nil": row.get("is_nil"),
+            "context_dimensions_json": row.get("context_dimensions_json"),
+            "unit_measures_json": row.get("unit_measures_json"),
             "value_text": row.get("value_text"),
         }
         for row in raw_rows
@@ -489,6 +496,7 @@ def build_metric_audit_report(
         ("label", "ラベル", 30, "left"),
         ("context", "context", 40, "left"),
         ("schema", "schema", 28, "left"),
+        ("validation", "validation", 10, "left"),
     ]
     lines.append(_table_header(columns))
     for row in visible_candidates:
@@ -504,6 +512,7 @@ def build_metric_audit_report(
                     "label": row.get("_label") or tag_name_to_display_name(row.get("source_tag"), industry),
                     "context": row.get("_raw_context_ref", ""),
                     "schema": row.get("_schema_type", ""),
+                    "validation": row.get("_candidate_validation_status", ""),
                 },
             )
         )
@@ -547,6 +556,8 @@ def _detail_lines(row: dict[str, Any], industry: str) -> list[str]:
         f"schema_period_type: {row.get('_schema_period_type', '')}",
         f"schema_balance: {row.get('_schema_balance', '')}",
         f"schema_abstract: {row.get('_schema_abstract', '')}",
+        f"candidate_validation_status: {row.get('_candidate_validation_status', '')}",
+        f"candidate_validation_issues: {row.get('_candidate_validation_issues', '')}",
         f"value: {format_number(row.get('value_num'))}",
     ]
 

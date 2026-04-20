@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Any
 
@@ -24,6 +25,8 @@ TARGET_CONTEXT_SUFFIXES = {
 }
 
 MAX_PERIOD_FALLBACK_OFFSET = 4
+CANDIDATE_VALIDATION_STATUS_OK = "OK"
+CANDIDATE_VALIDATION_STATUS_EXCLUDE = "EXCLUDE"
 
 
 def _to_number(value_text: str | None) -> float | None:
@@ -134,6 +137,158 @@ def _extract_fiscal_year(period_end: str | None) -> int | None:
         return int(str(period_end)[:4])
     except Exception:
         return None
+
+
+def _safe_json_loads(value: Any) -> Any:
+    if not value:
+        return {}
+    try:
+        return json.loads(str(value))
+    except Exception:
+        return {}
+
+
+def _unit_measures(row: dict[str, Any]) -> list[str]:
+    value = _safe_json_loads(row.get("unit_measures_json"))
+    measures = value.get("measures") if isinstance(value, dict) else None
+    if not measures:
+        return []
+    return [str(item) for item in measures if str(item or "").strip()]
+
+
+def _has_jpy_unit(row: dict[str, Any]) -> bool:
+    unit_ref = str(row.get("unit_ref") or "").lower()
+    measures = [item.lower() for item in _unit_measures(row)]
+    return unit_ref == "jpy" or "iso4217:jpy" in measures
+
+
+def _has_shares_unit(row: dict[str, Any]) -> bool:
+    unit_ref = str(row.get("unit_ref") or "").lower()
+    measures = [item.lower() for item in _unit_measures(row)]
+    return "shares" in unit_ref or any("shares" in item for item in measures)
+
+
+def _schema_type_kind(schema_type: Any) -> str:
+    text = str(schema_type or "").lower()
+    if "monetary" in text:
+        return "monetary"
+    if "shares" in text:
+        return "shares"
+    if "percent" in text:
+        return "percent"
+    if "pure" in text:
+        return "pure"
+    if "string" in text or "textblock" in text:
+        return "text"
+    return ""
+
+
+def _expected_unit_kind(metric_base: str) -> str:
+    unit = str((METRICS.get(metric_base) or {}).get("unit") or "").lower()
+    if unit == "ones":
+        return "shares"
+    if unit in {"millions", "thousands", "yen"}:
+        return "monetary"
+    return ""
+
+
+def _expected_schema_period_type(metric_base: str) -> str:
+    kind = str((METRICS.get(metric_base) or {}).get("kind") or "").lower()
+    if kind == "duration":
+        return "duration"
+    if kind.startswith("instant"):
+        return "instant"
+    return ""
+
+
+def _is_true_text(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_taxonomy_structure_concept(tag_name: str, schema: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(tag_name or ""),
+            str(schema.get("type") or ""),
+            str(schema.get("substitution_group") or ""),
+        ]
+    ).lower()
+    suffix = str(tag_name or "")
+    if any(suffix.endswith(item) for item in ("TextBlock", "Table", "Axis", "Member", "LineItems")):
+        return True
+    return any(token in text for token in ("textblock", "hypercubeitem", "dimensionitem"))
+
+
+def _is_consolidation_member(member: Any) -> bool:
+    text = str(member or "")
+    return "ConsolidatedMember" in text or "NonConsolidatedMember" in text
+
+
+def _has_detail_dimension(row: dict[str, Any]) -> bool:
+    dimensions = _safe_json_loads(row.get("context_dimensions_json"))
+    if not isinstance(dimensions, dict):
+        return False
+    typed_members = dimensions.get("typed_members") or []
+    if typed_members:
+        return True
+    axis_members = dimensions.get("axis_members") or {}
+    if isinstance(axis_members, dict):
+        for members in axis_members.values():
+            if not isinstance(members, list):
+                members = [members]
+            for member in members:
+                if member and not _is_consolidation_member(member):
+                    return True
+    explicit_members = dimensions.get("explicit_members") or []
+    if isinstance(explicit_members, list):
+        for item in explicit_members:
+            if not isinstance(item, dict):
+                continue
+            member = item.get("member")
+            if member and not _is_consolidation_member(member):
+                return True
+    return False
+
+
+def validate_candidate_for_enforcement(
+    *,
+    metric_base: str,
+    row: dict[str, Any],
+    schema: dict[str, Any] | None,
+    expected_period_type: str,
+) -> dict[str, Any]:
+    schema = schema or {}
+    issues: list[str] = []
+    schema_period_type = str(schema.get("period_type") or "").strip()
+    schema_kind = _schema_type_kind(schema.get("type"))
+    expected_unit_kind = _expected_unit_kind(metric_base)
+    expected_schema_period_type = _expected_schema_period_type(metric_base) or expected_period_type
+
+    if _is_true_text(schema.get("abstract")):
+        issues.append("schema_abstract")
+    if _is_taxonomy_structure_concept(str(row.get("tag_name") or ""), schema):
+        issues.append("taxonomy_structure_concept")
+    if schema_period_type and expected_schema_period_type and schema_period_type != expected_schema_period_type:
+        issues.append(f"schema_period_type_mismatch:{schema_period_type}!={expected_schema_period_type}")
+
+    if expected_unit_kind == "monetary":
+        if schema_kind in {"shares", "percent", "pure", "text"}:
+            issues.append(f"schema_type_mismatch:expected_monetary:{schema_kind}")
+        if row.get("unit_ref") and not _has_jpy_unit(row):
+            issues.append("unit_mismatch:expected_jpy")
+    elif expected_unit_kind == "shares":
+        if schema_kind in {"monetary", "percent", "pure", "text"}:
+            issues.append(f"schema_type_mismatch:expected_shares:{schema_kind}")
+        if row.get("unit_ref") and not _has_shares_unit(row):
+            issues.append("unit_mismatch:expected_shares")
+
+    if _has_detail_dimension(row):
+        issues.append("detail_dimension_candidate")
+
+    return {
+        "status": CANDIDATE_VALIDATION_STATUS_EXCLUDE if issues else CANDIDATE_VALIDATION_STATUS_OK,
+        "issues": ",".join(issues) if issues else "OK",
+    }
 
 
 def _build_source_tag_priority_map() -> dict[str, dict[str, int]]:
@@ -257,6 +412,7 @@ def normalize_raw_fact_row(
     structure_map: dict[str, dict[str, Any]] | None = None,
     filing_period_end: str | None = None,
     enable_period_fallback: bool = False,
+    enforce_candidate_validation: bool = False,
 ) -> dict[str, Any] | None:
     tag_name = str(row.get("tag_name") or "")
     metric_base = normalize_tag_to_metric(tag_name)
@@ -291,6 +447,15 @@ def normalize_raw_fact_row(
     period_end = row.get("period_end") or row.get("instant_date")
     fiscal_year = _extract_fiscal_year(period_end)
     structure_info = (structure_map or {}).get(tag_name)
+    schema = (structure_info or {}).get("schema") or {}
+    validation = validate_candidate_for_enforcement(
+        metric_base=metric_base,
+        row=row,
+        schema=schema,
+        expected_period_type=expected_period_type,
+    )
+    if enforce_candidate_validation and validation["status"] == CANDIDATE_VALIDATION_STATUS_EXCLUDE:
+        return None
 
     return {
         "doc_id": row["doc_id"],
@@ -310,6 +475,8 @@ def normalize_raw_fact_row(
         "_consolidation_rank": _consolidation_rank(consolidation),
         "_period_source": period_source,
         "_period_fallback_used": int(period_source == "period_fallback"),
+        "_candidate_validation_status": validation["status"],
+        "_candidate_validation_issues": validation["issues"],
     }
 
 
@@ -388,6 +555,7 @@ def build_normalization_candidates(
     zip_path: str | None = None,
     filing_period_end: str | None = None,
     enable_period_fallback: bool = False,
+    enforce_candidate_validation: bool = False,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     structure_map = analyze_linkbase_structure(
@@ -407,6 +575,7 @@ def build_normalization_candidates(
             structure_map=structure_map,
             filing_period_end=effective_filing_period_end,
             enable_period_fallback=enable_period_fallback,
+            enforce_candidate_validation=enforce_candidate_validation,
         )
         if normalized is not None:
             candidates.append(normalized)
@@ -453,6 +622,8 @@ def dedupe_normalized_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         cleaned.pop("_structure_text", None)
         cleaned.pop("_period_source", None)
         cleaned.pop("_period_fallback_used", None)
+        cleaned.pop("_candidate_validation_status", None)
+        cleaned.pop("_candidate_validation_issues", None)
         out.append(cleaned)
 
     out.sort(
@@ -499,6 +670,7 @@ def normalize_raw_fact_rows(
     zip_path: str | None = None,
     filing_period_end: str | None = None,
     enable_period_fallback: bool = False,
+    enforce_candidate_validation: bool = False,
 ) -> list[dict[str, Any]]:
     candidates = build_normalization_candidates(
         raw_rows,
@@ -508,5 +680,6 @@ def normalize_raw_fact_rows(
         zip_path=zip_path,
         filing_period_end=filing_period_end,
         enable_period_fallback=enable_period_fallback,
+        enforce_candidate_validation=enforce_candidate_validation,
     )
     return dedupe_normalized_metrics(candidates)

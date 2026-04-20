@@ -59,6 +59,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Infer Current/Prior from period dates only when contextRef suffix is not standard.",
     )
+    parser.add_argument(
+        "--enforce-candidate-validation",
+        action="store_true",
+        help="Exclude candidates flagged by schema/unit/dimension validation. Changes normalized results.",
+    )
     return parser
 
 
@@ -188,6 +193,7 @@ def rebuild_metrics_for_scope(
     limit: int,
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
     enable_period_fallback: bool = False,
+    enforce_candidate_validation: bool = False,
 ) -> dict[str, Any]:
     create_tables()
     conn = get_connection()
@@ -225,6 +231,7 @@ def rebuild_metrics_for_scope(
                 zip_path=str(filing.get("zip_path") or ""),
                 filing_period_end=str(filing.get("period_end") or ""),
                 enable_period_fallback=enable_period_fallback,
+                enforce_candidate_validation=enforce_candidate_validation,
             )
             delete_normalized_metrics_by_doc_id(conn, doc_id)
             normalized_saved_count = insert_normalized_metrics(conn, normalized_rows)
@@ -265,6 +272,7 @@ def rebuild_metrics_for_scope(
     print(f"derived_saved_rows={summary['derived_saved_rows']}")
     print(f"rule_version={rule_version}")
     print(f"enable_period_fallback={int(enable_period_fallback)}")
+    print(f"enforce_candidate_validation={int(enforce_candidate_validation)}")
     return summary
 
 
@@ -276,6 +284,7 @@ def main() -> None:
         latest_only=args.latest_only,
         limit=args.limit,
         enable_period_fallback=args.enable_period_fallback,
+        enforce_candidate_validation=args.enforce_candidate_validation,
     )
 
 

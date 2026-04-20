@@ -48,6 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--normalized-batch-size", type=int, default=100)
     parser.add_argument("--derived-batch-size", type=int, default=100)
     parser.add_argument("--enable-period-fallback", action="store_true")
+    parser.add_argument("--enforce-candidate-validation", action="store_true")
     parser.add_argument("--screening-date", default="")
     parser.add_argument(
         "--screening-rule-name",
@@ -150,6 +151,7 @@ def run_daily_pipeline(
     normalized_batch_size: int = 100,
     derived_batch_size: int = 100,
     enable_period_fallback: bool = False,
+    enforce_candidate_validation: bool = False,
     screening_date: str | None = None,
     screening_rule_name: str | None = None,
     api_key: str | None = None,
@@ -291,6 +293,7 @@ def run_daily_pipeline(
             stage_kwargs={
                 "batch_size": normalized_batch_size,
                 "enable_period_fallback": enable_period_fallback,
+                "enforce_candidate_validation": enforce_candidate_validation,
             },
         )
         if chunk_rows:
@@ -484,6 +487,7 @@ def main() -> None:
         normalized_batch_size=args.normalized_batch_size,
         derived_batch_size=args.derived_batch_size,
         enable_period_fallback=args.enable_period_fallback,
+        enforce_candidate_validation=args.enforce_candidate_validation,
         screening_date=args.screening_date or None,
         screening_rule_name=args.screening_rule_name or None,
     )

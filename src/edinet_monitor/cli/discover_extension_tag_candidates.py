@@ -15,6 +15,9 @@ from edinet_monitor.services.metric_audit_service import (
 from edinet_pipeline.domain.metric_labels import split_metric_key
 
 
+DEFAULT_OUTPUT_DIR = str(Path("D:/") / "\u4f5c\u696d\u7528")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Discover unmapped extension tag candidates for one filing and metric."
@@ -27,7 +30,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-mapped", action="store_true")
     parser.add_argument("--all-periods", action="store_true")
     parser.add_argument("--limit", type=int, default=50)
-    parser.add_argument("--output-dir", default=r"D:\作業用")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     return parser
 
 
