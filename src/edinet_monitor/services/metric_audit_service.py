@@ -128,6 +128,17 @@ def security_code_variants(security_code: str) -> list[str]:
     return sorted(variants)
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+
+
+def _optional_filing_column(conn: sqlite3.Connection, column_name: str) -> str:
+    return f"f.{column_name}" if column_name in _table_columns(conn, "filings") else "''"
+
+
 def fetch_filing(
     conn: sqlite3.Connection,
     *,
@@ -137,9 +148,11 @@ def fetch_filing(
 ) -> dict[str, Any] | None:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+    accounting_standard_expr = _optional_filing_column(conn, "accounting_standard")
+    document_display_unit_expr = _optional_filing_column(conn, "document_display_unit")
     if doc_id:
         row = cur.execute(
-            """
+            f"""
             SELECT
                 f.doc_id,
                 f.edinet_code,
@@ -150,7 +163,9 @@ def fetch_filing(
                 f.period_end,
                 f.submit_date,
                 f.xbrl_path,
-                f.zip_path
+                f.zip_path,
+                {accounting_standard_expr} AS accounting_standard,
+                {document_display_unit_expr} AS document_display_unit
             FROM filings f
             LEFT JOIN issuer_master im
                 ON im.edinet_code = f.edinet_code
@@ -183,7 +198,9 @@ def fetch_filing(
             f.period_end,
             f.submit_date,
             f.xbrl_path,
-            f.zip_path
+            f.zip_path,
+            {accounting_standard_expr} AS accounting_standard,
+            {document_display_unit_expr} AS document_display_unit
         FROM filings f
         LEFT JOIN issuer_master im
             ON im.edinet_code = f.edinet_code
@@ -748,3 +765,422 @@ def _candidate_discovery_score(
     if "textblock" in schema_type:
         score -= 30
     return score
+
+
+def _unit_measures(row: dict[str, Any]) -> list[str]:
+    value = _safe_json_loads(row.get("unit_measures_json"))
+    measures = value.get("measures") if isinstance(value, dict) else None
+    if not measures:
+        return []
+    return [str(item) for item in measures if str(item or "").strip()]
+
+
+def _has_jpy_unit(row: dict[str, Any]) -> bool:
+    unit_ref = str(row.get("unit_ref") or "").lower()
+    measures = [item.lower() for item in _unit_measures(row)]
+    return unit_ref == "jpy" or "iso4217:jpy" in measures
+
+
+def _has_shares_unit(row: dict[str, Any]) -> bool:
+    unit_ref = str(row.get("unit_ref") or "").lower()
+    measures = [item.lower() for item in _unit_measures(row)]
+    return "shares" in unit_ref or any("shares" in item for item in measures)
+
+
+def _schema_type_kind(schema_type: str) -> str:
+    text = str(schema_type or "").lower()
+    if "monetary" in text:
+        return "monetary"
+    if "shares" in text:
+        return "shares"
+    if "percent" in text:
+        return "percent"
+    if "pure" in text:
+        return "pure"
+    return ""
+
+
+def _is_current_row(filing: dict[str, Any], row: dict[str, Any]) -> bool:
+    period_end = str(row.get("period_end") or row.get("instant_date") or "")
+    return "CurrentYear" in str(row.get("context_ref") or "") or period_end == str(filing.get("period_end") or "")
+
+
+def _metric_base_from_key_or_base(metric_base: str = "", metric_key: str = "") -> str:
+    if metric_base:
+        return metric_base
+    if metric_key:
+        return split_metric_key(metric_key)[0]
+    return ""
+
+
+def _row_matches_metric_filter(
+    *,
+    filing: dict[str, Any],
+    row: dict[str, Any],
+    metric_base: str,
+    metric_key: str,
+    all_periods: bool,
+) -> bool:
+    if not all_periods and not _is_current_row(filing, row):
+        return False
+    target_base = _metric_base_from_key_or_base(metric_base, metric_key)
+    if target_base and normalize_tag_to_metric(str(row.get("tag_name") or "")) != target_base:
+        return False
+    return True
+
+
+def validate_unit_decimals(
+    *,
+    filing: dict[str, Any],
+    raw_rows: list[dict[str, Any]],
+    metric_base: str = "",
+    metric_key: str = "",
+    all_periods: bool = False,
+    structure_map: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    structure = structure_map
+    if structure is None:
+        structure = analyze_linkbase_structure(
+            xbrl_path=str(filing.get("xbrl_path") or ""),
+            zip_path=str(filing.get("zip_path") or ""),
+        )
+
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if not _row_matches_metric_filter(
+            filing=filing,
+            row=raw,
+            metric_base=metric_base,
+            metric_key=metric_key,
+            all_periods=all_periods,
+        ):
+            continue
+        structure_info = structure.get(str(raw.get("tag_name") or ""), {})
+        schema = structure_info.get("schema") or {}
+        if str(raw.get("is_nil") or "") in {"1", "true", "True"}:
+            issues = ["INFO:nil_fact"]
+        else:
+            issues = _unit_decimal_issues(filing=filing, raw=raw, schema=schema)
+        rows.append(_unit_validation_row(filing, raw, schema, issues))
+
+    rows.sort(
+        key=lambda row: (
+            {"WARNING": 0, "INFO": 1, "OK": 2}.get(str(row.get("status") or ""), 9),
+            str(row.get("metric_base") or ""),
+            str(row.get("tag_name") or ""),
+            str(row.get("context_ref") or ""),
+        )
+    )
+    return rows
+
+
+def _unit_decimal_issues(
+    *,
+    filing: dict[str, Any],
+    raw: dict[str, Any],
+    schema: dict[str, Any],
+) -> list[str]:
+    issues: list[str] = []
+    kind = _schema_type_kind(str(schema.get("type") or ""))
+    if kind == "monetary" and not _has_jpy_unit(raw):
+        issues.append("WARNING:monetary_without_jpy_unit")
+    if kind == "shares" and not _has_shares_unit(raw):
+        issues.append("WARNING:shares_without_shares_unit")
+    if kind in {"percent", "pure"} and (_has_jpy_unit(raw) or _has_shares_unit(raw)):
+        issues.append(f"WARNING:{kind}_with_amount_or_shares_unit")
+
+    decimals = str(raw.get("decimals") or "").strip()
+    if not decimals:
+        issues.append("INFO:decimals_empty")
+    elif decimals.upper() == "INF":
+        issues.append("INFO:decimals_inf")
+    else:
+        try:
+            int(decimals)
+        except ValueError:
+            issues.append("WARNING:decimals_unexpected")
+
+    display_unit = str(filing.get("document_display_unit") or "").strip()
+    expected_decimals = {
+        "\u767e\u4e07\u5186": "-6",
+        "\u5343\u5186": "-3",
+    }.get(display_unit)
+    if kind == "monetary" and expected_decimals and decimals and decimals.upper() != "INF" and decimals != expected_decimals:
+        issues.append("INFO:display_unit_decimals_mismatch_candidate")
+
+    if not issues:
+        issues.append("OK")
+    return issues
+
+
+def _unit_validation_row(
+    filing: dict[str, Any],
+    raw: dict[str, Any],
+    schema: dict[str, Any],
+    issues: list[str],
+) -> dict[str, Any]:
+    status = "OK"
+    if any(str(issue).startswith("WARNING") for issue in issues):
+        status = "WARNING"
+    elif any(str(issue).startswith("INFO") for issue in issues):
+        status = "INFO"
+    return {
+        "status": status,
+        "issues": ",".join(issues),
+        "metric_base": normalize_tag_to_metric(str(raw.get("tag_name") or "")) or "",
+        "tag_name": raw.get("tag_name", ""),
+        "tag_qname": raw.get("tag_qname", ""),
+        "context_ref": raw.get("context_ref", ""),
+        "period_type": raw.get("period_type", ""),
+        "period_end": raw.get("period_end") or raw.get("instant_date") or "",
+        "consolidation": raw.get("consolidation", ""),
+        "unit_ref": raw.get("unit_ref", ""),
+        "unit_measures": ",".join(_unit_measures(raw)),
+        "decimals": raw.get("decimals", ""),
+        "document_display_unit": filing.get("document_display_unit", ""),
+        "schema_type": schema.get("type", ""),
+        "schema_period_type": schema.get("period_type", ""),
+        "value": format_number(to_number(raw.get("value_text"))),
+    }
+
+
+def build_unit_validation_report(
+    *,
+    filing: dict[str, Any],
+    rows: list[dict[str, Any]],
+    metric_base: str = "",
+    metric_key: str = "",
+) -> list[str]:
+    warning_count = sum(1 for row in rows if row.get("status") == "WARNING")
+    info_count = sum(1 for row in rows if row.get("status") == "INFO")
+    ok_count = sum(1 for row in rows if row.get("status") == "OK")
+    lines = [
+        f"generated_at: {datetime.now().isoformat(timespec='seconds')}",
+        "report: unit_decimals_validation",
+        f"doc_id: {filing.get('doc_id', '')}",
+        f"company_name: {filing.get('company_name', '')}",
+        f"security_code: {filing.get('security_code', '')}",
+        f"industry_33: {filing.get('industry_33', '')}",
+        f"period_end: {filing.get('period_end', '')}",
+        f"document_display_unit: {filing.get('document_display_unit', '')}",
+        f"metric_base: {metric_base}",
+        f"metric_key: {metric_key}",
+        f"row_count: {len(rows)}",
+        f"warning_count: {warning_count}",
+        f"info_count: {info_count}",
+        f"ok_count: {ok_count}",
+        "",
+    ]
+    columns = [
+        ("status", "status", 8, "left"),
+        ("tag_name", "tag", 42, "left"),
+        ("metric_base", "metric", 22, "left"),
+        ("unit_ref", "unit", 10, "left"),
+        ("decimals", "dec", 6, "left"),
+        ("schema_type", "schema", 28, "left"),
+        ("issues", "issues", 50, "left"),
+    ]
+    lines.append(_table_header(columns))
+    for row in rows:
+        lines.append(_table_row(columns, row))
+    return lines
+
+
+def check_calculation_consistency(
+    *,
+    filing: dict[str, Any],
+    raw_rows: list[dict[str, Any]],
+    metric_base: str = "",
+    tolerance_ratio: float = 0.01,
+    tolerance_abs: float = 1.0,
+    limit: int = 100,
+    structure_map: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    structure = structure_map
+    if structure is None:
+        structure = analyze_linkbase_structure(
+            xbrl_path=str(filing.get("xbrl_path") or ""),
+            zip_path=str(filing.get("zip_path") or ""),
+        )
+    relationships = _calculation_relationship_groups(structure)
+    raw_index = _raw_numeric_index(raw_rows)
+    rows: list[dict[str, Any]] = []
+
+    for (role, parent), children in relationships.items():
+        if metric_base and not _relationship_matches_metric(parent, children, metric_base):
+            continue
+        parent_rows = [
+            row for row in raw_rows
+            if str(row.get("tag_name") or "") == parent and to_number(row.get("value_text")) is not None
+        ]
+        for parent_row in parent_rows:
+            context_key = _calc_context_key(parent_row)
+            child_details: list[str] = []
+            calculated = 0.0
+            missing: list[str] = []
+            for child, weight in children:
+                child_row = raw_index.get((child, *context_key))
+                if not child_row:
+                    missing.append(child)
+                    child_details.append(f"{child}*{weight}=missing")
+                    continue
+                child_value = to_number(child_row.get("value_text"))
+                if child_value is None:
+                    missing.append(child)
+                    child_details.append(f"{child}*{weight}=non_numeric")
+                    continue
+                calculated += child_value * weight
+                child_details.append(f"{child}*{weight}={format_number(child_value)}")
+
+            parent_value = to_number(parent_row.get("value_text"))
+            if parent_value is None:
+                continue
+            if missing:
+                status = "SKIPPED"
+                diff = None
+                diff_ratio = None
+            else:
+                diff = parent_value - calculated
+                denom = max(abs(parent_value), abs(calculated), 1.0)
+                diff_ratio = abs(diff) / denom
+                status = "WARNING" if abs(diff) > tolerance_abs and diff_ratio > tolerance_ratio else "OK"
+            rows.append(
+                {
+                    "status": status,
+                    "role": role,
+                    "parent_tag": parent,
+                    "child_tags": "; ".join(child_details),
+                    "missing_children": ",".join(missing),
+                    "context_ref": parent_row.get("context_ref", ""),
+                    "unit_ref": parent_row.get("unit_ref", ""),
+                    "consolidation": parent_row.get("consolidation", ""),
+                    "parent_value": format_number(parent_value),
+                    "calculated_value": "" if missing else format_number(calculated),
+                    "diff": "" if diff is None else format_number(diff),
+                    "diff_ratio": "" if diff_ratio is None else f"{diff_ratio:.6g}",
+                }
+            )
+
+    rows.sort(
+        key=lambda row: (
+            {"WARNING": 0, "OK": 1, "SKIPPED": 2}.get(str(row.get("status") or ""), 9),
+            str(row.get("parent_tag") or ""),
+            str(row.get("context_ref") or ""),
+        )
+    )
+    return rows[:limit]
+
+
+def _calculation_relationship_groups(
+    structure_map: dict[str, dict[str, Any]],
+) -> dict[tuple[str, str], list[tuple[str, float]]]:
+    grouped: dict[tuple[str, str], dict[str, float]] = {}
+    seen: set[tuple[str, str, str, float]] = set()
+    for concept_info in structure_map.values():
+        for rel in concept_info.get("calculation_relationships") or []:
+            parent = str(rel.get("parent") or "")
+            child = str(rel.get("child") or "")
+            role = str(rel.get("role") or "")
+            if not parent or not child:
+                continue
+            try:
+                weight = float(rel.get("weight") or 0)
+            except Exception:
+                continue
+            key = (role, parent, child, weight)
+            if key in seen:
+                continue
+            seen.add(key)
+            grouped.setdefault((role, parent), {})[child] = weight
+    return {
+        key: sorted(value.items(), key=lambda item: item[0])
+        for key, value in grouped.items()
+    }
+
+
+def _raw_numeric_index(raw_rows: list[dict[str, Any]]) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    result: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in raw_rows:
+        if to_number(row.get("value_text")) is None:
+            continue
+        key = (str(row.get("tag_name") or ""), *_calc_context_key(row))
+        result.setdefault(key, row)
+    return result
+
+
+def _calc_context_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("context_ref") or ""),
+        str(row.get("unit_ref") or ""),
+        str(row.get("consolidation") or ""),
+    )
+
+
+def _relationship_matches_metric(parent: str, children: list[tuple[str, float]], metric_base: str) -> bool:
+    if normalize_tag_to_metric(parent) == metric_base:
+        return True
+    return any(normalize_tag_to_metric(child) == metric_base for child, _ in children)
+
+
+def build_calculation_consistency_report(
+    *,
+    filing: dict[str, Any],
+    rows: list[dict[str, Any]],
+    metric_base: str = "",
+    tolerance_ratio: float = 0.01,
+    tolerance_abs: float = 1.0,
+) -> list[str]:
+    warning_count = sum(1 for row in rows if row.get("status") == "WARNING")
+    ok_count = sum(1 for row in rows if row.get("status") == "OK")
+    skipped_count = sum(1 for row in rows if row.get("status") == "SKIPPED")
+    lines = [
+        f"generated_at: {datetime.now().isoformat(timespec='seconds')}",
+        "report: calculation_consistency",
+        f"doc_id: {filing.get('doc_id', '')}",
+        f"company_name: {filing.get('company_name', '')}",
+        f"security_code: {filing.get('security_code', '')}",
+        f"industry_33: {filing.get('industry_33', '')}",
+        f"period_end: {filing.get('period_end', '')}",
+        f"metric_base: {metric_base}",
+        f"tolerance_ratio: {tolerance_ratio}",
+        f"tolerance_abs: {tolerance_abs}",
+        f"row_count: {len(rows)}",
+        f"warning_count: {warning_count}",
+        f"ok_count: {ok_count}",
+        f"skipped_count: {skipped_count}",
+        "",
+    ]
+    columns = [
+        ("status", "status", 8, "left"),
+        ("parent_tag", "parent", 34, "left"),
+        ("parent_value", "parent_value", 16, "right"),
+        ("calculated_value", "calculated", 16, "right"),
+        ("diff", "diff", 16, "right"),
+        ("diff_ratio", "ratio", 10, "right"),
+        ("context_ref", "context", 38, "left"),
+        ("unit_ref", "unit", 10, "left"),
+    ]
+    lines.append(_table_header(columns))
+    for row in rows:
+        lines.append(_table_row(columns, row))
+    lines.append("")
+    lines.append("=== details ===")
+    for idx, row in enumerate(rows, start=1):
+        lines.append(f"[{idx}]")
+        for key in [
+            "status",
+            "role",
+            "parent_tag",
+            "child_tags",
+            "missing_children",
+            "context_ref",
+            "unit_ref",
+            "consolidation",
+            "parent_value",
+            "calculated_value",
+            "diff",
+            "diff_ratio",
+        ]:
+            lines.append(f"{key}: {row.get(key, '')}")
+        lines.append("")
+    return lines

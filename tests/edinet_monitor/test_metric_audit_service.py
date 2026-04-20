@@ -13,10 +13,14 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.services.metric_audit_service import (  # noqa: E402
     build_extension_candidate_report,
+    build_calculation_consistency_report,
     build_metric_audit_report,
+    build_unit_validation_report,
+    check_calculation_consistency,
     discover_extension_tag_candidates,
     fetch_filing,
     fetch_raw_fact_audit_rows,
+    validate_unit_decimals,
 )
 
 
@@ -198,6 +202,180 @@ class MetricAuditServiceTest(unittest.TestCase):
         self.assertEqual(candidates[0]["tag_name"], "CustomRevenueExt")
         self.assertEqual(candidates[0]["taxonomy_kind"], "extension")
         self.assertIn("extension_tag_candidates", "\n".join(report))
+
+    def test_validate_unit_decimals_reports_schema_unit_mismatches(self) -> None:
+        filing = {"doc_id": "S100TEST", "period_end": "2026-03-31", "document_display_unit": ""}
+        raw_rows = [
+            {
+                "tag_name": "GoodMoney",
+                "context_ref": "CurrentYearDuration",
+                "unit_ref": "JPY",
+                "unit_measures_json": '{"measures":["iso4217:JPY"]}',
+                "decimals": "-6",
+                "period_end": "2026-03-31",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "BadMoney",
+                "context_ref": "CurrentYearDuration",
+                "unit_ref": "shares",
+                "unit_measures_json": '{"measures":["xbrli:shares"]}',
+                "decimals": "-6",
+                "period_end": "2026-03-31",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "BadShares",
+                "context_ref": "CurrentYearDuration",
+                "unit_ref": "JPY",
+                "unit_measures_json": '{"measures":["iso4217:JPY"]}',
+                "decimals": "INF",
+                "period_end": "2026-03-31",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "EmptyDecimals",
+                "context_ref": "CurrentYearDuration",
+                "unit_ref": "JPY",
+                "unit_measures_json": '{"measures":["iso4217:JPY"]}',
+                "decimals": "",
+                "period_end": "2026-03-31",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "UnexpectedDecimals",
+                "context_ref": "CurrentYearDuration",
+                "unit_ref": "JPY",
+                "unit_measures_json": '{"measures":["iso4217:JPY"]}',
+                "decimals": "abc",
+                "period_end": "2026-03-31",
+                "value_text": "100",
+            },
+        ]
+        structure_map = {
+            "GoodMoney": {"schema": {"type": "xbrli:monetaryItemType"}},
+            "BadMoney": {"schema": {"type": "xbrli:monetaryItemType"}},
+            "BadShares": {"schema": {"type": "xbrli:sharesItemType"}},
+            "EmptyDecimals": {"schema": {"type": "xbrli:monetaryItemType"}},
+            "UnexpectedDecimals": {"schema": {"type": "xbrli:monetaryItemType"}},
+        }
+
+        rows = validate_unit_decimals(
+            filing=filing,
+            raw_rows=raw_rows,
+            all_periods=False,
+            structure_map=structure_map,
+        )
+        by_tag = {row["tag_name"]: row for row in rows}
+        report = build_unit_validation_report(filing=filing, rows=rows)
+
+        self.assertEqual(by_tag["GoodMoney"]["status"], "OK")
+        self.assertEqual(by_tag["BadMoney"]["status"], "WARNING")
+        self.assertIn("monetary_without_jpy_unit", by_tag["BadMoney"]["issues"])
+        self.assertEqual(by_tag["BadShares"]["status"], "WARNING")
+        self.assertIn("shares_without_shares_unit", by_tag["BadShares"]["issues"])
+        self.assertEqual(by_tag["EmptyDecimals"]["status"], "INFO")
+        self.assertIn("decimals_empty", by_tag["EmptyDecimals"]["issues"])
+        self.assertEqual(by_tag["UnexpectedDecimals"]["status"], "WARNING")
+        self.assertIn("decimals_unexpected", by_tag["UnexpectedDecimals"]["issues"])
+        self.assertIn("unit_decimals_validation", "\n".join(report))
+
+    def test_check_calculation_consistency_reports_ok_warning_and_skipped(self) -> None:
+        filing = {"doc_id": "S100TEST"}
+        raw_rows = [
+            {
+                "tag_name": "ParentOk",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "OkChildA",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "60",
+            },
+            {
+                "tag_name": "OkChildB",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "40",
+            },
+            {
+                "tag_name": "ParentWarn",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "WarnChildA",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "70",
+            },
+            {
+                "tag_name": "WarnChildB",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "40",
+            },
+            {
+                "tag_name": "ParentSkipped",
+                "context_ref": "ctx",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "100",
+            },
+            {
+                "tag_name": "SkippedChildA",
+                "context_ref": "ctx_other",
+                "unit_ref": "JPY",
+                "consolidation": "Consolidated",
+                "value_text": "100",
+            },
+        ]
+        structure_map = {
+            "ParentOk": {
+                "calculation_relationships": [
+                    {"role": "role", "parent": "ParentOk", "child": "OkChildA", "weight": 1},
+                    {"role": "role", "parent": "ParentOk", "child": "OkChildB", "weight": 1},
+                ]
+            },
+            "ParentWarn": {
+                "calculation_relationships": [
+                    {"role": "role", "parent": "ParentWarn", "child": "WarnChildA", "weight": 1},
+                    {"role": "role", "parent": "ParentWarn", "child": "WarnChildB", "weight": 1},
+                ]
+            },
+            "ParentSkipped": {
+                "calculation_relationships": [
+                    {"role": "role", "parent": "ParentSkipped", "child": "SkippedChildA", "weight": 1},
+                    {"role": "role", "parent": "ParentSkipped", "child": "SkippedChildMissing", "weight": 1},
+                ]
+            },
+        }
+
+        rows = check_calculation_consistency(
+            filing=filing,
+            raw_rows=raw_rows,
+            tolerance_ratio=0.01,
+            tolerance_abs=1,
+            structure_map=structure_map,
+        )
+        by_parent = {row["parent_tag"]: row for row in rows}
+        report = build_calculation_consistency_report(filing=filing, rows=rows)
+
+        self.assertEqual(by_parent["ParentOk"]["status"], "OK")
+        self.assertEqual(by_parent["ParentWarn"]["status"], "WARNING")
+        self.assertEqual(by_parent["ParentSkipped"]["status"], "SKIPPED")
+        self.assertIn("SkippedChildMissing", by_parent["ParentSkipped"]["missing_children"])
+        self.assertIn("calculation_consistency", "\n".join(report))
 
 
 if __name__ == "__main__":
