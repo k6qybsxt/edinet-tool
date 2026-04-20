@@ -347,6 +347,7 @@ def build_metric_audit_rows(
     filing: dict[str, Any],
     raw_rows: list[dict[str, Any]],
     metric_base: str,
+    enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     structure_map = analyze_linkbase_structure(
@@ -361,6 +362,7 @@ def build_metric_audit_rows(
         xbrl_path=str(filing.get("xbrl_path") or ""),
         zip_path=str(filing.get("zip_path") or ""),
         filing_period_end=str(filing.get("period_end") or ""),
+        enable_period_fallback=enable_period_fallback,
         enforce_candidate_validation=enforce_candidate_validation,
     )
     selected = select_best_normalization_candidates(candidates)
