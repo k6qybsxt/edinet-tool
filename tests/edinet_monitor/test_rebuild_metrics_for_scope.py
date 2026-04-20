@@ -102,6 +102,40 @@ class RebuildMetricsForScopeTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["doc_id"], "D1")
 
+    def test_fetch_scope_filings_can_target_specific_doc_ids(self) -> None:
+        conn = build_test_connection()
+        try:
+            conn.execute(
+                "INSERT INTO issuer_master (edinet_code, security_code, company_name, industry_33) VALUES (?, ?, ?, ?)",
+                ("E1", "46130", "Kansai Paint", "化学"),
+            )
+            conn.executemany(
+                """
+                INSERT INTO filings (
+                    doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                    accounting_standard, document_display_unit, xbrl_path, zip_path
+                ) VALUES (?, ?, ?, ?, ?, ?, '', '', '', '')
+                """,
+                [
+                    ("D2024", "E1", "46130", "030000", "2024-03-31", "2024-06-28"),
+                    ("D2025", "E1", "46130", "030000", "2025-03-31", "2025-06-27"),
+                ],
+            )
+
+            rows = fetch_scope_filings(
+                conn,
+                doc_ids=["D2024"],
+                industry_33_list=[],
+                security_codes=[],
+                latest_only=True,
+                limit=0,
+            )
+        finally:
+            conn.close()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["doc_id"], "D2024")
+
 
 if __name__ == "__main__":
     unittest.main()
