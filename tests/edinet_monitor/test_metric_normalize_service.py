@@ -57,6 +57,23 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "GrossProfitCurrent")
         self.assertEqual(normalized["source_tag"], "OperatingGrossProfit")
 
+    def test_negative_zero_is_stored_as_plain_zero(self) -> None:
+        row = build_raw_fact(
+            tag_name="NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults",
+            value_text="-0",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9999",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["value_num"], 0.0)
+        self.assertEqual(str(normalized["value_num"]), "0.0")
+
     def test_operating_cost_maps_to_cost_of_sales(self) -> None:
         row = build_raw_fact(tag_name="OperatingCost")
 

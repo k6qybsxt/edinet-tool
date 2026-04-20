@@ -33,9 +33,12 @@ def _to_number(value_text: str | None) -> float | None:
     if value_text in (None, ""):
         return None
     try:
-        return float(str(value_text).replace(",", ""))
+        value = float(str(value_text).replace(",", ""))
     except Exception:
         return None
+    if value == 0:
+        return 0.0
+    return value
 
 
 def _get_suffix_and_period_kind(context_ref: str) -> tuple[str, str] | None:
