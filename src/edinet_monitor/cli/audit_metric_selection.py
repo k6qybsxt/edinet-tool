@@ -15,6 +15,9 @@ from edinet_monitor.services.metric_audit_service import (
 from edinet_pipeline.domain.metric_labels import split_metric_key
 
 
+DEFAULT_OUTPUT_DIR = str(Path("D:/") / "\u4f5c\u696d\u7528")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Audit why normalized metric candidates were selected for one filing."
@@ -25,7 +28,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metric-key", default="")
     parser.add_argument("--metric-base", default="")
     parser.add_argument("--all-periods", action="store_true")
-    parser.add_argument("--output-dir", default=r"D:\作業用")
+    parser.add_argument("--enforce-candidate-validation", action="store_true")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     return parser
 
 
@@ -55,6 +59,7 @@ def main() -> None:
         filing=filing,
         raw_rows=raw_rows,
         metric_base=metric_base,
+        enforce_candidate_validation=args.enforce_candidate_validation,
     )
     lines = build_metric_audit_report(
         filing=filing,

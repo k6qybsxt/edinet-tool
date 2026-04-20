@@ -11,17 +11,19 @@ from edinet_monitor.services.normalizer.metric_normalize_service import (
 )
 
 
-def build_raw_fact(*, doc_id: str = "DOC1", tag_name: str, value_text: str = "123", context_ref: str = "CurrentYearDuration_ConsolidatedMember", period_type: str = "duration", period_start: str | None = "2024-04-01", period_end: str | None = "2025-03-31", instant_date: str | None = None, consolidation: str = "Consolidated") -> dict:
+def build_raw_fact(*, doc_id: str = "DOC1", tag_name: str, value_text: str = "123", context_ref: str = "CurrentYearDuration_ConsolidatedMember", period_type: str = "duration", period_start: str | None = "2024-04-01", period_end: str | None = "2025-03-31", instant_date: str | None = None, consolidation: str = "Consolidated", unit_ref: str = "JPY", context_dimensions_json: str = "", unit_measures_json: str = "") -> dict:
     return {
         "doc_id": doc_id,
         "tag_name": tag_name,
         "context_ref": context_ref,
-        "unit_ref": "JPY",
+        "unit_ref": unit_ref,
         "period_type": period_type,
         "period_start": period_start,
         "period_end": period_end,
         "instant_date": instant_date,
         "consolidation": consolidation,
+        "context_dimensions_json": context_dimensions_json,
+        "unit_measures_json": unit_measures_json,
         "value_text": value_text,
     }
 
@@ -508,6 +510,91 @@ class MetricNormalizeServiceTest(unittest.TestCase):
             security_code="9501",
             filing_period_end="2025-03-31",
             enable_period_fallback=True,
+        )
+
+        self.assertIsNone(normalized)
+
+    def test_candidate_validation_is_audit_only_by_default(self) -> None:
+        row = build_raw_fact(
+            tag_name="NetSales",
+            context_dimensions_json=(
+                '{"axis_members":{"jpcrp_cor:OperatingSegmentsAxis":["ext:PaintBusinessMember"]}}'
+            ),
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "NetSalesCurrent")
+        self.assertEqual(normalized["_candidate_validation_status"], "EXCLUDE")
+        self.assertIn("detail_dimension_candidate", normalized["_candidate_validation_issues"])
+
+    def test_candidate_validation_can_exclude_detail_dimensions_when_enforced(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NetSales",
+                value_text="100",
+                context_dimensions_json=(
+                    '{"axis_members":{"jpcrp_cor:OperatingSegmentsAxis":["ext:PaintBusinessMember"]}}'
+                ),
+            ),
+            build_raw_fact(tag_name="NetSales", value_text="200"),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="9501",
+            enforce_candidate_validation=True,
+        )
+
+        self.assertEqual(len(normalized_rows), 1)
+        self.assertEqual(normalized_rows[0]["value_num"], 200.0)
+
+    def test_candidate_validation_flags_schema_period_type_mismatch(self) -> None:
+        row = build_raw_fact(tag_name="NetSales")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            structure_map={
+                "NetSales": {
+                    "schema": {
+                        "type": "xbrli:monetaryItemType",
+                        "period_type": "instant",
+                    }
+                }
+            },
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["_candidate_validation_status"], "EXCLUDE")
+        self.assertIn("schema_period_type_mismatch", normalized["_candidate_validation_issues"])
+
+    def test_candidate_validation_can_exclude_wrong_unit_when_enforced(self) -> None:
+        row = build_raw_fact(
+            tag_name="IssuedShares",
+            period_type="instant",
+            context_ref="CurrentYearInstant",
+            period_start=None,
+            instant_date="2025-03-31",
+            unit_ref="JPY",
+            unit_measures_json='{"measures":["iso4217:JPY"]}',
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            structure_map={"IssuedShares": {"schema": {"type": "xbrli:sharesItemType"}}},
+            enforce_candidate_validation=True,
         )
 
         self.assertIsNone(normalized)

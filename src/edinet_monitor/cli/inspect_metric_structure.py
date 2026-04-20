@@ -40,6 +40,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show Prior rows too. Default shows Current only.",
     )
+    parser.add_argument(
+        "--enforce-candidate-validation",
+        action="store_true",
+        help="Preview selection after excluding candidates flagged by schema/unit/dimension validation.",
+    )
     return parser
 
 
@@ -163,6 +168,8 @@ def main() -> None:
             security_code=str(filing.get("security_code") or ""),
             xbrl_path=str(filing.get("xbrl_path") or ""),
             zip_path=str(filing.get("zip_path") or ""),
+            filing_period_end=str(filing.get("period_end") or ""),
+            enforce_candidate_validation=args.enforce_candidate_validation,
         )
         selected_rows = select_best_normalization_candidates(candidates)
     finally:
@@ -218,6 +225,7 @@ def main() -> None:
                         f"value={_format_number(selected.get('value_num'))}",
                         f"role={selected.get('_structure_role', '')}",
                         f"is_total={selected.get('_structure_is_total', False)}",
+                        f"validation={selected.get('_candidate_validation_status', '')}",
                     ]
                 )
             )
@@ -244,6 +252,8 @@ def main() -> None:
                         f"role={row.get('_structure_role', '')}",
                         f"confidence={row.get('_structure_confidence', '')}",
                         f"is_total={row.get('_structure_is_total', False)}",
+                        f"validation={row.get('_candidate_validation_status', '')}",
+                        f"validation_issues={row.get('_candidate_validation_issues', '')}",
                         f"parents={parent_labels}",
                     ]
                 )

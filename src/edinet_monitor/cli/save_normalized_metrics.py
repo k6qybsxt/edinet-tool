@@ -20,19 +20,33 @@ from edinet_monitor.services.normalizer.normalized_metric_store_service import (
 def fetch_raw_fact_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict]:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+    raw_fact_columns = {
+        str(row[1])
+        for row in cur.execute("PRAGMA table_info(raw_facts)").fetchall()
+    }
+    wanted_columns = [
+        "doc_id",
+        "tag_name",
+        "context_ref",
+        "unit_ref",
+        "period_type",
+        "period_start",
+        "period_end",
+        "instant_date",
+        "consolidation",
+        "decimals",
+        "is_nil",
+        "context_dimensions_json",
+        "unit_measures_json",
+        "value_text",
+    ]
+    select_parts = [
+        column if column in raw_fact_columns else f"'' AS {column}"
+        for column in wanted_columns
+    ]
     rows = cur.execute(
-        """
-        SELECT
-            doc_id,
-            tag_name,
-            context_ref,
-            unit_ref,
-            period_type,
-            period_start,
-            period_end,
-            instant_date,
-            consolidation,
-            value_text
+        f"""
+        SELECT {", ".join(select_parts)}
         FROM raw_facts
         WHERE doc_id = ?
         """,
@@ -45,6 +59,7 @@ def run_save_normalized_metrics(
     *,
     batch_size: int = 100,
     enable_period_fallback: bool = False,
+    enforce_candidate_validation: bool = False,
 ) -> dict[str, Any]:
     create_tables()
 
@@ -86,6 +101,7 @@ def run_save_normalized_metrics(
                         zip_path=zip_path,
                         filing_period_end=filing_period_end,
                         enable_period_fallback=enable_period_fallback,
+                        enforce_candidate_validation=enforce_candidate_validation,
                     )
 
                     print(
@@ -118,6 +134,7 @@ def run_save_normalized_metrics(
     print(f"normalized_metrics_saved_rows_total={total_saved_rows}")
     print(f"normalized_metrics_error_total={total_errors}")
     print(f"enable_period_fallback={int(enable_period_fallback)}")
+    print(f"enforce_candidate_validation={int(enforce_candidate_validation)}")
 
     return {
         "loop_count": loop_count,
@@ -126,6 +143,7 @@ def run_save_normalized_metrics(
         "saved_rows_total": total_saved_rows,
         "error_total": total_errors,
         "enable_period_fallback": int(enable_period_fallback),
+        "enforce_candidate_validation": int(enforce_candidate_validation),
     }
 
 
@@ -133,6 +151,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--enable-period-fallback", action="store_true")
+    parser.add_argument("--enforce-candidate-validation", action="store_true")
     return parser
 
 
@@ -141,6 +160,7 @@ def main() -> None:
     run_save_normalized_metrics(
         batch_size=args.batch_size,
         enable_period_fallback=args.enable_period_fallback,
+        enforce_candidate_validation=args.enforce_candidate_validation,
     )
 
 
