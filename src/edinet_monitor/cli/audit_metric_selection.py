@@ -28,6 +28,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metric-key", default="")
     parser.add_argument("--metric-base", default="")
     parser.add_argument("--all-periods", action="store_true")
+    parser.add_argument("--enable-period-fallback", action="store_true")
     parser.add_argument("--enforce-candidate-validation", action="store_true")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     return parser
@@ -59,6 +60,7 @@ def main() -> None:
         filing=filing,
         raw_rows=raw_rows,
         metric_base=metric_base,
+        enable_period_fallback=args.enable_period_fallback,
         enforce_candidate_validation=args.enforce_candidate_validation,
     )
     lines = build_metric_audit_report(

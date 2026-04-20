@@ -30,6 +30,13 @@ from edinet_monitor.services.normalizer.normalized_metric_store_service import (
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--doc-id",
+        action="append",
+        dest="doc_ids",
+        default=[],
+        help="Repeatable. Rebuild specific filings by doc_id.",
+    )
+    parser.add_argument(
         "--industry-33",
         action="append",
         dest="industry_33_list",
@@ -82,11 +89,13 @@ def _security_code_variants(security_code: str) -> list[str]:
 def fetch_scope_filings(
     conn: sqlite3.Connection,
     *,
+    doc_ids: list[str] | None = None,
     industry_33_list: list[str],
     security_codes: list[str],
     latest_only: bool,
     limit: int,
 ) -> list[dict[str, Any]]:
+    doc_ids = [str(doc_id).strip() for doc_id in (doc_ids or []) if str(doc_id).strip()]
     security_variants: list[str] = []
     for code in security_codes:
         security_variants.extend(_security_code_variants(code))
@@ -94,6 +103,11 @@ def fetch_scope_filings(
 
     where_clauses = ["f.form_type = '030000'"]
     params: list[Any] = []
+
+    if doc_ids:
+        placeholders = ",".join("?" for _ in doc_ids)
+        where_clauses.append(f"f.doc_id IN ({placeholders})")
+        params.extend(doc_ids)
 
     if industry_33_list:
         placeholders = ",".join("?" for _ in industry_33_list)
@@ -107,7 +121,7 @@ def fetch_scope_filings(
 
     where_sql = " AND ".join(where_clauses)
 
-    if latest_only:
+    if latest_only and not doc_ids:
         sql = f"""
         WITH scoped AS (
             SELECT
@@ -187,6 +201,7 @@ def fetch_scope_filings(
 
 def rebuild_metrics_for_scope(
     *,
+    doc_ids: list[str] | None = None,
     industry_33_list: list[str],
     security_codes: list[str],
     latest_only: bool,
@@ -210,6 +225,7 @@ def rebuild_metrics_for_scope(
     try:
         filings = fetch_scope_filings(
             conn,
+            doc_ids=doc_ids,
             industry_33_list=industry_33_list,
             security_codes=security_codes,
             latest_only=latest_only,
@@ -279,6 +295,7 @@ def rebuild_metrics_for_scope(
 def main() -> None:
     args = build_arg_parser().parse_args()
     rebuild_metrics_for_scope(
+        doc_ids=args.doc_ids,
         industry_33_list=args.industry_33_list,
         security_codes=args.security_codes,
         latest_only=args.latest_only,
