@@ -54,6 +54,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=0,
         help="Optional hard limit after filtering.",
     )
+    parser.add_argument(
+        "--enable-period-fallback",
+        action="store_true",
+        help="Infer Current/Prior from period dates only when contextRef suffix is not standard.",
+    )
     return parser
 
 
@@ -182,6 +187,7 @@ def rebuild_metrics_for_scope(
     latest_only: bool,
     limit: int,
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
+    enable_period_fallback: bool = False,
 ) -> dict[str, Any]:
     create_tables()
     conn = get_connection()
@@ -217,6 +223,8 @@ def rebuild_metrics_for_scope(
                 security_code=str(filing.get("security_code") or ""),
                 xbrl_path=str(filing.get("xbrl_path") or ""),
                 zip_path=str(filing.get("zip_path") or ""),
+                filing_period_end=str(filing.get("period_end") or ""),
+                enable_period_fallback=enable_period_fallback,
             )
             delete_normalized_metrics_by_doc_id(conn, doc_id)
             normalized_saved_count = insert_normalized_metrics(conn, normalized_rows)
@@ -256,6 +264,7 @@ def rebuild_metrics_for_scope(
     print(f"derived_saved_docs={summary['derived_saved_docs']}")
     print(f"derived_saved_rows={summary['derived_saved_rows']}")
     print(f"rule_version={rule_version}")
+    print(f"enable_period_fallback={int(enable_period_fallback)}")
     return summary
 
 
@@ -266,6 +275,7 @@ def main() -> None:
         security_codes=args.security_codes,
         latest_only=args.latest_only,
         limit=args.limit,
+        enable_period_fallback=args.enable_period_fallback,
     )
 
 

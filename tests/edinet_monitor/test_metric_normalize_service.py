@@ -11,16 +11,16 @@ from edinet_monitor.services.normalizer.metric_normalize_service import (
 )
 
 
-def build_raw_fact(*, doc_id: str = "DOC1", tag_name: str, value_text: str = "123", context_ref: str = "CurrentYearDuration_ConsolidatedMember", period_type: str = "duration", period_end: str = "2025-03-31", consolidation: str = "Consolidated") -> dict:
+def build_raw_fact(*, doc_id: str = "DOC1", tag_name: str, value_text: str = "123", context_ref: str = "CurrentYearDuration_ConsolidatedMember", period_type: str = "duration", period_start: str | None = "2024-04-01", period_end: str | None = "2025-03-31", instant_date: str | None = None, consolidation: str = "Consolidated") -> dict:
     return {
         "doc_id": doc_id,
         "tag_name": tag_name,
         "context_ref": context_ref,
         "unit_ref": "JPY",
         "period_type": period_type,
-        "period_start": "2024-04-01",
+        "period_start": period_start,
         "period_end": period_end,
-        "instant_date": None,
+        "instant_date": instant_date,
         "consolidation": consolidation,
         "value_text": value_text,
     }
@@ -422,6 +422,95 @@ class MetricNormalizeServiceTest(unittest.TestCase):
             normalized["source_tag"],
             "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults",
         )
+
+    def test_period_fallback_is_disabled_by_default(self) -> None:
+        row = build_raw_fact(
+            tag_name="NetSales",
+            context_ref="CustomAnnualDuration",
+            period_start="2024-04-01",
+            period_end="2025-03-31",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            filing_period_end="2025-03-31",
+        )
+
+        self.assertIsNone(normalized)
+
+    def test_period_fallback_maps_current_and_prior_duration_rows_when_enabled(self) -> None:
+        rows = [
+            build_raw_fact(
+                doc_id="DOC5",
+                tag_name="NetSales",
+                value_text="200",
+                context_ref="CustomAnnualDurationCurrent",
+                period_start="2024-04-01",
+                period_end="2025-03-31",
+            ),
+            build_raw_fact(
+                doc_id="DOC5",
+                tag_name="NetSales",
+                value_text="180",
+                context_ref="CustomAnnualDurationPrior",
+                period_start="2023-04-01",
+                period_end="2024-03-31",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="9501",
+            filing_period_end="2025-03-31",
+            enable_period_fallback=True,
+        )
+
+        by_key = {row["metric_key"]: row for row in normalized_rows}
+        self.assertEqual(by_key["NetSalesCurrent"]["value_num"], 200.0)
+        self.assertEqual(by_key["NetSalesPrior1"]["value_num"], 180.0)
+
+    def test_period_fallback_maps_instant_rows_when_enabled(self) -> None:
+        row = build_raw_fact(
+            tag_name="CashAndCashEquivalents",
+            context_ref="CustomInstantContext",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2024-03-31",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            filing_period_end="2025-03-31",
+            enable_period_fallback=True,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "CashAndCashEquivalentsPrior1")
+
+    def test_period_fallback_ignores_short_duration_rows(self) -> None:
+        row = build_raw_fact(
+            tag_name="NetSales",
+            context_ref="CustomQuarterDuration",
+            period_start="2025-01-01",
+            period_end="2025-03-31",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            filing_period_end="2025-03-31",
+            enable_period_fallback=True,
+        )
+
+        self.assertIsNone(normalized)
 
 
 if __name__ == "__main__":

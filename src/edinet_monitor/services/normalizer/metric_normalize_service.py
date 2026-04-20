@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from edinet_monitor.config.settings import DEFAULT_RULE_VERSION
@@ -22,6 +23,8 @@ TARGET_CONTEXT_SUFFIXES = {
     "Prior4YearInstant": ("Prior4", "instant"),
 }
 
+MAX_PERIOD_FALLBACK_OFFSET = 4
+
 
 def _to_number(value_text: str | None) -> float | None:
     if value_text in (None, ""):
@@ -40,6 +43,85 @@ def _get_suffix_and_period_kind(context_ref: str) -> tuple[str, str] | None:
             return TARGET_CONTEXT_SUFFIXES[suffix_key]
 
     return None
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except Exception:
+        return None
+
+
+def _period_offset_from_filing_end(filing_period_end: Any, target_date: Any) -> int | None:
+    filing_end = _parse_iso_date(filing_period_end)
+    target = _parse_iso_date(target_date)
+    if not filing_end or not target:
+        return None
+    if (filing_end.month, filing_end.day) != (target.month, target.day):
+        return None
+    offset = filing_end.year - target.year
+    if offset < 0 or offset > MAX_PERIOD_FALLBACK_OFFSET:
+        return None
+    return offset
+
+
+def _suffix_from_period_offset(offset: int) -> str | None:
+    if offset == 0:
+        return "Current"
+    if 1 <= offset <= MAX_PERIOD_FALLBACK_OFFSET:
+        return f"Prior{offset}"
+    return None
+
+
+def _is_full_year_duration(period_start: Any, period_end: Any) -> bool:
+    start = _parse_iso_date(period_start)
+    end = _parse_iso_date(period_end)
+    if not start or not end or start >= end:
+        return False
+    days = (end - start).days + 1
+    return 300 <= days <= 400
+
+
+def _infer_suffix_and_period_kind_from_dates(
+    row: dict[str, Any],
+    *,
+    filing_period_end: str | None,
+) -> tuple[str, str] | None:
+    period_type = str(row.get("period_type") or "").strip().lower()
+    if period_type == "duration":
+        period_end = row.get("period_end")
+        if not _is_full_year_duration(row.get("period_start"), period_end):
+            return None
+        offset = _period_offset_from_filing_end(filing_period_end, period_end)
+    elif period_type == "instant":
+        offset = _period_offset_from_filing_end(
+            filing_period_end,
+            row.get("instant_date") or row.get("period_end"),
+        )
+    else:
+        return None
+
+    if offset is None:
+        return None
+    suffix = _suffix_from_period_offset(offset)
+    if not suffix:
+        return None
+    return suffix, period_type
+
+
+def _infer_filing_period_end(raw_rows: list[dict[str, Any]]) -> str | None:
+    dates = [
+        parsed
+        for row in raw_rows
+        for parsed in [_parse_iso_date(row.get("period_end") or row.get("instant_date"))]
+        if parsed is not None
+    ]
+    if not dates:
+        return None
+    return max(dates).isoformat()
 
 def _build_metric_key(base_metric: str, suffix: str) -> str:
     return f"{base_metric}{suffix}"
@@ -173,6 +255,8 @@ def normalize_raw_fact_row(
     edinet_code: str,
     security_code: str,
     structure_map: dict[str, dict[str, Any]] | None = None,
+    filing_period_end: str | None = None,
+    enable_period_fallback: bool = False,
 ) -> dict[str, Any] | None:
     tag_name = str(row.get("tag_name") or "")
     metric_base = normalize_tag_to_metric(tag_name)
@@ -181,6 +265,13 @@ def normalize_raw_fact_row(
 
     context_ref = str(row.get("context_ref") or "")
     suffix_info = _get_suffix_and_period_kind(context_ref)
+    period_source = "context_ref"
+    if not suffix_info and enable_period_fallback:
+        suffix_info = _infer_suffix_and_period_kind_from_dates(
+            row,
+            filing_period_end=filing_period_end,
+        )
+        period_source = "period_fallback" if suffix_info else ""
     if not suffix_info:
         return None
 
@@ -217,6 +308,8 @@ def normalize_raw_fact_row(
         "_structure_priority": _structure_priority(metric_base, tag_name, structure_info),
         "_manual_override_priority": _get_manual_source_tag_priority(metric_base, tag_name),
         "_consolidation_rank": _consolidation_rank(consolidation),
+        "_period_source": period_source,
+        "_period_fallback_used": int(period_source == "period_fallback"),
     }
 
 
@@ -293,6 +386,8 @@ def build_normalization_candidates(
     security_code: str,
     xbrl_path: str | None = None,
     zip_path: str | None = None,
+    filing_period_end: str | None = None,
+    enable_period_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     structure_map = analyze_linkbase_structure(
@@ -300,12 +395,18 @@ def build_normalization_candidates(
         zip_path=zip_path,
     )
 
+    effective_filing_period_end = filing_period_end
+    if enable_period_fallback and not effective_filing_period_end:
+        effective_filing_period_end = _infer_filing_period_end(raw_rows)
+
     for row in raw_rows:
         normalized = normalize_raw_fact_row(
             row,
             edinet_code=edinet_code,
             security_code=security_code,
             structure_map=structure_map,
+            filing_period_end=effective_filing_period_end,
+            enable_period_fallback=enable_period_fallback,
         )
         if normalized is not None:
             candidates.append(normalized)
@@ -350,6 +451,8 @@ def dedupe_normalized_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         cleaned.pop("_structure_is_total", None)
         cleaned.pop("_structure_parent_labels", None)
         cleaned.pop("_structure_text", None)
+        cleaned.pop("_period_source", None)
+        cleaned.pop("_period_fallback_used", None)
         out.append(cleaned)
 
     out.sort(
@@ -394,6 +497,8 @@ def normalize_raw_fact_rows(
     security_code: str,
     xbrl_path: str | None = None,
     zip_path: str | None = None,
+    filing_period_end: str | None = None,
+    enable_period_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     candidates = build_normalization_candidates(
         raw_rows,
@@ -401,5 +506,7 @@ def normalize_raw_fact_rows(
         security_code=security_code,
         xbrl_path=xbrl_path,
         zip_path=zip_path,
+        filing_period_end=filing_period_end,
+        enable_period_fallback=enable_period_fallback,
     )
     return dedupe_normalized_metrics(candidates)

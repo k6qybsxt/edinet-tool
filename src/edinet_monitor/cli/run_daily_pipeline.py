@@ -47,6 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-batch-size", type=int, default=20)
     parser.add_argument("--normalized-batch-size", type=int, default=100)
     parser.add_argument("--derived-batch-size", type=int, default=100)
+    parser.add_argument("--enable-period-fallback", action="store_true")
     parser.add_argument("--screening-date", default="")
     parser.add_argument(
         "--screening-rule-name",
@@ -148,6 +149,7 @@ def run_daily_pipeline(
     raw_batch_size: int = 20,
     normalized_batch_size: int = 100,
     derived_batch_size: int = 100,
+    enable_period_fallback: bool = False,
     screening_date: str | None = None,
     screening_rule_name: str | None = None,
     api_key: str | None = None,
@@ -288,6 +290,7 @@ def run_daily_pipeline(
             timestamp_now_func=timestamp_now_func,
             stage_kwargs={
                 "batch_size": normalized_batch_size,
+                "enable_period_fallback": enable_period_fallback,
             },
         )
         if chunk_rows:
@@ -480,6 +483,7 @@ def main() -> None:
         raw_batch_size=args.raw_batch_size,
         normalized_batch_size=args.normalized_batch_size,
         derived_batch_size=args.derived_batch_size,
+        enable_period_fallback=args.enable_period_fallback,
         screening_date=args.screening_date or None,
         screening_rule_name=args.screening_rule_name or None,
     )
