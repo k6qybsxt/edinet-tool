@@ -23,6 +23,7 @@ METRICS = {
     # ---------- PL / CF（duration） ----------
     "NetSales": {
         "tags": [
+            "jpcrp_cor:RevenueKeyFinancialData",
             "jpcrp_cor:NetSalesSummaryOfBusinessResults",
             "jppfs_cor:NetSales",
             "jpcrp_cor:RevenuesFromExternalCustomers",

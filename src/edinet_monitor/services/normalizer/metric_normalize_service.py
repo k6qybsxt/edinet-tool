@@ -407,6 +407,35 @@ def _consolidation_rank(consolidation: str | None) -> int:
 def _is_forbidden_candidate(metric_base: str, tag_name: str, consolidation: str | None) -> bool:
     return False
 
+
+def _has_wrong_currency_consolidated_candidate(row: dict[str, Any]) -> bool:
+    return (
+        row.get("_consolidation_rank", 9999) == 0
+        and "unit_mismatch:expected_jpy" in str(row.get("_candidate_validation_issues") or "")
+    )
+
+
+def _filter_enforced_candidates_with_consolidated_currency_guard(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    blocked_keys = {
+        _dedupe_group_key(row)
+        for row in rows
+        if _has_wrong_currency_consolidated_candidate(row)
+    }
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("_candidate_validation_status") == CANDIDATE_VALIDATION_STATUS_EXCLUDE:
+            continue
+        if (
+            _dedupe_group_key(row) in blocked_keys
+            and row.get("_consolidation_rank", 9999) > 0
+        ):
+            continue
+        filtered.append(row)
+    return filtered
+
 def normalize_raw_fact_row(
     row: dict[str, Any],
     *,
@@ -578,10 +607,13 @@ def build_normalization_candidates(
             structure_map=structure_map,
             filing_period_end=effective_filing_period_end,
             enable_period_fallback=enable_period_fallback,
-            enforce_candidate_validation=enforce_candidate_validation,
+            enforce_candidate_validation=False,
         )
         if normalized is not None:
             candidates.append(normalized)
+
+    if enforce_candidate_validation:
+        candidates = _filter_enforced_candidates_with_consolidated_currency_guard(candidates)
 
     candidates = _rewrite_service_operating_expenses_as_cost_of_sales(
         candidates,

@@ -13,6 +13,7 @@ TAG_ALIAS = {
     "OperatingRevenue1SummaryOfBusinessResults": "NetSales",
     "OperatingRevenueIFRS": "NetSales",
     "OperatingRevenues": "NetSales",
+    "RevenueKeyFinancialData": "NetSales",
     "RevenueIFRSSummaryOfBusinessResults": "NetSales",
     "Revenue2IFRS": "NetSales",
     "RevenueFromExternalCustomers2IFRS": "NetSales",

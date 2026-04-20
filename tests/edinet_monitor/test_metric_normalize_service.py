@@ -616,6 +616,65 @@ class MetricNormalizeServiceTest(unittest.TestCase):
 
         self.assertIsNone(normalized)
 
+    def test_enforced_validation_prefers_consolidated_jpy_translation_over_nonconsolidated_jpy(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="RevenueIFRSSummaryOfBusinessResults",
+                value_text="4581232000",
+                unit_ref="USD",
+            ),
+            build_raw_fact(
+                tag_name="RevenueKeyFinancialData",
+                value_text="717100000000",
+                unit_ref="JPY",
+            ),
+            build_raw_fact(
+                tag_name="NetSalesSummaryOfBusinessResults",
+                value_text="502737000000",
+                context_ref="CurrentYearDuration_NonConsolidatedMember",
+                consolidation="NonConsolidated",
+                unit_ref="JPY",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E01725",
+            security_code="6269",
+            enforce_candidate_validation=True,
+        )
+
+        self.assertEqual(len(normalized_rows), 1)
+        self.assertEqual(normalized_rows[0]["metric_key"], "NetSalesCurrent")
+        self.assertEqual(normalized_rows[0]["source_tag"], "RevenueKeyFinancialData")
+        self.assertEqual(normalized_rows[0]["value_num"], 717100000000.0)
+        self.assertEqual(normalized_rows[0]["consolidation"], "Consolidated")
+
+    def test_enforced_validation_does_not_fall_back_to_nonconsolidated_jpy_when_consolidated_is_foreign_currency(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="CostOfSalesIFRS",
+                value_text="4022553000",
+                unit_ref="USD",
+            ),
+            build_raw_fact(
+                tag_name="CostOfSales",
+                value_text="473162000000",
+                context_ref="CurrentYearDuration_NonConsolidatedMember",
+                consolidation="NonConsolidated",
+                unit_ref="JPY",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E01725",
+            security_code="6269",
+            enforce_candidate_validation=True,
+        )
+
+        self.assertEqual(normalized_rows, [])
+
 
 if __name__ == "__main__":
     unittest.main()
