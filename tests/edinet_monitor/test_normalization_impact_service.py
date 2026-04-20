@@ -4,6 +4,7 @@ import unittest
 
 from edinet_monitor.services.normalization_impact_service import (
     compare_normalized_rows,
+    recalculate_derived_rows_for_preview,
     security_code_variants,
     summarize_impact_rows,
 )
@@ -113,6 +114,87 @@ class NormalizationImpactServiceTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["change_type"], "unchanged")
+
+    def test_compare_normalized_rows_detects_derived_value_changes(self) -> None:
+        current_rows = [
+            {
+                "metric_source": "derived_metrics",
+                "doc_id": "S100A",
+                "metric_key": "OperatingMarginCurrent",
+                "period_end": "2026-03-31",
+                "consolidation": "Consolidated",
+                "value_num": 0.2,
+                "value_unit": "ratio",
+                "calc_status": "ok",
+                "formula_name": "ratio",
+            }
+        ]
+        recalculated_rows = [
+            {
+                "metric_source": "derived_metrics",
+                "doc_id": "S100A",
+                "metric_key": "OperatingMarginCurrent",
+                "period_end": "2026-03-31",
+                "consolidation": "Consolidated",
+                "value_num": 0.21,
+                "value_unit": "ratio",
+                "calc_status": "ok",
+                "formula_name": "ratio",
+            }
+        ]
+
+        rows = compare_normalized_rows(
+            current_rows=current_rows,
+            recalculated_rows=recalculated_rows,
+            filing_by_doc_id={"S100A": {"period_end": "2026-03-31"}},
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["metric_source"], "derived_metrics")
+        self.assertEqual(rows[0]["change_type"], "changed")
+        self.assertEqual(rows[0]["before_calc_status"], "ok")
+        self.assertEqual(rows[0]["after_calc_status"], "ok")
+
+    def test_recalculate_derived_rows_for_preview_marks_metric_source(self) -> None:
+        filings = [
+            {
+                "doc_id": "S100A",
+                "form_type": "030000",
+                "accounting_standard": "",
+                "document_display_unit": "",
+            }
+        ]
+        normalized_rows = [
+            {
+                "doc_id": "S100A",
+                "edinet_code": "E1",
+                "security_code": "12340",
+                "metric_key": "NetSalesCurrent",
+                "fiscal_year": 2026,
+                "period_end": "2026-03-31",
+                "value_num": 100,
+                "source_tag": "NetSales",
+                "consolidation": "Consolidated",
+                "rule_version": "test",
+            },
+            {
+                "doc_id": "S100A",
+                "edinet_code": "E1",
+                "security_code": "12340",
+                "metric_key": "OperatingIncomeCurrent",
+                "fiscal_year": 2026,
+                "period_end": "2026-03-31",
+                "value_num": 20,
+                "source_tag": "OperatingIncome",
+                "consolidation": "Consolidated",
+                "rule_version": "test",
+            },
+        ]
+
+        rows = recalculate_derived_rows_for_preview(filings, normalized_rows)
+
+        self.assertTrue(rows)
+        self.assertEqual({row["metric_source"] for row in rows}, {"derived_metrics"})
 
     def test_security_code_variants_handles_four_and_five_digit_codes(self) -> None:
         self.assertEqual(security_code_variants("4613"), ["4613", "46130"])

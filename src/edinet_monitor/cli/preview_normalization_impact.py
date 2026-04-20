@@ -30,6 +30,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-period-fallback", action="store_true")
     parser.add_argument("--enforce-candidate-validation", action="store_true")
     parser.add_argument("--include-unchanged", action="store_true")
+    parser.add_argument(
+        "--normalized-only",
+        action="store_true",
+        help="Compare only normalized_metrics. By default derived_metrics impact is also previewed.",
+    )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--db-path", default=str(DB_PATH))
     return parser
@@ -94,6 +99,7 @@ def main() -> None:
             enable_period_fallback=args.enable_period_fallback,
             enforce_candidate_validation=args.enforce_candidate_validation,
             include_unchanged=args.include_unchanged,
+            include_derived=not args.normalized_only,
         )
     finally:
         conn.close()
@@ -105,6 +111,7 @@ def main() -> None:
         enable_period_fallback=args.enable_period_fallback,
         enforce_candidate_validation=args.enforce_candidate_validation,
         include_unchanged=args.include_unchanged,
+        include_derived=not args.normalized_only,
         scope_description=_scope_description(args),
         tsv_path=tsv_path,
     )
