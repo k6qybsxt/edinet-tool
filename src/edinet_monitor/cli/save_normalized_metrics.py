@@ -81,7 +81,8 @@ def run_save_normalized_metrics(
             loop_count += 1
             total_target += len(filings)
 
-            for filing in filings:
+            for filing_row in filings:
+                filing = dict(filing_row)
                 doc_id = filing["doc_id"]
                 edinet_code = filing["edinet_code"]
                 security_code = filing["security_code"]
