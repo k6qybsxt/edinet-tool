@@ -129,7 +129,7 @@ class ScreeningRuleServiceTest(unittest.TestCase):
         self.assertEqual(result["period_scope"], "annual")
         self.assertEqual(
             result["detail"]["check_results"][0]["metric_label"],
-            "\u58f2\u4e0a\u9ad8\u6210\u9577\u7387\uff08\u5f53\u671f\uff09",
+            "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387\uff08\u5f53\u671f\uff09",
         )
 
     def test_annual_growth_quality_rule_keeps_calc_status_in_failure_detail(self) -> None:
@@ -161,7 +161,7 @@ class ScreeningRuleServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             result["detail"]["check_results"][1]["metric_label"],
-            "\u7d4c\u5e38\u5229\u76ca\u6210\u9577\u7387\uff08\u5f53\u671f\uff09",
+            "\u7d4c\u5e38\u5229\u76ca\u5897\u76ca\u7387\uff08\u5f53\u671f\uff09",
         )
 
     def test_annual_profitability_safety_rule_allows_optional_roe_to_affect_score_only(self) -> None:

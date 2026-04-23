@@ -16,6 +16,9 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_normalized_metrics_saved,
 )
 from edinet_monitor.services.derived_metrics.derived_metric_service import calculate_derived_metrics
+from edinet_monitor.services.derived_metrics.historical_growth_reference_service import (
+    fetch_historical_growth_values,
+)
 from edinet_monitor.services.derived_metrics.derived_metric_store_service import (
     delete_derived_metrics_by_doc_id,
     insert_derived_metrics,
@@ -258,12 +261,14 @@ def rebuild_metrics_for_scope(
 
             filing = ensure_filing_parse_metadata(conn, filing)
             normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
+            historical_growth_values = fetch_historical_growth_values(conn, filing)
             derived_rows = calculate_derived_metrics(
                 normalized_rows,
                 form_type=str(filing.get("form_type") or ""),
                 accounting_standard=str(filing.get("accounting_standard") or ""),
                 document_display_unit=str(filing.get("document_display_unit") or ""),
                 rule_version=rule_version,
+                historical_growth_values=historical_growth_values,
             )
             delete_derived_metrics_by_doc_id(conn, doc_id)
             derived_saved_count = insert_derived_metrics(conn, derived_rows)

@@ -11,6 +11,9 @@ from typing import Any, Iterable
 
 from edinet_monitor.config.settings import DEFAULT_DERIVED_METRICS_RULE_VERSION
 from edinet_monitor.services.derived_metrics.derived_metric_service import calculate_derived_metrics
+from edinet_monitor.services.derived_metrics.historical_growth_reference_service import (
+    fetch_historical_growth_values,
+)
 from edinet_monitor.services.normalizer.metric_normalize_service import (
     build_normalization_candidates,
     select_best_normalization_candidates,
@@ -434,6 +437,7 @@ def recalculate_normalized_rows_for_preview(
 
 
 def recalculate_derived_rows_for_preview(
+    conn: sqlite3.Connection,
     filings: list[dict[str, Any]],
     normalized_rows: list[dict[str, Any]],
     *,
@@ -446,12 +450,14 @@ def recalculate_derived_rows_for_preview(
     rows: list[dict[str, Any]] = []
     for filing in filings:
         doc_id = str(filing.get("doc_id") or "")
+        historical_growth_values = fetch_historical_growth_values(conn, filing)
         derived_rows = calculate_derived_metrics(
             normalized_by_doc_id.get(doc_id, []),
             form_type=str(filing.get("form_type") or ""),
             accounting_standard=str(filing.get("accounting_standard") or ""),
             document_display_unit=str(filing.get("document_display_unit") or ""),
             rule_version=rule_version,
+            historical_growth_values=historical_growth_values,
         )
         for row in derived_rows:
             row["metric_source"] = "derived_metrics"
@@ -490,6 +496,7 @@ def build_normalization_impact_preview(
     if include_derived:
         current_derived_rows = fetch_current_derived_rows(conn, doc_ids)
         recalculated_derived_rows = recalculate_derived_rows_for_preview(
+            conn,
             filings,
             recalculated_rows,
         )

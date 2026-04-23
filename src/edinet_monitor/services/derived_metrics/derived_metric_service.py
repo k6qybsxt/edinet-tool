@@ -16,6 +16,7 @@ SUFFIX_TO_PERIOD_OFFSET = {
 }
 FULL_SUFFIXES = ["Current", "Prior1", "Prior2", "Prior3", "Prior4"]
 GROWTH_SUFFIXES = ["Current", "Prior1", "Prior2", "Prior3"]
+LONG_TERM_GROWTH_BASE_OFFSET = 9
 
 SAFE_COST_OF_SALES_SOURCE_TAGS = {
     "CostOfSales",
@@ -831,6 +832,148 @@ def _append_growth_rows_from_inputs(
         )
 
 
+def _historical_growth_input(
+    historical_growth_values: dict[str, dict[int, dict[str, Any]]] | None,
+    source_metric_base: str,
+    period_offset: int,
+) -> dict[str, Any]:
+    value_info = ((historical_growth_values or {}).get(source_metric_base) or {}).get(period_offset) or {}
+    value_num = value_info.get("value_num")
+    input_key = f"{source_metric_base}Prior{period_offset}"
+    return {
+        "value_num": value_num,
+        "detail_inputs": {input_key: value_num},
+        "reference_keys": [],
+        "detail_extra": {
+            "base_doc_id": value_info.get("doc_id"),
+            "base_metric_key": value_info.get("metric_key"),
+            "base_period_end": value_info.get("period_end"),
+            "base_period_offset": period_offset,
+        },
+    }
+
+
+def _append_fixed_growth_row_from_inputs(
+    out_rows: list[dict[str, Any]],
+    *,
+    metric_rows: dict[str, dict[str, Any]],
+    sample_row: dict[str, Any],
+    derived_metric_base: str,
+    source_metric_base: str,
+    formula_name: str,
+    display_formula: str,
+    current_input: dict[str, Any],
+    base_input: dict[str, Any],
+    accounting_standard: str,
+    document_display_unit: str,
+    rule_version: str,
+    require_positive_denominator: bool = True,
+) -> None:
+    source_detail_extra: dict[str, Any] = {
+        "source_metric_base": source_metric_base,
+    }
+    if current_input.get("detail_extra"):
+        source_detail_extra["current_detail"] = current_input["detail_extra"]
+    if base_input.get("detail_extra"):
+        source_detail_extra["base_detail"] = base_input["detail_extra"]
+
+    value_num, calc_status = _ratio_status(
+        numerator=current_input["value_num"],
+        denominator=base_input["value_num"],
+        require_positive_denominator=require_positive_denominator,
+    )
+    reference_row = _pick_reference_row(
+        metric_rows,
+        current_input["reference_keys"] + [sample_row["metric_key"]],
+    )
+
+    out_rows.append(
+        _build_derived_row(
+            sample_row={
+                **sample_row,
+                "fiscal_year": reference_row.get("fiscal_year"),
+                "period_end": reference_row.get("period_end"),
+                "consolidation": reference_row.get("consolidation"),
+                "period_scope": sample_row["period_scope"],
+            },
+            metric_base=derived_metric_base,
+            metric_group="growth",
+            suffix="Current",
+            value_num=value_num,
+            value_unit="ratio",
+            calc_status=calc_status,
+            formula_name=formula_name,
+            source_detail=_build_source_detail(
+                inputs={
+                    **current_input["detail_inputs"],
+                    **base_input["detail_inputs"],
+                },
+                display_formula=display_formula,
+                stored_formula=display_formula.replace("* 100", "").strip(),
+                calc_status=calc_status,
+                document_display_unit=document_display_unit,
+                extra=source_detail_extra,
+            ),
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
+    )
+
+
+def _append_fixed_period_growth_rows(
+    out_rows: list[dict[str, Any]],
+    *,
+    metric_rows: dict[str, dict[str, Any]],
+    sample_row: dict[str, Any],
+    source_metric_base: str,
+    derived_metric_base_5year: str,
+    derived_metric_base_10year: str,
+    current_input_builder,
+    base_input_builder,
+    historical_growth_values: dict[str, dict[int, dict[str, Any]]] | None,
+    accounting_standard: str,
+    document_display_unit: str,
+    rule_version: str,
+) -> None:
+    current_input = current_input_builder(metric_rows, "Current")
+    prior4_input = base_input_builder(metric_rows, "Prior4")
+    _append_fixed_growth_row_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base=derived_metric_base_5year,
+        source_metric_base=source_metric_base,
+        formula_name="growth_ratio_5year",
+        display_formula="current / prior4 * 100",
+        current_input=current_input,
+        base_input=prior4_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+
+    prior9_input = _historical_growth_input(
+        historical_growth_values,
+        source_metric_base,
+        LONG_TERM_GROWTH_BASE_OFFSET,
+    )
+    _append_fixed_growth_row_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base=derived_metric_base_10year,
+        source_metric_base=source_metric_base,
+        formula_name="growth_ratio_10year",
+        display_formula="current / prior9 * 100",
+        current_input=current_input,
+        base_input=prior9_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+
+
 def _append_rows_from_inputs(
     out_rows: list[dict[str, Any]],
     *,
@@ -1320,6 +1463,7 @@ def calculate_derived_metrics(
     accounting_standard: str = "",
     document_display_unit: str = "",
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
+    historical_growth_values: dict[str, dict[int, dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     if not normalized_rows:
         return []
@@ -1694,6 +1838,48 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
+    _append_fixed_period_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="NetSales",
+        derived_metric_base_5year="NetSalesGrowthRate5Year",
+        derived_metric_base_10year="NetSalesGrowthRate10Year",
+        current_input_builder=lambda rows, suffix: _single_metric_input(rows, "NetSales", suffix),
+        base_input_builder=lambda rows, suffix: _single_metric_input(rows, "NetSales", suffix),
+        historical_growth_values=historical_growth_values,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_fixed_period_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="OrdinaryIncome",
+        derived_metric_base_5year="OrdinaryIncomeGrowthRate5Year",
+        derived_metric_base_10year="OrdinaryIncomeGrowthRate10Year",
+        current_input_builder=lambda rows, suffix: _single_metric_input(rows, "OrdinaryIncome", suffix),
+        base_input_builder=lambda rows, suffix: _single_metric_input(rows, "OrdinaryIncome", suffix),
+        historical_growth_values=historical_growth_values,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_fixed_period_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="CashAndCashEquivalents",
+        derived_metric_base_5year="CashBalanceGrowthRate5Year",
+        derived_metric_base_10year="CashBalanceGrowthRate10Year",
+        current_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
+        base_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
+        historical_growth_values=historical_growth_values,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
     _append_growth_rows_from_inputs(
         out_rows,
         metric_rows=metric_rows,
@@ -1703,6 +1889,33 @@ def calculate_derived_metrics(
         formula_name="eps_growth_rate",
         display_formula="current_eps / prior_eps * 100",
         input_builder=_eps_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_growth_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="OutstandingSharesGrowthRate",
+        metric_group="growth",
+        formula_name="outstanding_shares_growth_rate",
+        display_formula="current_outstanding_shares / prior_outstanding_shares * 100",
+        input_builder=_outstanding_shares_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_fixed_period_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="OutstandingShares",
+        derived_metric_base_5year="OutstandingSharesGrowthRate5Year",
+        derived_metric_base_10year="OutstandingSharesGrowthRate10Year",
+        current_input_builder=_outstanding_shares_input,
+        base_input_builder=_outstanding_shares_input,
+        historical_growth_values=historical_growth_values,
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

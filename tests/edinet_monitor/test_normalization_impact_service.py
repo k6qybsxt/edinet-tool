@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import sqlite3
 
 from edinet_monitor.services.normalization_impact_service import (
     compare_normalized_rows,
@@ -191,7 +192,11 @@ class NormalizationImpactServiceTest(unittest.TestCase):
             },
         ]
 
-        rows = recalculate_derived_rows_for_preview(filings, normalized_rows)
+        conn = sqlite3.connect(":memory:")
+        try:
+            rows = recalculate_derived_rows_for_preview(conn, filings, normalized_rows)
+        finally:
+            conn.close()
 
         self.assertTrue(rows)
         self.assertEqual({row["metric_source"] for row in rows}, {"derived_metrics"})

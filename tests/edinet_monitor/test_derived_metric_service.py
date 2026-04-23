@@ -125,6 +125,10 @@ class DerivedMetricServiceTest(unittest.TestCase):
         by_key = {row["metric_key"]: row for row in rows}
 
         self.assertEqual(by_key["NetSalesGrowthRateCurrent"]["value_num"], 1.2)
+        self.assertEqual(by_key["NetSalesGrowthRate5YearCurrent"]["value_num"], 2.0)
+        self.assertIsNone(by_key["NetSalesGrowthRate10YearCurrent"]["value_num"])
+        self.assertEqual(by_key["OrdinaryIncomeGrowthRate5YearCurrent"]["value_num"], 2.0)
+        self.assertAlmostEqual(by_key["CashBalanceGrowthRate5YearCurrent"]["value_num"], 300_000 / 140_000)
         self.assertEqual(by_key["GrossProfitCurrent"]["value_num"], 700_000)
         self.assertEqual(
             by_key["GrossProfitCurrent"]["source_detail_json"]["selected_source"],
@@ -147,6 +151,8 @@ class DerivedMetricServiceTest(unittest.TestCase):
             by_key["EPSGrowthRateCurrent"]["value_num"],
             (168_000 / 950_000) / (140_000 / 948_000),
         )
+        self.assertAlmostEqual(by_key["OutstandingSharesGrowthRateCurrent"]["value_num"], 950_000 / 948_000)
+        self.assertAlmostEqual(by_key["OutstandingSharesGrowthRate5YearCurrent"]["value_num"], 950_000 / 920_000)
         self.assertAlmostEqual(by_key["BPSCurrent"]["value_num"], 1_000_000 / 950_000)
         self.assertAlmostEqual(by_key["AssetsPerShareCurrent"]["value_num"], 2_000_000 / 950_000)
         self.assertAlmostEqual(
@@ -219,6 +225,67 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(
             by_key["FinancialLeverageAdjustmentCurrent"]["calc_status"],
             "ok",
+        )
+
+    def test_long_term_growth_rates_use_historical_growth_values(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 240_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("TreasurySharesCurrent", 50_000),
+        ]
+        historical_growth_values = {
+            "NetSales": {
+                9: {
+                    "doc_id": "S100OLD",
+                    "metric_key": "NetSalesCurrent",
+                    "period_end": "2017-03-31",
+                    "value_num": 300_000,
+                },
+            },
+            "OrdinaryIncome": {
+                9: {
+                    "doc_id": "S100OLD",
+                    "metric_key": "OrdinaryIncomeCurrent",
+                    "period_end": "2017-03-31",
+                    "value_num": 80_000,
+                },
+            },
+            "CashAndCashEquivalents": {
+                9: {
+                    "doc_id": "S100OLD",
+                    "metric_key": "CashAndCashEquivalentsCurrent",
+                    "period_end": "2017-03-31",
+                    "value_num": 100_000,
+                },
+            },
+            "OutstandingShares": {
+                9: {
+                    "doc_id": "S100OLD",
+                    "metric_key": "OutstandingSharesCurrent",
+                    "period_end": "2017-03-31",
+                    "value_num": 800_000,
+                },
+            },
+        }
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+            historical_growth_values=historical_growth_values,
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["NetSalesGrowthRate10YearCurrent"]["value_num"], 4.0)
+        self.assertEqual(by_key["OrdinaryIncomeGrowthRate10YearCurrent"]["value_num"], 3.0)
+        self.assertEqual(by_key["CashBalanceGrowthRate10YearCurrent"]["value_num"], 3.0)
+        self.assertAlmostEqual(by_key["OutstandingSharesGrowthRate10YearCurrent"]["value_num"], 950_000 / 800_000)
+        self.assertEqual(
+            by_key["NetSalesGrowthRate10YearCurrent"]["source_detail_json"]["base_detail"]["base_doc_id"],
+            "S100OLD",
         )
 
     def test_financial_leverage_adjustment_returns_zero_when_balance_sheet_product_is_nonpositive(self) -> None:
