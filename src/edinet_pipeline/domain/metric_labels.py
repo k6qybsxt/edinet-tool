@@ -8,6 +8,8 @@ METRIC_BASE_LABELS = {
     "CostOfSales": "\u58f2\u4e0a\u539f\u4fa1",
     "CostOfSalesAndSellingGeneralAndAdministrativeExpenses": "\u8cbb\u7528\u5408\u8a08",
     "SellingExpenses": "\u8ca9\u7ba1\u8cbb",
+    "GeneralAndAdministrativeExpenses": "\u4e00\u822c\u7ba1\u7406\u8cbb",
+    "SellingExpensesOnly": "\u8ca9\u58f2\u8cbb",
     "OperatingIncome": "\u55b6\u696d\u5229\u76ca",
     "OrdinaryIncome": "\u7d4c\u5e38\u5229\u76ca",
     "ProfitLoss": "\u7d14\u5229\u76ca",

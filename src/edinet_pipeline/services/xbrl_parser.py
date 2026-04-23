@@ -66,13 +66,32 @@ METRICS = {
         "tags": [
             "jppfs_cor:SellingGeneralAndAdministrativeExpenses",
             "jpcrp_cor:SellingGeneralAndAdministrativeExpensesIFRSSummaryOfBusinessResults",
-            "jpcrp_cor:AdministrativeExpensesIFRSSummaryOfBusinessResults",
             "jpcrp_cor:DistributionCostsIFRSSummaryOfBusinessResults",
+            "jppfs_cor:SellingGeneralAndAdministrativeExpensesGAS",
             "jpigp_cor:SellingGeneralAndAdministrativeExpensesIFRS",
             "jpigp_cor:SellingExpensesAndGeneralAdministrativeExpensesIFRS",
-            "jpigp_cor:AdministrativeExpensesIFRS",
             "jpigp_cor:DistributionCostsIFRS",
             "jpigp_cor:SalesAndMarketingExpensesIFRS",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+
+    "GeneralAndAdministrativeExpenses": {
+        "tags": [
+            "jppfs_cor:GeneralAndAdministrativeExpensesSGA",
+            "jpcrp_cor:AdministrativeExpensesIFRSSummaryOfBusinessResults",
+            "jpigp_cor:AdministrativeExpensesIFRS",
+            "jpigp_cor:GeneralAndAdministrativeExpensesIFRS",
+            "jppfs_cor:GeneralAndAdministrativeExpenses",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+
+    "SellingExpensesOnly": {
+        "tags": [
+            "jppfs_cor:SupplyAndSalesExpensesGAS",
         ],
         "kind": "duration",
         "unit": "millions",

@@ -15,6 +15,8 @@ DURATION_METRIC_KEYS = [
     "CostOfSales",
     "GrossProfit",
     "SellingExpenses",
+    "GeneralAndAdministrativeExpenses",
+    "SellingExpensesOnly",
     "OperatingIncome",
     "OrdinaryIncome",
     "ProfitLoss",
@@ -138,13 +140,13 @@ def build_raw_rows_all_docs(parsed_docs, security_code, run_id, logger):
                 if metric_key in ("NetAssets", "TotalAssets", "CashAndCashEquivalents") and not f.get("is_consolidated"):
                     continue
 
-                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "OrdinaryIncome") and f.get("members"):
+                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "GeneralAndAdministrativeExpenses", "SellingExpensesOnly", "OrdinaryIncome") and f.get("members"):
                     continue
 
-                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "OrdinaryIncome") and f.get("period_kind") != "duration":
+                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "GeneralAndAdministrativeExpenses", "SellingExpensesOnly", "OrdinaryIncome") and f.get("period_kind") != "duration":
                     continue
 
-                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "OrdinaryIncome") and not f.get("is_consolidated"):
+                if metric_key in ("NetSales", "CostOfSales", "SellingExpenses", "GeneralAndAdministrativeExpenses", "SellingExpensesOnly", "OrdinaryIncome") and not f.get("is_consolidated"):
                     continue
 
                 if metric_key == "NetSales":

@@ -97,6 +97,7 @@ def run_save_normalized_metrics(
                         raw_rows,
                         edinet_code=edinet_code,
                         security_code=security_code,
+                        industry_33=str(filing.get("industry_33") or ""),
                         xbrl_path=xbrl_path,
                         zip_path=zip_path,
                         filing_period_end=filing_period_end,

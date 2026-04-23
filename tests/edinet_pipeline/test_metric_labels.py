@@ -23,6 +23,8 @@ class MetricLabelsTest(unittest.TestCase):
     def test_metric_base_to_display_name_returns_japanese_label(self) -> None:
         self.assertEqual(metric_base_to_display_name("NetSales"), "\u58f2\u4e0a\u9ad8")
         self.assertEqual(metric_base_to_display_name("CostOfSales"), "\u58f2\u4e0a\u539f\u4fa1")
+        self.assertEqual(metric_base_to_display_name("GeneralAndAdministrativeExpenses"), "\u4e00\u822c\u7ba1\u7406\u8cbb")
+        self.assertEqual(metric_base_to_display_name("SellingExpensesOnly"), "\u8ca9\u58f2\u8cbb")
         self.assertEqual(
             metric_base_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpenses"),
             "\u8cbb\u7528\u5408\u8a08",

@@ -328,11 +328,19 @@ MANUAL_SOURCE_TAG_PRIORITY_OVERRIDES = {
     "SellingExpenses": {
         "SellingGeneralAndAdministrativeExpensesIFRS": 0,
         "SellingGeneralAndAdministrativeExpenses": 0,
+        "SellingGeneralAndAdministrativeExpensesGAS": 0,
         "SellingExpensesAndGeneralAdministrativeExpensesIFRS": 0,
         "SellingExpensesAndGeneralAdministrativeExpenses": 0,
-        "GeneralAndAdministrativeExpensesSGA": 1,
-        "GeneralAndAdministrativeExpensesIFRS": 1,
-        "GeneralAndAdministrativeExpenses": 1,
+    },
+    "GeneralAndAdministrativeExpenses": {
+        "GeneralAndAdministrativeExpensesSGA": 0,
+        "GeneralAndAdministrativeExpensesIFRS": 0,
+        "GeneralAndAdministrativeExpenses": 0,
+        "AdministrativeExpensesIFRS": 0,
+        "AdministrativeExpenses": 0,
+    },
+    "SellingExpensesOnly": {
+        "SupplyAndSalesExpensesGAS": 0,
     },
 }
 
@@ -374,6 +382,20 @@ def _structure_priority(metric_base: str, tag_name: str, structure_info: dict[st
             return 2
         return 9999
 
+    if metric_base == "GeneralAndAdministrativeExpenses":
+        if tag_name == "GeneralAndAdministrativeExpensesSGA":
+            return 0
+        if tag_name in {"GeneralAndAdministrativeExpenses", "GeneralAndAdministrativeExpensesIFRS"}:
+            return 1
+        if tag_name in {"AdministrativeExpenses", "AdministrativeExpensesIFRS"}:
+            return 2
+        return 9999
+
+    if metric_base == "SellingExpensesOnly":
+        if tag_name == "SupplyAndSalesExpensesGAS":
+            return 0
+        return 9999
+
     if metric_base == "CostOfSalesAndSellingGeneralAndAdministrativeExpenses":
         if role == "combined_expense" and any(keyword in text for keyword in ("費用合計", "経常費用", "営業費用合計", "事業費用合計")):
             return 0
@@ -404,8 +426,53 @@ def _consolidation_rank(consolidation: str | None) -> int:
     return 2
 
 
-def _is_forbidden_candidate(metric_base: str, tag_name: str, consolidation: str | None) -> bool:
+GAS_INDUSTRY_33 = "電気・ガス業"
+GAS_ONLY_SOURCE_TAGS = {
+    "SellingGeneralAndAdministrativeExpensesGAS",
+    "SupplyAndSalesExpensesGAS",
+}
+
+
+def _is_forbidden_candidate(
+    metric_base: str,
+    tag_name: str,
+    consolidation: str | None,
+    *,
+    industry_33: str | None = None,
+) -> bool:
+    if tag_name in GAS_ONLY_SOURCE_TAGS and str(industry_33 or "").strip() != GAS_INDUSTRY_33:
+        return True
     return False
+
+
+CONSOLIDATED_REPORTING_GUARD_METRIC_BASES = {
+    "NetSales",
+    "CostOfSales",
+    "GrossProfit",
+    "SellingExpenses",
+    "GeneralAndAdministrativeExpenses",
+    "SellingExpensesOnly",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "OperatingIncome",
+    "OrdinaryIncome",
+    "ProfitLoss",
+    "OperatingCash",
+    "InvestmentCash",
+    "FinancingCash",
+    "TotalAssets",
+    "NetAssets",
+    "CashAndCashEquivalents",
+    "FundingIncome",
+    "FeesAndCommissionsIncome",
+    "InsuranceClaimsPayments",
+    "PolicyReserveProvision",
+    "InvestmentExpenses",
+    "ProjectExpenses",
+}
+
+
+def _is_consolidated_reporting_guard_metric(row: dict[str, Any]) -> bool:
+    return str(row.get("_metric_base") or "") in CONSOLIDATED_REPORTING_GUARD_METRIC_BASES
 
 
 def _has_wrong_currency_consolidated_candidate(row: dict[str, Any]) -> bool:
@@ -418,6 +485,11 @@ def _has_wrong_currency_consolidated_candidate(row: dict[str, Any]) -> bool:
 def _filter_enforced_candidates_with_consolidated_currency_guard(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    has_consolidated_reporting = any(
+        row.get("_consolidation_rank", 9999) == 0
+        and _is_consolidated_reporting_guard_metric(row)
+        for row in rows
+    )
     blocked_keys = {
         _dedupe_group_key(row)
         for row in rows
@@ -427,6 +499,12 @@ def _filter_enforced_candidates_with_consolidated_currency_guard(
     filtered: list[dict[str, Any]] = []
     for row in rows:
         if row.get("_candidate_validation_status") == CANDIDATE_VALIDATION_STATUS_EXCLUDE:
+            continue
+        if (
+            has_consolidated_reporting
+            and _is_consolidated_reporting_guard_metric(row)
+            and row.get("_consolidation_rank", 9999) > 0
+        ):
             continue
         if (
             _dedupe_group_key(row) in blocked_keys
@@ -441,6 +519,7 @@ def normalize_raw_fact_row(
     *,
     edinet_code: str,
     security_code: str,
+    industry_33: str | None = None,
     structure_map: dict[str, dict[str, Any]] | None = None,
     filing_period_end: str | None = None,
     enable_period_fallback: bool = False,
@@ -473,7 +552,7 @@ def normalize_raw_fact_row(
         return None
 
     consolidation = row.get("consolidation")
-    if _is_forbidden_candidate(metric_base, tag_name, consolidation):
+    if _is_forbidden_candidate(metric_base, tag_name, consolidation, industry_33=industry_33):
         return None
 
     period_end = row.get("period_end") or row.get("instant_date")
@@ -583,6 +662,7 @@ def build_normalization_candidates(
     *,
     edinet_code: str,
     security_code: str,
+    industry_33: str | None = None,
     xbrl_path: str | None = None,
     zip_path: str | None = None,
     filing_period_end: str | None = None,
@@ -604,6 +684,7 @@ def build_normalization_candidates(
             row,
             edinet_code=edinet_code,
             security_code=security_code,
+            industry_33=industry_33,
             structure_map=structure_map,
             filing_period_end=effective_filing_period_end,
             enable_period_fallback=enable_period_fallback,
@@ -701,6 +782,7 @@ def normalize_raw_fact_rows(
     *,
     edinet_code: str,
     security_code: str,
+    industry_33: str | None = None,
     xbrl_path: str | None = None,
     zip_path: str | None = None,
     filing_period_end: str | None = None,
@@ -711,6 +793,7 @@ def normalize_raw_fact_rows(
         raw_rows,
         edinet_code=edinet_code,
         security_code=security_code,
+        industry_33=industry_33,
         xbrl_path=xbrl_path,
         zip_path=zip_path,
         filing_period_end=filing_period_end,

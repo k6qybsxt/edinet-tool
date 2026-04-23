@@ -52,7 +52,7 @@ def classify_structure(
 
     if metric_base == "CostOfSales" and role == "cost":
         confidence = "high"
-    if metric_base == "SellingExpenses" and role == "expense":
+    if metric_base in {"SellingExpenses", "GeneralAndAdministrativeExpenses", "SellingExpensesOnly"} and role == "expense":
         confidence = "high"
     if metric_base == "CostOfSalesAndSellingGeneralAndAdministrativeExpenses" and role == "combined_expense":
         confidence = "high"

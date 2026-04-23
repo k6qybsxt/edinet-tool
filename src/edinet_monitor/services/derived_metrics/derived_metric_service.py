@@ -72,6 +72,17 @@ SAFE_COMBINED_COST_AND_SGA_SOURCE_TAGS = {
     "ExpenseIFRS",
 }
 
+SAFE_SELLING_EXPENSES_TOTAL_SOURCE_TAGS = {
+    "SellingGeneralAndAdministrativeExpenses",
+    "SellingGeneralAndAdministrativeExpensesIFRS",
+    "SellingGeneralAndAdministrativeExpensesGAS",
+    "SellingExpensesAndGeneralAdministrativeExpenses",
+    "SellingExpensesAndGeneralAdministrativeExpensesIFRS",
+    "SellingGeneralAdministrativeExpenses",
+    "SellingGeneralAndAdministrativeExpense",
+    "GeneralAndAdministrativeExpensesOEBNK",
+}
+
 
 def infer_period_scope(form_type: str) -> str | None:
     text = str(form_type or "").strip()
@@ -625,6 +636,77 @@ def _combined_cost_and_sga_input(metric_rows: dict[str, dict[str, Any]], suffix:
     }
 
 
+def _selling_expenses_total_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
+    selling_expenses_key = _build_metric_key("SellingExpenses", suffix)
+    ga_key = _build_metric_key("GeneralAndAdministrativeExpenses", suffix)
+    selling_only_key = _build_metric_key("SellingExpensesOnly", suffix)
+
+    tag_value = _metric_value(metric_rows, selling_expenses_key)
+    tag_source = _metric_source_tag(metric_rows, selling_expenses_key)
+    ga_value = _metric_value(metric_rows, ga_key)
+    selling_only_value = _metric_value(metric_rows, selling_only_key)
+
+    if tag_value is not None and str(tag_source or "") in SAFE_SELLING_EXPENSES_TOTAL_SOURCE_TAGS:
+        return {
+            "value_num": tag_value,
+            "calc_status": "ok",
+            "detail_inputs": {
+                selling_expenses_key: tag_value,
+                ga_key: ga_value,
+                selling_only_key: selling_only_value,
+            },
+            "reference_keys": [selling_expenses_key, ga_key, selling_only_key],
+            "detail_extra": {
+                "selected_source": "selling_expenses_total_tag",
+                "selling_expenses_source_tag": tag_source,
+                "component_status": "direct_total",
+            },
+            "display_formula": "selling_expenses_total_tag",
+            "stored_formula": "selling_expenses_total_tag",
+        }
+
+    if ga_value is None and selling_only_value is None:
+        return {
+            "value_num": None,
+            "calc_status": "missing_input",
+            "detail_inputs": {
+                selling_expenses_key: tag_value,
+                ga_key: ga_value,
+                selling_only_key: selling_only_value,
+            },
+            "reference_keys": [selling_expenses_key, ga_key, selling_only_key],
+            "detail_extra": {
+                "selected_source": "missing_input",
+                "selling_expenses_source_tag": tag_source,
+                "component_status": "missing_both_components",
+            },
+            "display_formula": "selling_expenses_total_tag or general_and_administrative_expenses + selling_expenses_only",
+            "stored_formula": "selling_expenses_total_tag or general_and_administrative_expenses + selling_expenses_only",
+        }
+
+    value_num = (ga_value or 0.0) + (selling_only_value or 0.0)
+    component_status = "component_sum"
+    if ga_value is None or selling_only_value is None:
+        component_status = "partial_component_sum"
+    return {
+        "value_num": value_num,
+        "calc_status": "ok",
+        "detail_inputs": {
+            selling_expenses_key: tag_value,
+            ga_key: ga_value,
+            selling_only_key: selling_only_value,
+        },
+        "reference_keys": [selling_expenses_key, ga_key, selling_only_key],
+        "detail_extra": {
+            "selected_source": "component_sum",
+            "selling_expenses_source_tag": tag_source,
+            "component_status": component_status,
+        },
+        "display_formula": "general_and_administrative_expenses + selling_expenses_only",
+        "stored_formula": "general_and_administrative_expenses + selling_expenses_only",
+    }
+
+
 def _append_growth_rows(
     out_rows: list[dict[str, Any]],
     *,
@@ -893,6 +975,68 @@ def _append_combined_cost_and_sga_rows(
                 rule_version=rule_version,
             )
         )
+
+
+def _append_selling_expenses_total_rows(
+    out_rows: list[dict[str, Any]],
+    *,
+    metric_rows: dict[str, dict[str, Any]],
+    sample_row: dict[str, Any],
+    accounting_standard: str,
+    document_display_unit: str,
+    rule_version: str,
+) -> None:
+    for suffix in FULL_SUFFIXES:
+        selling_inputs = _selling_expenses_total_input(metric_rows, suffix)
+        if selling_inputs["value_num"] is None:
+            continue
+        reference_row = _pick_reference_row(
+            metric_rows,
+            selling_inputs["reference_keys"] + [sample_row["metric_key"]],
+        )
+        derived_row = _build_derived_row(
+            sample_row={
+                **sample_row,
+                "fiscal_year": reference_row.get("fiscal_year"),
+                "period_end": reference_row.get("period_end"),
+                "consolidation": reference_row.get("consolidation"),
+                "period_scope": sample_row["period_scope"],
+            },
+            metric_base="SellingExpenses",
+            metric_group="profitability",
+            suffix=suffix,
+            value_num=selling_inputs["value_num"],
+            value_unit="yen",
+            calc_status=selling_inputs["calc_status"],
+            formula_name="selling_expenses_total",
+            source_detail=_build_source_detail(
+                inputs=selling_inputs["detail_inputs"],
+                display_formula=selling_inputs["display_formula"],
+                stored_formula=selling_inputs["stored_formula"],
+                calc_status=selling_inputs["calc_status"],
+                document_display_unit=document_display_unit,
+                extra=selling_inputs.get("detail_extra"),
+            ),
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
+        out_rows.append(derived_row)
+
+        metric_key = derived_row["metric_key"]
+        if _metric_value(metric_rows, metric_key) is None and derived_row["value_num"] is not None:
+            metric_rows[metric_key] = {
+                "doc_id": derived_row["doc_id"],
+                "edinet_code": derived_row["edinet_code"],
+                "security_code": derived_row["security_code"],
+                "metric_key": metric_key,
+                "fiscal_year": derived_row["fiscal_year"],
+                "period_end": derived_row["period_end"],
+                "value_num": derived_row["value_num"],
+                "source_tag": "DERIVED(GeneralAndAdministrativeExpenses+SellingExpensesOnly)",
+                "consolidation": derived_row["consolidation"],
+                "rule_version": derived_row["rule_version"],
+            }
 
 
 def _append_difference_rows(
@@ -1688,6 +1832,15 @@ def calculate_derived_metrics(
         rule_version=rule_version,
         require_positive_denominator=True,
         value_unit="yen_per_share",
+    )
+
+    _append_selling_expenses_total_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
     )
 
     _append_combined_cost_and_sga_rows(

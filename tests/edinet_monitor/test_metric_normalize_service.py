@@ -192,6 +192,57 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "SellingExpensesCurrent")
         self.assertEqual(normalized["source_tag"], "GeneralAndAdministrativeExpensesOEBNK")
 
+    def test_general_and_administrative_expenses_maps_to_separate_metric(self) -> None:
+        row = build_raw_fact(tag_name="GeneralAndAdministrativeExpensesSGA")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9534",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "GeneralAndAdministrativeExpensesCurrent")
+        self.assertEqual(normalized["source_tag"], "GeneralAndAdministrativeExpensesSGA")
+
+    def test_gas_sga_tags_are_limited_to_electric_and_gas_industry(self) -> None:
+        row = build_raw_fact(tag_name="SellingGeneralAndAdministrativeExpensesGAS")
+
+        blocked = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9534",
+            industry_33="サービス業",
+        )
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9534",
+            industry_33="電気・ガス業",
+        )
+
+        self.assertIsNone(blocked)
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "SellingExpensesCurrent")
+        self.assertEqual(normalized["source_tag"], "SellingGeneralAndAdministrativeExpensesGAS")
+
+    def test_gas_supply_and_sales_expenses_maps_to_selling_expenses_only(self) -> None:
+        row = build_raw_fact(tag_name="SupplyAndSalesExpensesGAS")
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9534",
+            industry_33="電気・ガス業",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "SellingExpensesOnlyCurrent")
+        self.assertEqual(normalized["source_tag"], "SupplyAndSalesExpensesGAS")
+
     def test_banking_ordinary_expenses_maps_to_combined_cost_and_sga(self) -> None:
         row = build_raw_fact(tag_name="OrdinaryExpensesBNK")
 
@@ -360,7 +411,7 @@ class MetricNormalizeServiceTest(unittest.TestCase):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         self.assertEqual(len(normalized_rows), 1)
-        self.assertEqual(normalized_rows[0]["metric_key"], "SellingExpensesCurrent")
+        self.assertEqual(normalized_rows[0]["metric_key"], "GeneralAndAdministrativeExpensesCurrent")
         self.assertEqual(normalized_rows[0]["source_tag"], "GeneralAndAdministrativeExpensesSGA")
         self.assertEqual(normalized_rows[0]["value_num"], 120.0)
 
@@ -401,6 +452,53 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(sga_row["_structure_role"], "expense")
         self.assertEqual(sga_row["_structure_confidence"], "high")
         self.assertLess(sga_row["_structure_priority"], ga_row["_structure_priority"])
+
+    def test_consolidated_reporting_guard_excludes_nonconsolidated_pl_candidates(self) -> None:
+        rows = [
+            build_raw_fact(
+                doc_id="DOC5",
+                tag_name="NetSales",
+                value_text="1000",
+            ),
+            build_raw_fact(
+                doc_id="DOC5",
+                tag_name="GeneralAndAdministrativeExpensesSGA",
+                value_text="120",
+                context_ref="CurrentYearDuration_NonConsolidatedMember",
+                consolidation="NonConsolidated",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="7199",
+            enforce_candidate_validation=True,
+        )
+
+        self.assertEqual([row["metric_key"] for row in normalized_rows], ["NetSalesCurrent"])
+
+    def test_consolidated_reporting_guard_keeps_standalone_nonconsolidated_candidate(self) -> None:
+        rows = [
+            build_raw_fact(
+                doc_id="DOC6",
+                tag_name="GeneralAndAdministrativeExpensesSGA",
+                value_text="120",
+                context_ref="CurrentYearDuration_NonConsolidatedMember",
+                consolidation="NonConsolidated",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="9636",
+            enforce_candidate_validation=True,
+        )
+
+        self.assertEqual(len(normalized_rows), 1)
+        self.assertEqual(normalized_rows[0]["metric_key"], "GeneralAndAdministrativeExpensesCurrent")
+        self.assertEqual(normalized_rows[0]["consolidation"], "NonConsolidated")
 
     def test_usgaap_operating_cash_maps_to_operating_cash(self) -> None:
         row = build_raw_fact(

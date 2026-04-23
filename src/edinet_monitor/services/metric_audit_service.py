@@ -359,6 +359,7 @@ def build_metric_audit_rows(
         base_rows,
         edinet_code=str(filing.get("edinet_code") or ""),
         security_code=str(filing.get("security_code") or ""),
+        industry_33=str(filing.get("industry_33") or ""),
         xbrl_path=str(filing.get("xbrl_path") or ""),
         zip_path=str(filing.get("zip_path") or ""),
         filing_period_end=str(filing.get("period_end") or ""),

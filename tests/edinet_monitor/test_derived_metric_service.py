@@ -242,6 +242,98 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["FinancialLeverageAdjustmentCurrent"]["value_num"], 0)
         self.assertEqual(by_key["BusinessValueCurrent"]["value_num"], 0)
 
+    def test_selling_expenses_total_prefers_direct_total_tag(self) -> None:
+        normalized_rows = [
+            build_normalized_row(
+                "SellingExpensesCurrent",
+                36_038_000_000,
+                source_tag="SellingGeneralAndAdministrativeExpensesGAS",
+            ),
+            build_normalized_row(
+                "GeneralAndAdministrativeExpensesCurrent",
+                4_765_000_000,
+                source_tag="GeneralAndAdministrativeExpensesSGA",
+            ),
+            build_normalized_row(
+                "SellingExpensesOnlyCurrent",
+                31_272_000_000,
+                source_tag="SupplyAndSalesExpensesGAS",
+            ),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["SellingExpensesCurrent"]["value_num"], 36_038_000_000)
+        self.assertEqual(
+            by_key["SellingExpensesCurrent"]["source_detail_json"]["selected_source"],
+            "selling_expenses_total_tag",
+        )
+        self.assertEqual(
+            by_key["SellingExpensesCurrent"]["source_detail_json"]["component_status"],
+            "direct_total",
+        )
+
+    def test_selling_expenses_total_sums_general_admin_and_selling_components(self) -> None:
+        normalized_rows = [
+            build_normalized_row(
+                "GeneralAndAdministrativeExpensesCurrent",
+                4_765_000_000,
+                source_tag="GeneralAndAdministrativeExpensesSGA",
+            ),
+            build_normalized_row(
+                "SellingExpensesOnlyCurrent",
+                31_272_000_000,
+                source_tag="SupplyAndSalesExpensesGAS",
+            ),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["SellingExpensesCurrent"]["value_num"], 36_037_000_000)
+        self.assertEqual(
+            by_key["SellingExpensesCurrent"]["source_detail_json"]["selected_source"],
+            "component_sum",
+        )
+        self.assertEqual(
+            by_key["SellingExpensesCurrent"]["source_detail_json"]["component_status"],
+            "component_sum",
+        )
+
+    def test_selling_expenses_total_allows_partial_component_for_audit_target_scope(self) -> None:
+        normalized_rows = [
+            build_normalized_row(
+                "GeneralAndAdministrativeExpensesCurrent",
+                910_679_000,
+                source_tag="GeneralAndAdministrativeExpensesSGA",
+            ),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["SellingExpensesCurrent"]["value_num"], 910_679_000)
+        self.assertEqual(
+            by_key["SellingExpensesCurrent"]["source_detail_json"]["component_status"],
+            "partial_component_sum",
+        )
+
     def test_combined_cost_and_sga_sums_cost_and_selling_expenses(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

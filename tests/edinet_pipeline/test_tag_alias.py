@@ -90,6 +90,19 @@ class TagAliasTest(unittest.TestCase):
             with self.subTest(tag_name=tag_name):
                 self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
 
+    def test_sga_component_tags_map_to_expected_metrics(self) -> None:
+        cases = {
+            "SellingGeneralAndAdministrativeExpensesGAS": "SellingExpenses",
+            "GeneralAndAdministrativeExpensesSGA": "GeneralAndAdministrativeExpenses",
+            "GeneralAndAdministrativeExpensesIFRS": "GeneralAndAdministrativeExpenses",
+            "AdministrativeExpenses": "GeneralAndAdministrativeExpenses",
+            "SupplyAndSalesExpensesGAS": "SellingExpensesOnly",
+        }
+
+        for tag_name, metric_name in cases.items():
+            with self.subTest(tag_name=tag_name):
+                self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
+
     def test_insurance_tags_map_to_expected_metrics(self) -> None:
         cases = {
             "InsuranceClaimsAndOthersSummaryOfBusinessResults": "InsuranceClaimsPayments",
