@@ -1,0 +1,5 @@
+$env:PYTHONPATH="C:\Users\silve\EDINET_Pipeline\src"
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.export_metric_excel `
+  --condition-xlsx "D:\作業用\DB抽出条件.xlsx" `
+  --output-dir "D:\作業用"
