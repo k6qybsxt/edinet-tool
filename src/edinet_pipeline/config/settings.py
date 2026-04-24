@@ -120,7 +120,7 @@ def load_pipeline_settings(
 
     log_mode = _normalize_log_mode(merged_config.get("log_mode"))
     log_dir = _resolve_path(merged_config.get("log_dir")) or (BASE_DIR / "logs")
-    data_root = _resolve_path(merged_config.get("data_root")) or Path(r"D:\EDINET_Data")
+    data_root = _resolve_path(merged_config.get("data_root")) or Path(r"E:\EDINET_Data\edinet_pipeline")
     input_root = _resolve_path(merged_config.get("input_root")) or (data_root / "input")
     output_root = _resolve_path(merged_config.get("output_root")) or (data_root / "output")
     cache_root = _resolve_path(merged_config.get("cache_root")) or (data_root / "cache")

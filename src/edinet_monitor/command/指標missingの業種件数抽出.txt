@@ -1,0 +1,185 @@
+$env:DB_PATH = "E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
+$env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
+$env:METRIC_SOURCE = "normalized"   # normalized / derived
+$env:METRIC_KEYS = "current"        # current / all / "NetSalesCurrent,CostOfSalesCurrent"
+$env:OUTPUT_DIR = "D:\作業用"
+
+@'
+import os
+import sqlite3
+import unicodedata
+from pathlib import Path
+from datetime import datetime
+
+from edinet_pipeline.domain.metric_labels import metric_key_to_display_name
+
+db_path = os.environ["DB_PATH"]
+metric_source = os.environ["METRIC_SOURCE"].strip().lower()
+metric_keys_raw = os.environ["METRIC_KEYS"].strip().lower()
+output_dir = Path(os.environ["OUTPUT_DIR"])
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+if metric_source not in {"normalized", "derived"}:
+    raise SystemExit("METRIC_SOURCE must be 'normalized' or 'derived'")
+
+table_name = "normalized_metrics" if metric_source == "normalized" else "derived_metrics"
+
+if metric_keys_raw == "all":
+    metric_keys = [
+        row[0]
+        for row in cur.execute(f"select distinct metric_key from {table_name} order by metric_key")
+    ]
+elif metric_keys_raw == "current":
+    metric_keys = [
+        row[0]
+        for row in cur.execute(
+            f"select distinct metric_key from {table_name} where metric_key like '%Current' order by metric_key"
+        )
+    ]
+else:
+    metric_keys = [x.strip() for x in os.environ["METRIC_KEYS"].split(",") if x.strip()]
+
+def display_width(text: str) -> int:
+    width = 0
+    for ch in str(text):
+        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+    return width
+
+def pad_right(text: str, width: int) -> str:
+    text = str(text)
+    return text + " " * max(0, width - display_width(text))
+
+def pad_left(text: str, width: int) -> str:
+    text = str(text)
+    return " " * max(0, width - display_width(text)) + text
+
+overall_total_query = """
+with latest as (
+  select
+    f.doc_id,
+    f.edinet_code,
+    row_number() over (
+      partition by f.edinet_code
+      order by f.period_end desc, coalesce(f.submit_date, '') desc, f.doc_id desc
+    ) as rn
+  from filings f
+  where f.form_type = '030000'
+)
+select count(*) from latest where rn = 1
+"""
+overall_total = cur.execute(overall_total_query).fetchone()[0]
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_dir.mkdir(parents=True, exist_ok=True)
+output_path = output_dir / f"current_missing_summary_{timestamp}.txt"
+
+lines = []
+lines.append(f"generated_at: {datetime.now().isoformat(timespec='seconds')}")
+lines.append(f"metric_source: {metric_source}")
+lines.append(f"metric_keys_mode: {os.environ['METRIC_KEYS']}")
+lines.append("")
+
+for metric_key in metric_keys:
+    display_name = metric_key_to_display_name(metric_key)
+
+    if metric_source == "normalized":
+        join_sql = """
+        left join normalized_metrics m
+          on m.doc_id = s.doc_id
+         and m.metric_key = ?
+        """
+        missing_expr = "case when m.doc_id is null then 1 else 0 end"
+    else:
+        join_sql = """
+        left join derived_metrics m
+          on m.doc_id = s.doc_id
+         and m.metric_key = ?
+        """
+        missing_expr = "case when m.doc_id is null or m.calc_status = 'missing_input' then 1 else 0 end"
+
+    query = f"""
+    with latest as (
+      select
+        f.doc_id,
+        f.edinet_code,
+        im.industry_33,
+        row_number() over (
+          partition by f.edinet_code
+          order by f.period_end desc, coalesce(f.submit_date, '') desc, f.doc_id desc
+        ) as rn
+      from filings f
+      join issuer_master im on im.edinet_code = f.edinet_code
+      where f.form_type = '030000'
+    ),
+    scope as (
+      select doc_id, industry_33
+      from latest
+      where rn = 1
+    ),
+    agg as (
+      select
+        s.industry_33,
+        count(*) as total,
+        sum({missing_expr}) as missing
+      from scope s
+      {join_sql}
+      group by s.industry_33
+    )
+    select *
+    from agg
+    where missing > 0
+    order by cast(missing as float) / total desc,
+             missing desc,
+             industry_33
+    """
+
+    rows = cur.execute(query, (metric_key,)).fetchall()
+
+    overall_missing_query = f"""
+    with latest as (
+      select
+        f.doc_id,
+        f.edinet_code,
+        row_number() over (
+          partition by f.edinet_code
+          order by f.period_end desc, coalesce(f.submit_date, '') desc, f.doc_id desc
+        ) as rn
+      from filings f
+      where f.form_type = '030000'
+    ),
+    scope as (
+      select doc_id
+      from latest
+      where rn = 1
+    )
+    select sum({missing_expr})
+    from scope s
+    {join_sql}
+    """
+    overall_missing = cur.execute(overall_missing_query, (metric_key,)).fetchone()[0] or 0
+    overall_pct = (overall_missing / overall_total * 100) if overall_total else 0.0
+
+    col1 = 22
+    col2 = 12
+    col3 = 8
+
+    lines.append(f"=== {metric_key} / {display_name} ===")
+    lines.append(f"表示名: {display_name}")
+    lines.append(f"{pad_right('項目', col1)}{pad_left('件数', col2)}{pad_left('%', col3)}")
+    lines.append(f"{pad_right('OVERALL', col1)}{pad_left(f'{overall_missing}/{overall_total}', col2)}{pad_left(f'{overall_pct:.1f}%', col3)}")
+
+    for r in rows:
+        pct = (r['missing'] / r['total'] * 100) if r['total'] else 0.0
+        count_text = f"{r['missing']}/{r['total']}"
+        lines.append(f"{pad_right(r['industry_33'], col1)}{pad_left(count_text, col2)}{pad_left(f'{pct:.1f}%', col3)}")
+
+    lines.append("")
+
+output_path.write_text("\n".join(lines), encoding="utf-8-sig")
+print(f"saved: {output_path}")
+
+conn.close()
+'@ | .\.venv\Scripts\python.exe -

@@ -1,0 +1,179 @@
+$env:DB_PATH = "E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
+$env:METRIC_SPECS = "normalized:NetSalesCurrent,normalized:CostOfSalesCurrent,normalized:SellingExpensesCurrent,derived:GrossProfitCurrent"　# どの項目か
+$env:INDUSTRIES = "ALL"   # 例: "ALL" / "医薬品" / "医薬品,情報・通信業"
+$env:TOP_N = "10"　# 上位何社まで表示するか
+$env:OUTPUT_DIR = "D:\作業用"　# テキストファイル保存先
+
+@'
+import os
+import sqlite3
+import unicodedata
+from pathlib import Path
+from datetime import datetime
+
+db_path = os.environ["DB_PATH"]
+metric_specs_raw = os.environ["METRIC_SPECS"]
+industries_raw = os.environ["INDUSTRIES"].strip()
+top_n = int(os.environ["TOP_N"])
+output_dir = Path(os.environ["OUTPUT_DIR"])
+
+metric_specs = []
+for part in metric_specs_raw.split(","):
+    part = part.strip()
+    if not part:
+        continue
+    if ":" not in part:
+        raise SystemExit(f"Invalid METRIC_SPECS entry: {part} (expected normalized:MetricKey or derived:MetricKey)")
+    source, key = part.split(":", 1)
+    source = source.strip().lower()
+    key = key.strip()
+    if source not in {"normalized", "derived"}:
+        raise SystemExit(f"Invalid source: {source}")
+    metric_specs.append((source, key))
+
+use_all = industries_raw.upper() == "ALL"
+industries = []
+if not use_all:
+    industries = [x.strip() for x in industries_raw.split(",") if x.strip()]
+
+def display_width(text: str) -> int:
+    width = 0
+    for ch in str(text):
+        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+    return width
+
+def pad_right(text: str, width: int) -> str:
+    text = str(text)
+    return text + " " * max(0, width - display_width(text))
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_path = output_dir / f"missing_companies_aligned_{timestamp}.txt"
+output_dir.mkdir(parents=True, exist_ok=True)
+
+columns = [
+    ("company_name", "company_name"),
+    ("security_code", "security_code"),
+    ("doc_id", "doc_id"),
+    ("period_end", "period_end"),
+    ("submit_date", "submit_date"),
+    ("industry_33", "industry_33"),
+    ("net_sales", "net_sales"),
+    ("net_sales_source_tag", "net_sales_source_tag"),
+]
+
+lines = []
+lines.append(f"generated_at: {datetime.now().isoformat(timespec='seconds')}")
+lines.append(f"industries: {'ALL' if use_all else ', '.join(industries)}")
+lines.append(f"top_n: {top_n}")
+lines.append("")
+
+for metric_source, metric_key in metric_specs:
+    if metric_source == "normalized":
+        metric_join = """
+        left join normalized_metrics m
+          on m.doc_id = s.doc_id
+         and m.metric_key = ?
+        """
+        missing_where = "m.doc_id is null"
+    else:
+        metric_join = """
+        left join derived_metrics m
+          on m.doc_id = s.doc_id
+         and m.metric_key = ?
+        """
+        missing_where = "m.doc_id is null or m.calc_status = 'missing_input'"
+
+    industry_filter_sql = ""
+    params = [metric_key]
+
+    if not use_all:
+        placeholders = ", ".join("?" for _ in industries)
+        industry_filter_sql = f"and im.industry_33 in ({placeholders})"
+        params.extend(industries)
+
+    params.append(top_n)
+
+    query = f"""
+    with latest as (
+      select
+        f.doc_id,
+        f.edinet_code,
+        f.security_code,
+        f.period_end,
+        f.submit_date,
+        im.company_name,
+        im.industry_33,
+        row_number() over (
+          partition by f.edinet_code
+          order by f.period_end desc, coalesce(f.submit_date, '') desc, f.doc_id desc
+        ) as rn
+      from filings f
+      join issuer_master im on im.edinet_code = f.edinet_code
+      where f.form_type = '030000'
+      {industry_filter_sql}
+    ),
+    scope as (
+      select *
+      from latest
+      where rn = 1
+    ),
+    sales as (
+      select
+        doc_id,
+        value_num as net_sales,
+        source_tag as net_sales_source_tag
+      from normalized_metrics
+      where metric_key = 'NetSalesCurrent'
+    )
+    select
+      s.company_name,
+      s.security_code,
+      s.doc_id,
+      s.period_end,
+      s.submit_date,
+      s.industry_33,
+      sales.net_sales,
+      sales.net_sales_source_tag
+    from scope s
+    {metric_join}
+    left join sales
+      on sales.doc_id = s.doc_id
+    where {missing_where}
+    order by coalesce(sales.net_sales, -1) desc, s.security_code
+    limit ?
+    """
+
+    rows = cur.execute(query, params).fetchall()
+
+    widths = []
+    for key, header in columns:
+        data_width = max([display_width("" if r[key] is None else str(r[key])) for r in rows] + [0])
+        widths.append(max(display_width(header), data_width))
+
+    lines.append(f"=== {metric_key} ({metric_source}) ===")
+    lines.append("  ".join(
+        pad_right(header, widths[i])
+        for i, (_, header) in enumerate(columns)
+    ))
+
+    if rows:
+        for r in rows:
+            values = []
+            for i, (key, _) in enumerate(columns):
+                text = "" if r[key] is None else str(r[key])
+                values.append(pad_right(text, widths[i]))
+            lines.append("  ".join(values))
+    else:
+        lines.append("(no missing companies)")
+
+    lines.append("")
+
+output_path.write_text("\n".join(lines), encoding="utf-8-sig")
+print(f"saved: {output_path}")
+
+conn.close()
+'@ | .\.venv\Scripts\python.exe -

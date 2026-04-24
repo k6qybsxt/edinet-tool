@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import requests
 import certifi
 import pandas as pd
@@ -8,13 +9,19 @@ from io import StringIO
 from calendar import monthrange
 from datetime import datetime, timedelta
 
+from edinet_pipeline.config.settings import CACHE_ROOT
+
 # requests session を1回だけ作って使い回す
 _YF_SESSION = None
 
-_STOCK_CACHE_DIR = os.path.join("data", "cache", "stock")
-os.makedirs(_STOCK_CACHE_DIR, exist_ok=True)
+_STOCK_CACHE_DIR = CACHE_ROOT / "stock"
 
 _STOCK_PRICE_MAP_CACHE = {}
+
+
+def _get_stock_cache_dir() -> Path:
+    _STOCK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _STOCK_CACHE_DIR
 
 
 def _get_yf_session():
@@ -111,11 +118,11 @@ def get_stock_price_map(stock_code, date_pairs, logger=None, buffer_days=7):
             logger.debug(f"[stock cache hit memory] code={code} range={start_date}..{end_date}")
         return _STOCK_PRICE_MAP_CACHE[cache_key]
 
-    csv_cache_path = os.path.join(_STOCK_CACHE_DIR, f"{code}.csv")
+    csv_cache_path = _get_stock_cache_dir() / f"{code}.csv"
 
     df = None
 
-    if os.path.exists(csv_cache_path):
+    if csv_cache_path.exists():
         try:
             if logger:
                 logger.debug(f"[stock cache hit disk] code={code} path={csv_cache_path}")

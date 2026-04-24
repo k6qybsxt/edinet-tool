@@ -1,0 +1,48 @@
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+
+$DATE_FROM = '2026-04-01'
+$DATE_TO   = '2026-04-09'
+
+@'
+import sqlite3
+
+DB_PATH = r"E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
+DATE_FROM = r"__DATE_FROM__"
+DATE_TO = r"__DATE_TO__"
+
+conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+rows = cur.execute(
+    """
+    select
+      coalesce(f.parse_status, '') as parse_status,
+      count(*) as cnt
+    from filings f
+    join issuer_master im
+      on im.edinet_code = f.edinet_code
+    where f.form_type = '030000'
+      and im.is_listed = 1
+      and im.exchange = 'TSE'
+      and substr(coalesce(f.submit_date, ''), 1, 10) between ? and ?
+    group by coalesce(f.parse_status, '')
+    order by parse_status
+    """,
+    (DATE_FROM, DATE_TO),
+).fetchall()
+
+total = sum(int(row['cnt']) for row in rows)
+derived = sum(int(row['cnt']) for row in rows if str(row['parse_status']) == 'derived_metrics_saved')
+
+print(f"submit_date_from={DATE_FROM}")
+print(f"submit_date_to={DATE_TO}")
+print(f"target_rows={total}")
+print(f"derived_rows={derived}")
+print(f"already_completed={'yes' if total > 0 and total == derived else 'no'}")
+
+for row in rows:
+    print(f"status={row['parse_status'] or '(blank)'} count={row['cnt']}")
+
+conn.close()
+'@.Replace('__DATE_FROM__',$DATE_FROM).Replace('__DATE_TO__',$DATE_TO) | .\.venv\Scripts\python.exe -

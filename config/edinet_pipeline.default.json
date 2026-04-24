@@ -1,7 +1,7 @@
 {
   "log_mode": "DEBUG",
   "log_dir": "logs",
-  "data_root": "D:\\EDINET_Data",
+  "data_root": "E:\\EDINET_Data\\edinet_pipeline",
   "template_dir": "templates",
   "template_workbook_name": "決算分析シート_1.xlsm",
   "log_max_bytes": 2000000,

@@ -45,8 +45,14 @@ MONITOR_DB_ROOT = _path_from_env(
 )
 DB_PATH = MONITOR_DB_ROOT / "edinet_monitor.db"
 
-MONITOR_STORAGE_ROOT = Path(r"D:\EDINET_Data") / "edinet_monitor"
-TSE_LISTING_MASTER_CSV_PATH = Path(r"D:\EDINET_Data\master\tse_issuer_master_latest.csv")
+MONITOR_STORAGE_ROOT = _path_from_env(
+    "EDINET_MONITOR_STORAGE_ROOT",
+    r"E:\EDINET_Data\edinet_monitor",
+)
+TSE_LISTING_MASTER_CSV_PATH = _path_from_env(
+    "EDINET_TSE_MASTER_CSV",
+    r"E:\EDINET_Data\master\tse_issuer_master_latest.csv",
+)
 
 RAW_ROOT = MONITOR_STORAGE_ROOT / "raw"
 ZIP_ROOT = RAW_ROOT / "zip"

@@ -1,0 +1,24 @@
+before 作成
+
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.export_metric_snapshot `
+  --label before_taxonomy_change `
+  --output-dir "D:\作業用\metric_snapshots"
+
+after 作成
+
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.export_metric_snapshot `
+  --label after_taxonomy_change `
+  --output-dir "D:\作業用\metric_snapshots"
+
+before / after 比較（黄色文字のところは実際に作成されたフォルダ名を入れる）
+
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.compare_metric_snapshots `
+  --before "D:\作業用\metric_snapshots\before_taxonomy_change_YYYYMMDD_HHMMSS" `
+  --after "D:\作業用\metric_snapshots\after_taxonomy_change_YYYYMMDD_HHMMSS" `
+  --output-dir "D:\作業用\metric_snapshots"

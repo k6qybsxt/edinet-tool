@@ -18,6 +18,29 @@ class SettingsConfigTest(unittest.TestCase):
     def test_default_config_file_exists(self) -> None:
         self.assertTrue(pipeline_settings.DEFAULT_CONFIG_PATH.exists())
 
+    def test_default_data_root_points_to_e_drive_pipeline_root(self) -> None:
+        loaded = pipeline_settings.load_pipeline_settings(
+            env={},
+            include_local_config=False,
+        )
+
+        self.assertEqual(
+            loaded["data_root"],
+            Path(r"E:\EDINET_Data\edinet_pipeline"),
+        )
+        self.assertEqual(
+            loaded["input_root"],
+            Path(r"E:\EDINET_Data\edinet_pipeline\input"),
+        )
+        self.assertEqual(
+            loaded["output_root"],
+            Path(r"E:\EDINET_Data\edinet_pipeline\output"),
+        )
+        self.assertEqual(
+            loaded["cache_root"],
+            Path(r"E:\EDINET_Data\edinet_pipeline\cache"),
+        )
+
     def test_load_pipeline_settings_supports_external_config_and_env_overrides(self) -> None:
         temp_config_path = ROOT_DIR / "tests" / "_tmp_edinet_pipeline_config.json"
         try:

@@ -1,0 +1,172 @@
+PowerShellコマンド
+$env:PYTHONPATH   = "C:\Users\silve\EDINET_Pipeline\src"
+$env:EDINET_API_KEY = "あなたのEDINET_APIキー"
+
+$DATE_FROM = "2026-04-01"
+$DATE_TO   = "2026-04-09"
+$OUT_DIR   = "D:\作業用"
+
+# 0. issuer_master を最新化
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.import_tse_listing_master
+
+# 1. DL前確認
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.check_download_coverage `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --output-dir $OUT_DIR `
+  --validate-zip
+
+# 2. ZIPダウンロード
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_zip_backfill `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --manifest-granularity day `
+  --download-profile auto `
+  --download-auto-peak-threshold 100 `
+  --download-run-all `
+  --download-retry-errors
+
+# 3. 対象日の日別manifestだけを filings に同期
+$start = [datetime]::ParseExact($DATE_FROM, "yyyy-MM-dd", $null)
+$end   = [datetime]::ParseExact($DATE_TO,   "yyyy-MM-dd", $null)
+
+for ($d = $start; $d -le $end; $d = $d.AddDays(1)) {
+    $manifestName = "document_manifest_{0}" -f $d.ToString("yyyy-MM-dd")
+    .\.venv\Scripts\python.exe -m edinet_monitor.cli.import_manifest_filings_to_db `
+      --manifest-name $manifestName `
+      --skip-issuer-master
+}
+
+# 4. XBRL抽出
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.extract_xbrl_from_zips `
+  --batch-size 100 `
+  --run-all
+
+# 5. raw_facts 保存
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_raw_facts `
+  --batch-size 100 `
+  --run-all
+
+# 6. normalized_metrics 保存
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_normalized_metrics `
+  --batch-size 500 `
+  --enable-period-fallback `
+  --enforce-candidate-validation
+
+# 7. derived_metrics 保存
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_derived_metrics `
+  --batch-size 100 `
+  --run-all
+
+# 8. DL後確認
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.check_download_coverage `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --output-dir $OUT_DIR `
+  --validate-zip
+
+# 9. 提出日ベースで DB反映確認テキストを保存
+$env:CHECK_DATE_FROM = $DATE_FROM
+$env:CHECK_DATE_TO   = $DATE_TO
+$env:CHECK_OUT_DIR   = $OUT_DIR
+
+@'
+import os
+import sqlite3
+import unicodedata
+from pathlib import Path
+from datetime import datetime
+
+DB_PATH = r"E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
+DATE_FROM = os.environ["CHECK_DATE_FROM"]
+DATE_TO = os.environ["CHECK_DATE_TO"]
+OUT_DIR = Path(os.environ["CHECK_OUT_DIR"])
+
+def display_width(text):
+    width = 0
+    for ch in str(text):
+        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+    return width
+
+def pad_right(text, width):
+    text = str(text)
+    return text + " " * max(0, width - display_width(text))
+
+def pad_left(text, width):
+    text = str(text)
+    return " " * max(0, width - display_width(text)) + text
+
+conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+rows = cur.execute(
+    """
+    select
+      substr(f.submit_date, 1, 10) as submit_date,
+      count(*) as total,
+      sum(case when coalesce(f.download_status, '') = 'downloaded' then 1 else 0 end) as downloaded,
+      sum(case when coalesce(f.xbrl_path, '') <> '' then 1 else 0 end) as xbrl_ready,
+      sum(case when coalesce(f.parse_status, '') = 'raw_facts_saved' then 1 else 0 end) as raw_only,
+      sum(case when coalesce(f.parse_status, '') = 'normalized_metrics_saved' then 1 else 0 end) as normalized_only,
+      sum(case when coalesce(f.parse_status, '') = 'derived_metrics_saved' then 1 else 0 end) as derived_saved,
+      sum(case when coalesce(f.parse_status, '') like '%error' then 1 else 0 end) as errors
+    from filings f
+    join issuer_master im
+      on im.edinet_code = f.edinet_code
+    where f.form_type = '030000'
+      and im.is_listed = 1
+      and im.exchange = 'TSE'
+      and substr(coalesce(f.submit_date, ''), 1, 10) between ? and ?
+    group by substr(f.submit_date, 1, 10)
+    order by submit_date
+    """,
+    (DATE_FROM, DATE_TO),
+).fetchall()
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+out_path = OUT_DIR / f"submit_date_db_reflection_check_{DATE_FROM}_to_{DATE_TO}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+cols = [
+    ("submit_date", "提出日", "left"),
+    ("total", "総数", "right"),
+    ("downloaded", "ZIP", "right"),
+    ("xbrl_ready", "XBRL", "right"),
+    ("raw_only", "RAW", "right"),
+    ("normalized_only", "NORMALIZED", "right"),
+    ("derived_saved", "DERIVED", "right"),
+    ("errors", "ERROR", "right"),
+]
+
+widths = {}
+for key, label, _ in cols:
+    widths[key] = display_width(label) if not rows else max(display_width(label), *(display_width(row[key]) for row in rows))
+
+lines = []
+lines.append(f"generated_at: {datetime.now().isoformat(timespec='seconds')}")
+lines.append(f"submit_date_from: {DATE_FROM}")
+lines.append(f"submit_date_to: {DATE_TO}")
+lines.append("")
+lines.append(" | ".join(
+    pad_left(label, widths[key]) if align == "right" else pad_right(label, widths[key])
+    for key, label, align in cols
+))
+lines.append("-+-".join("-" * widths[key] for key, _, _ in cols))
+
+for row in rows:
+    lines.append(" | ".join(
+        pad_left(row[key], widths[key]) if align == "right" else pad_right(row[key], widths[key])
+        for key, _, align in cols
+    ))
+
+out_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+print(f"saved: {out_path}")
+
+conn.close()
+'@ | .\.venv\Scripts\python.exe -
+
+# 10. 参考: 年次ギャップ確認
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.export_import_status_report `
+  --period-mode all `
+  --status-only FILING_MISSING `
+  --output-dir $OUT_DIR

@@ -1,0 +1,91 @@
+$MODE = 'Current'   # 'Current' or 'all'
+
+$env:PYTHONPATH = 'C:\Users\silve\EDINET_Pipeline\src'
+$env:MODE = $MODE
+$env:OUTPUT_DIR = 'D:\作業用'
+
+@'
+import os
+import sqlite3
+import unicodedata
+from pathlib import Path
+from edinet_pipeline.domain.metric_labels import metric_group_to_display_name, metric_key_to_display_name
+
+mode = os.environ["MODE"].strip().lower()
+output_dir = Path(os.environ["OUTPUT_DIR"])
+db_path = r"E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
+
+if mode not in {"current", "all"}:
+    raise ValueError(f"Unsupported MODE: {mode}")
+
+def display_width(text: str) -> int:
+    width = 0
+    for ch in str(text):
+        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+    return width
+
+def pad_right(text: str, width: int) -> str:
+    text = str(text)
+    return text + " " * max(0, width - display_width(text))
+
+conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+cur = conn.cursor()
+
+rows = cur.execute(
+    """
+    SELECT metric_source, metric_group, metric_key
+    FROM (
+        SELECT 'normalized_metrics' AS metric_source, '' AS metric_group, metric_key
+        FROM normalized_metrics
+        GROUP BY metric_key
+
+        UNION ALL
+
+        SELECT 'derived_metrics' AS metric_source, COALESCE(metric_group, '') AS metric_group, metric_key
+        FROM derived_metrics
+        GROUP BY metric_group, metric_key
+    )
+    ORDER BY metric_source, metric_group, metric_key
+    """
+).fetchall()
+
+records = []
+for metric_source, metric_group, metric_key in rows:
+    metric_source = str(metric_source or "")
+    metric_group = str(metric_group or "")
+    metric_key = str(metric_key or "")
+
+    if mode == "current" and not metric_key.endswith("Current"):
+        continue
+
+    records.append(
+        {
+            "source": metric_source,
+            "group": metric_group,
+            "group_label": metric_group_to_display_name(metric_group),
+            "metric": metric_key,
+            "metric_label": metric_key_to_display_name(metric_key),
+        }
+    )
+
+columns = ["source", "group", "group_label", "metric", "metric_label"]
+widths = {}
+for col in columns:
+    widths[col] = max(
+        [display_width(col)] + [display_width(item[col]) for item in records]
+    )
+
+lines = []
+for item in records:
+    parts = [f"{col}={pad_right(item[col], widths[col])}" for col in columns]
+    lines.append(" | ".join(parts).rstrip())
+
+output_dir.mkdir(parents=True, exist_ok=True)
+out_path = output_dir / f"managed_metrics_{mode}.txt"
+out_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+print(f"saved={out_path}")
+print(f"rows={len(lines)}")
+
+conn.close()
+'@ | .\.venv\Scripts\python.exe -
