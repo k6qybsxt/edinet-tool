@@ -182,6 +182,17 @@ class DerivedMetricServiceTest(unittest.TestCase):
             by_key["AssetValueCurrent"]["value_num"] + by_key["BusinessValueCurrent"]["value_num"],
         )
         self.assertAlmostEqual(
+            by_key["TheoreticalSharePriceGrowthRateCurrent"]["value_num"],
+            by_key["TheoreticalSharePriceCurrent"]["value_num"]
+            / by_key["TheoreticalSharePricePrior1"]["value_num"],
+        )
+        self.assertAlmostEqual(
+            by_key["TheoreticalSharePriceGrowthRate5YearCurrent"]["value_num"],
+            by_key["TheoreticalSharePriceCurrent"]["value_num"]
+            / by_key["TheoreticalSharePricePrior4"]["value_num"],
+        )
+        self.assertIsNone(by_key["TheoreticalSharePriceGrowthRate10YearCurrent"]["value_num"])
+        self.assertAlmostEqual(
             by_key["UpperBoundTheoreticalSharePriceCurrent"]["value_num"],
             by_key["AssetValueCurrent"]["value_num"] + (by_key["BusinessValueCurrent"]["value_num"] * 2),
         )

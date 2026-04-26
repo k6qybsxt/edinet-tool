@@ -28,6 +28,14 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
                     period_end TEXT,
                     consolidation TEXT
                 );
+                CREATE TABLE derived_metrics (
+                    doc_id TEXT,
+                    metric_key TEXT,
+                    value_num REAL,
+                    period_end TEXT,
+                    consolidation TEXT,
+                    calc_status TEXT
+                );
                 """
             )
             conn.execute(
@@ -47,6 +55,17 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
                 ("S100OTHER", "NetSalesCurrent", 999_999, "2018-03-31", "Consolidated"),
             ]
             conn.executemany("INSERT INTO normalized_metrics VALUES (?, ?, ?, ?, ?)", rows)
+            conn.execute(
+                "INSERT INTO derived_metrics VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "S100OLD",
+                    "TheoreticalSharePriceCurrent",
+                    1200,
+                    "2017-03-31",
+                    "Consolidated",
+                    "ok",
+                ),
+            )
 
             values = fetch_historical_growth_values(
                 conn,
@@ -63,6 +82,7 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
         self.assertEqual(values["OrdinaryIncome"][9]["value_num"], 80_000)
         self.assertEqual(values["CashAndCashEquivalents"][9]["value_num"], 100_000)
         self.assertEqual(values["OutstandingShares"][9]["value_num"], 950_000)
+        self.assertEqual(values["TheoreticalSharePrice"][9]["value_num"], 1200)
         self.assertEqual(values["NetSales"][9]["doc_id"], "S100OLD")
 
 

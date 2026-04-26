@@ -2278,6 +2278,33 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
+    _append_growth_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="TheoreticalSharePriceGrowthRate",
+        metric_group="growth",
+        formula_name="theoretical_share_price_growth_rate",
+        display_formula="current_theoretical_share_price / prior_theoretical_share_price * 100",
+        input_builder=_theoretical_share_price_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_fixed_period_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="TheoreticalSharePrice",
+        derived_metric_base_5year="TheoreticalSharePriceGrowthRate5Year",
+        derived_metric_base_10year="TheoreticalSharePriceGrowthRate10Year",
+        current_input_builder=_theoretical_share_price_input,
+        base_input_builder=_theoretical_share_price_input,
+        historical_growth_values=historical_growth_values,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
     _append_ratio_rows(
         out_rows,
         metric_rows=metric_rows,

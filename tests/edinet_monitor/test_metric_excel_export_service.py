@@ -254,6 +254,66 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(condition.period_offsets, [2, 1, 0])
         self.assertEqual(condition.trend, "increase")
 
+    def test_read_metric_excel_condition_defaults_to_nine_years(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(path, [("指標", "売上高")])
+
+        condition = read_metric_excel_condition(path)
+
+        self.assertEqual(condition.period_offsets, [9, 8, 7, 6, 5, 4, 3, 2, 1, 0])
+
+    def test_read_metric_excel_condition_parses_percent_filter(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("％条件指標", "売上高増収率(５年)"),
+                ("％下限", "75%"),
+                ("％上限", "150"),
+            ],
+        )
+
+        condition = read_metric_excel_condition(path)
+
+        self.assertEqual(condition.percent_filter_metric_labels, ["売上高増収率(５年)"])
+        self.assertEqual(condition.percent_filter_min, 0.75)
+        self.assertEqual(condition.percent_filter_max, 1.5)
+
+    def test_read_metric_excel_condition_keeps_excel_percent_formatted_threshold(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "条件"
+        ws.append(["％条件指標", "売上高増収率(５年)"])
+        ws.append(["％下限", 5])
+        ws["B2"].number_format = "0%"
+        wb.save(path)
+
+        condition = read_metric_excel_condition(path)
+
+        self.assertEqual(condition.percent_filter_metric_labels, ["売上高増収率(５年)"])
+        self.assertEqual(condition.percent_filter_min, 5.0)
+
+    def test_read_metric_excel_condition_parses_trend_thresholds(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("増減判定", "none"),
+                ("増減判定指標", "売上高増収率"),
+                ("増減判定期間", "2年前-当期"),
+                ("増減判定下限", "115%"),
+                ("増減判定上限", "200%"),
+            ],
+        )
+
+        condition = read_metric_excel_condition(path)
+
+        self.assertEqual(condition.trend_metric_labels, ["売上高増収率"])
+        self.assertEqual(condition.trend_period_offsets, [2, 1, 0])
+        self.assertEqual(condition.trend_min, 1.15)
+        self.assertEqual(condition.trend_max, 2.0)
+
     def test_read_metric_excel_condition_accepts_securities_industry_alias(self) -> None:
         path = self.tmp_path / "condition.xlsx"
         _create_condition_workbook(
@@ -332,13 +392,60 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(target_companies, 1)
         self.assertEqual({row.security_code for row in rows}, {"1111"})
 
+    def test_trend_threshold_keeps_companies_above_lower_bound_every_period(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO derived_metrics (
+                doc_id, edinet_code, security_code, metric_key, metric_base, metric_group,
+                fiscal_year, period_end, period_scope, period_offset, consolidation,
+                accounting_standard, document_display_unit, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, ?, ?, 'NetSalesGrowthRateCurrent',
+                      'NetSalesGrowthRate', 'growth', 2025, ?, 'annual',
+                      0, 'consolidated', 'Japan GAAP', '百万円', ?, 'ratio',
+                      'ok', 'test', '{}', 'v1', '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("E00001_0", "E00001", "11110", "2026-03-31", 1.2),
+                ("E00001_1", "E00001", "11110", "2025-03-31", 1.18),
+                ("E00001_2", "E00001", "11110", "2024-03-31", 1.15),
+                ("E00002_0", "E00002", "22220", "2026-03-31", 1.3),
+                ("E00002_1", "E00002", "22220", "2025-03-31", 1.1),
+                ("E00002_2", "E00002", "22220", "2024-03-31", 1.4),
+            ],
+        )
+        self.conn.commit()
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("業種", "化学"),
+                ("指標", "売上高"),
+                ("期間", "当期"),
+                ("増減判定", "none"),
+                ("増減判定指標", "売上高増収率"),
+                ("増減判定期間", "2年前-当期"),
+                ("増減判定下限", "115%"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        self.assertEqual({row.security_code for row in rows}, {"1111"})
+
     def test_build_rows_uses_fixed_metric_order(self) -> None:
         path = self.tmp_path / "condition.xlsx"
         _create_condition_workbook(
             path,
             [
                 ("証券コード", "1111"),
-                ("指標", "純資産,売上原価率,売上高"),
+                ("指標", "純資産,売上原価率,売上高,EPS,発行株数"),
                 ("期間", "当期"),
             ],
         )
@@ -350,7 +457,10 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(errors, [])
-        self.assertEqual([row.metric_base for row in rows], ["NetSales", "CostOfSales", "NetAssets"])
+        self.assertEqual(
+            [row.metric_base for row in rows],
+            ["NetSales", "CostOfSales", "NetAssets", "OutstandingShares", "EPS"],
+        )
 
     def test_build_rows_uses_industry_specific_labels_and_order(self) -> None:
         cases = [
@@ -461,8 +571,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         ws = workbook[GENERAL_SHEET]
         self.assertEqual(ws["E2"].value, "├売上原価")
         self.assertEqual(ws["F2"].value, 60.0)
-        self.assertEqual(ws["G2"].value, 0.6)
-        self.assertEqual(ws["G2"].number_format, "0.0%")
+        self.assertEqual(ws["G2"].value, "百万円")
+        self.assertEqual(ws["H2"].value, 0.6)
+        self.assertEqual(ws["H2"].number_format, "0.0%")
 
     def test_export_metric_excel_formats_growth_rates_as_percent(self) -> None:
         self.conn.execute(
@@ -504,7 +615,49 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         ws = workbook[GENERAL_SHEET]
         self.assertEqual(ws["E2"].value, "売上高増収率")
         self.assertEqual(ws["F2"].value, 1.25)
+        self.assertEqual(ws["G2"].value, "%")
         self.assertEqual(ws["F2"].number_format, "0.0%")
+
+    def test_percent_filter_keeps_matching_companies(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO derived_metrics (
+                doc_id, edinet_code, security_code, metric_key, metric_base, metric_group,
+                fiscal_year, period_end, period_scope, period_offset, consolidation,
+                accounting_standard, document_display_unit, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, ?, ?, 'NetSalesGrowthRate5YearCurrent',
+                      'NetSalesGrowthRate5Year', 'growth', 2025, ?, 'annual',
+                      0, 'consolidated', 'Japan GAAP', '百万円', ?, 'ratio',
+                      'ok', 'test', '{}', 'v1', '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("E00001_0", "E00001", "11110", "2026-03-31", 0.8),
+                ("E00002_0", "E00002", "22220", "2026-03-31", 0.7),
+            ],
+        )
+        self.conn.commit()
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("業種", "化学"),
+                ("指標", "売上高"),
+                ("期間", "当期"),
+                ("％条件指標", "売上高増収率(５年)"),
+                ("％下限", "75%"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        self.assertEqual({row.security_code for row in rows}, {"1111"})
 
     def test_export_metric_excel_formats_per_share_and_theoretical_values(self) -> None:
         self.conn.executemany(

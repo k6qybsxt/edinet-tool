@@ -11,6 +11,9 @@ HISTORICAL_NORMALIZED_METRIC_KEYS = {
     "OrdinaryIncome": "OrdinaryIncomeCurrent",
     "CashAndCashEquivalents": "CashAndCashEquivalentsCurrent",
 }
+HISTORICAL_DERIVED_METRIC_KEYS = {
+    "TheoreticalSharePrice": "TheoreticalSharePriceCurrent",
+}
 OUTSTANDING_SHARES_COMPONENT_KEYS = {
     "IssuedSharesCurrent",
     "TreasurySharesCurrent",
@@ -77,7 +80,11 @@ def fetch_historical_growth_values(
 
     result: dict[str, dict[int, dict[str, Any]]] = {
         metric_base: {}
-        for metric_base in [*HISTORICAL_NORMALIZED_METRIC_KEYS.keys(), "OutstandingShares"]
+        for metric_base in [
+            *HISTORICAL_NORMALIZED_METRIC_KEYS.keys(),
+            *HISTORICAL_DERIVED_METRIC_KEYS.keys(),
+            "OutstandingShares",
+        ]
     }
 
     normalized_keys = tuple(HISTORICAL_NORMALIZED_METRIC_KEYS.values())
@@ -118,6 +125,51 @@ def fetch_historical_growth_values(
             "period_end": row_dict.get("metric_period_end") or row_dict.get("filing_period_end"),
             "consolidation": row_dict.get("consolidation"),
             "value_num": _to_float(row_dict.get("value_num")),
+        }
+
+    derived_keys = tuple(HISTORICAL_DERIVED_METRIC_KEYS.values())
+    derived_placeholders = ",".join("?" for _ in derived_keys)
+    derived_rows = conn.execute(
+        f"""
+        SELECT
+            f.doc_id,
+            f.period_end AS filing_period_end,
+            dm.metric_key,
+            dm.value_num,
+            dm.period_end AS metric_period_end,
+            dm.consolidation,
+            dm.calc_status
+        FROM filings f
+        INNER JOIN derived_metrics dm
+            ON dm.doc_id = f.doc_id
+        WHERE f.edinet_code = ?
+          AND f.form_type = '030000'
+          AND f.period_end IN ({period_placeholders})
+          AND dm.metric_key IN ({derived_placeholders})
+        """,
+        (edinet_code, *period_params, *derived_keys),
+    ).fetchall()
+    derived_key_to_base = {
+        metric_key: metric_base
+        for metric_base, metric_key in HISTORICAL_DERIVED_METRIC_KEYS.items()
+    }
+    for row in derived_rows:
+        row_dict = dict(row)
+        offset = period_end_to_offset.get(str(row_dict.get("filing_period_end") or ""))
+        metric_base = derived_key_to_base.get(str(row_dict.get("metric_key") or ""))
+        if offset is None or not metric_base:
+            continue
+        if str(row_dict.get("calc_status") or "") == "missing_input":
+            value_num = None
+        else:
+            value_num = _to_float(row_dict.get("value_num"))
+        result[metric_base][offset] = {
+            "doc_id": row_dict.get("doc_id"),
+            "metric_key": row_dict.get("metric_key"),
+            "period_end": row_dict.get("metric_period_end") or row_dict.get("filing_period_end"),
+            "consolidation": row_dict.get("consolidation"),
+            "value_num": value_num,
+            "calc_status": row_dict.get("calc_status"),
         }
 
     share_keys = tuple(OUTSTANDING_SHARES_COMPONENT_KEYS)

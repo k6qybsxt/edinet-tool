@@ -99,6 +99,11 @@ MONETARY_BASES = {
 }
 
 PERCENT_VALUE_BASES = {"ROA", "ROE", "EquityRatio"} | ABSORBED_RATIO_BASES
+RATIO_VALUE_BASES = {
+    "TheoreticalPBR",
+    "TheoreticalPER",
+    "TheoreticalPCFR",
+}
 
 PER_SHARE_BASES = {
     "AssetsPerShare",
@@ -122,6 +127,7 @@ ONE_DECIMAL_VALUE_BASES = {
 }
 
 INTEGER_VALUE_BASES = {
+    "OutstandingShares",
     "AssetsPerShare",
     "LiabilitiesPerShare",
     "AssetValue",
@@ -147,6 +153,22 @@ GROWTH_RATIO_BASES = {
     "OutstandingSharesGrowthRate5Year",
     "OutstandingSharesGrowthRate10Year",
     "EPSGrowthRate",
+    "TheoreticalSharePriceGrowthRate",
+    "TheoreticalSharePriceGrowthRate5Year",
+    "TheoreticalSharePriceGrowthRate10Year",
+}
+
+SPARSE_PERIOD_OFFSETS_BY_BASE = {
+    "NetSalesGrowthRate5Year": {5, 0},
+    "OrdinaryIncomeGrowthRate5Year": {5, 0},
+    "CashBalanceGrowthRate5Year": {5, 0},
+    "OutstandingSharesGrowthRate5Year": {5, 0},
+    "TheoreticalSharePriceGrowthRate5Year": {5, 0},
+    "NetSalesGrowthRate10Year": {0},
+    "OrdinaryIncomeGrowthRate10Year": {0},
+    "CashBalanceGrowthRate10Year": {0},
+    "OutstandingSharesGrowthRate10Year": {0},
+    "TheoreticalSharePriceGrowthRate10Year": {0},
 }
 
 FIXED_ROW_BASE_ORDER = [
@@ -168,6 +190,7 @@ FIXED_ROW_BASE_ORDER = [
     "InvestmentCash",
     "FinancingCash",
     "FCF",
+    "OutstandingShares",
     "EPS",
     "EPSGrowthRate",
     "BPS",
@@ -191,6 +214,9 @@ FIXED_ROW_BASE_ORDER = [
     "AssetValue",
     "BusinessValue",
     "TheoreticalSharePrice",
+    "TheoreticalSharePriceGrowthRate",
+    "TheoreticalSharePriceGrowthRate5Year",
+    "TheoreticalSharePriceGrowthRate10Year",
     "TheoreticalPBR",
     "TheoreticalPER",
     "OperatingCashPerShare",
@@ -213,6 +239,9 @@ EXCEL_METRIC_LABEL_OVERRIDES = {
     "InvestmentCash": "投資cf",
     "FinancingCash": "財務cf",
     "EPSGrowthRate": "EPS増加率（前期比）",
+    "TheoreticalSharePriceGrowthRate": "理論株価上昇率",
+    "TheoreticalSharePriceGrowthRate5Year": "理論株価上昇率(５年)",
+    "TheoreticalSharePriceGrowthRate10Year": "理論株価上昇率(10年)",
 }
 
 INDUSTRY_EXCEL_METRIC_LABEL_OVERRIDES = {
@@ -257,6 +286,7 @@ COMMON_TAIL_BASES = [
         "OperatingCash",
         "InvestmentCash",
         "FinancingCash",
+        "FCF",
     }
 ]
 
@@ -281,6 +311,7 @@ DEFAULT_BASES_BY_SHEET = {
         "InvestmentCash",
         "FinancingCash",
         "FCF",
+        "OutstandingShares",
         "EPS",
         "EPSGrowthRate",
         "BPS",
@@ -305,6 +336,7 @@ DEFAULT_BASES_BY_SHEET = {
         "InvestmentCash",
         "FinancingCash",
         "FCF",
+        "OutstandingShares",
         "EPS",
         "EPSGrowthRate",
         "BPS",
@@ -329,6 +361,7 @@ DEFAULT_BASES_BY_SHEET = {
         "InvestmentCash",
         "FinancingCash",
         "FCF",
+        "OutstandingShares",
         "EPS",
         "EPSGrowthRate",
         "BPS",
@@ -350,7 +383,26 @@ CONDITION_KEYS = {
     "増減判定": "trend",
     "増減判定指標": "trend_metrics",
     "増減判定期間": "trend_periods",
+    "増減判定下限": "trend_min",
+    "増減判定以上": "trend_min",
+    "増減判定上限": "trend_max",
+    "増減判定以下": "trend_max",
+    "％条件指標": "percent_filter_metrics",
+    "%条件指標": "percent_filter_metrics",
+    "比率条件指標": "percent_filter_metrics",
+    "％下限": "percent_filter_min",
+    "%下限": "percent_filter_min",
+    "比率下限": "percent_filter_min",
+    "下限": "percent_filter_min",
+    "以上": "percent_filter_min",
+    "％上限": "percent_filter_max",
+    "%上限": "percent_filter_max",
+    "比率上限": "percent_filter_max",
+    "上限": "percent_filter_max",
+    "以下": "percent_filter_max",
 }
+
+EXCEL_PERCENT_RATIO_PREFIX = "__excel_percent_ratio__:"
 
 INDUSTRY_ALIASES = {
     "証券・商品先物取引業": SECURITIES_INDUSTRY_LABEL,
@@ -364,10 +416,15 @@ class MetricExcelCondition:
     security_codes: list[str] = field(default_factory=list)
     company_names: list[str] = field(default_factory=list)
     metric_labels: list[str] = field(default_factory=list)
-    period_offsets: list[int] = field(default_factory=lambda: list(range(10, -1, -1)))
+    period_offsets: list[int] = field(default_factory=lambda: list(range(9, -1, -1)))
     trend: str = "none"
     trend_metric_labels: list[str] = field(default_factory=list)
     trend_period_offsets: list[int] = field(default_factory=list)
+    trend_min: float | None = None
+    trend_max: float | None = None
+    percent_filter_metric_labels: list[str] = field(default_factory=list)
+    percent_filter_min: float | None = None
+    percent_filter_max: float | None = None
     raw_values: dict[str, str] = field(default_factory=dict)
 
 
@@ -381,6 +438,7 @@ class MetricExcelRow:
     metric_base: str
     metric_label: str
     values_by_offset: dict[int, float | None]
+    units_by_offset: dict[int, str]
     ratios_by_offset: dict[int, float | None]
 
 
@@ -456,7 +514,7 @@ def _parse_period_token(token: str) -> int:
 def _parse_periods(value: str | None) -> list[int]:
     text = str(value or "").strip()
     if not text or text.upper() == "ALL":
-        return list(range(10, -1, -1))
+        return list(range(9, -1, -1))
 
     normalized = text.replace("～", "-").replace("－", "-").replace("〜", "-")
     if "-" in normalized and "," not in normalized and "、" not in normalized:
@@ -469,8 +527,38 @@ def _parse_periods(value: str | None) -> list[int]:
 
     offsets = sorted({_parse_period_token(part) for part in _split_multi(normalized)}, reverse=True)
     if not offsets:
-        return list(range(10, -1, -1))
+        return list(range(9, -1, -1))
     return offsets
+
+
+def _condition_cell_value(cell: Any, key: str) -> str:
+    value = getattr(cell, "value", None)
+    if value is None:
+        return ""
+    if (
+        key in {"percent_filter_min", "percent_filter_max", "trend_min", "trend_max"}
+        and isinstance(value, (int, float))
+        and "%" in str(getattr(cell, "number_format", ""))
+    ):
+        # Excel stores 500% as numeric 5.0 when the cell uses percent formatting.
+        return f"{EXCEL_PERCENT_RATIO_PREFIX}{value}"
+    return str(value).strip()
+
+
+def _parse_percent_threshold(value: str | None) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith(EXCEL_PERCENT_RATIO_PREFIX):
+        return float(text.removeprefix(EXCEL_PERCENT_RATIO_PREFIX))
+    has_percent_sign = "%" in text or "％" in text
+    normalized = text.replace("%", "").replace("％", "").replace(",", "").strip()
+    if not normalized:
+        return None
+    threshold = float(normalized)
+    if has_percent_sign or abs(threshold) > 1:
+        threshold /= 100
+    return threshold
 
 
 def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondition:
@@ -481,16 +569,17 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
 
     ws = workbook[CONDITION_SHEET]
     raw: dict[str, str] = {}
-    for row in ws.iter_rows(values_only=True):
-        cells = ["" if cell is None else str(cell).strip() for cell in row]
-        for idx, cell in enumerate(cells):
-            key = CONDITION_KEYS.get(_normalize_text(cell))
+    for row in ws.iter_rows():
+        cell_texts = ["" if cell.value is None else str(cell.value).strip() for cell in row]
+        for idx, cell_text in enumerate(cell_texts):
+            key = CONDITION_KEYS.get(_normalize_text(cell_text))
             if key is None:
                 continue
             value = ""
-            for candidate in cells[idx + 1 :]:
-                if candidate:
-                    value = candidate
+            for candidate in row[idx + 1 :]:
+                candidate_value = _condition_cell_value(candidate, key)
+                if candidate_value:
+                    value = candidate_value
                     break
             raw[key] = value
 
@@ -502,6 +591,10 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
 
     period_offsets = _parse_periods(raw.get("periods"))
     trend_period_offsets = _parse_periods(raw.get("trend_periods")) if raw.get("trend_periods") else period_offsets
+    trend_min = _parse_percent_threshold(raw.get("trend_min"))
+    trend_max = _parse_percent_threshold(raw.get("trend_max"))
+    percent_filter_min = _parse_percent_threshold(raw.get("percent_filter_min"))
+    percent_filter_max = _parse_percent_threshold(raw.get("percent_filter_max"))
 
     return MetricExcelCondition(
         industries=_split_industries(raw.get("industries")),
@@ -512,6 +605,11 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
         trend=trend,
         trend_metric_labels=_split_multi(raw.get("trend_metrics")),
         trend_period_offsets=trend_period_offsets,
+        trend_min=trend_min,
+        trend_max=trend_max,
+        percent_filter_metric_labels=_split_multi(raw.get("percent_filter_metrics")),
+        percent_filter_min=percent_filter_min,
+        percent_filter_max=percent_filter_max,
         raw_values=raw,
     )
 
@@ -718,11 +816,40 @@ def _fetch_metric_values(
 
 
 def _scale_value(metric_base: str, value: float | None) -> float | None:
+    return _scale_value_for_document_unit(metric_base, value, "")
+
+
+def _scale_value_for_document_unit(
+    metric_base: str,
+    value: float | None,
+    document_display_unit: str | None,
+) -> float | None:
     if value is None:
         return None
     if metric_base in MONETARY_BASES:
-        return value / 1_000_000
+        display_unit = str(document_display_unit or "").strip()
+        if display_unit == "千円":
+            return value / 1_000
+        if display_unit == "百万円":
+            return value / 1_000_000
     return value
+
+
+def _display_unit_for_metric(metric_base: str, document_display_unit: str | None) -> str:
+    if metric_base in MONETARY_BASES:
+        display_unit = str(document_display_unit or "").strip()
+        if display_unit in {"百万円", "千円"}:
+            return display_unit
+        return "円"
+    if metric_base == "OutstandingShares":
+        return "株"
+    if metric_base in GROWTH_RATIO_BASES or metric_base in PERCENT_VALUE_BASES:
+        return "%"
+    if metric_base in RATIO_VALUE_BASES:
+        return "倍"
+    if metric_base in PER_SHARE_BASES or metric_base in ONE_DECIMAL_VALUE_BASES or metric_base in INTEGER_VALUE_BASES:
+        return "円"
+    return ""
 
 
 def _passes_trend(values: list[float | None], direction: str) -> bool:
@@ -734,6 +861,51 @@ def _passes_trend(values: list[float | None], direction: str) -> bool:
     if direction == "increase":
         return all(float(left) < float(right) for left, right in pairs)
     return all(float(left) > float(right) for left, right in pairs)
+
+
+def _passes_value_thresholds(
+    values: list[float | None],
+    *,
+    min_value: float | None,
+    max_value: float | None,
+) -> bool:
+    if min_value is None and max_value is None:
+        return True
+    if not values or any(value is None for value in values):
+        return False
+    for value in values:
+        numeric_value = float(value)
+        if min_value is not None and numeric_value < min_value:
+            return False
+        if max_value is not None and numeric_value > max_value:
+            return False
+    return True
+
+
+def _passes_percent_filters(
+    *,
+    filter_bases: list[str],
+    by_offset: dict[int, sqlite3.Row],
+    metric_values: dict[tuple[str, str], float | None],
+    min_value: float | None,
+    max_value: float | None,
+) -> bool:
+    if not filter_bases or (min_value is None and max_value is None):
+        return True
+    current = by_offset.get(0)
+    if current is None:
+        return False
+    doc_id = str(current["doc_id"])
+    for base in filter_bases:
+        value = metric_values.get((doc_id, _metric_key(base)))
+        if value is None:
+            return False
+        numeric_value = float(value)
+        if min_value is not None and numeric_value < min_value:
+            return False
+        if max_value is not None and numeric_value > max_value:
+            return False
+    return True
 
 
 def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: int) -> list[dict[str, Any]]:
@@ -785,7 +957,8 @@ def build_metric_excel_rows(
             if ratio_base:
                 selected_value_bases.add(ratio_base)
 
-    if condition.trend != "none":
+    has_trend_threshold = condition.trend_min is not None or condition.trend_max is not None
+    if condition.trend != "none" or has_trend_threshold:
         trend_labels = condition.trend_metric_labels or condition.metric_labels
         if trend_labels:
             for sheet in SHEET_ORDER:
@@ -794,6 +967,13 @@ def build_metric_excel_rows(
         else:
             for bases in selected_row_bases_by_sheet.values():
                 selected_value_bases.update(bases)
+
+    percent_filter_bases_by_sheet: dict[str, list[str]] = {sheet: [] for sheet in SHEET_ORDER}
+    if condition.percent_filter_metric_labels:
+        for sheet in SHEET_ORDER:
+            bases = _resolve_value_bases(sheet, condition.percent_filter_metric_labels, errors)
+            percent_filter_bases_by_sheet[sheet] = bases
+            selected_value_bases.update(bases)
 
     doc_ids = [str(row["doc_id"]) for row in filings]
     metric_values = _fetch_metric_values(
@@ -812,7 +992,16 @@ def build_metric_excel_rows(
         sheet_name = _sheet_name_for_industry(current["industry_33"])
         row_bases = selected_row_bases_by_sheet[sheet_name]
 
-        if condition.trend != "none":
+        if not _passes_percent_filters(
+            filter_bases=percent_filter_bases_by_sheet.get(sheet_name, []),
+            by_offset=by_offset,
+            metric_values=metric_values,
+            min_value=condition.percent_filter_min,
+            max_value=condition.percent_filter_max,
+        ):
+            continue
+
+        if condition.trend != "none" or has_trend_threshold:
             trend_labels = condition.trend_metric_labels or condition.metric_labels
             trend_bases = (
                 _resolve_value_bases(sheet_name, trend_labels, errors)
@@ -831,24 +1020,49 @@ def build_metric_excel_rows(
                 if not _passes_trend(trend_values, condition.trend):
                     trend_ok = False
                     break
+                if not _passes_value_thresholds(
+                    trend_values,
+                    min_value=condition.trend_min,
+                    max_value=condition.trend_max,
+                ):
+                    trend_ok = False
+                    break
             if not trend_ok:
                 continue
 
         security_code = _normalize_security_code(current["issuer_security_code"] or current["security_code"] or "")
         for base in row_bases:
             values_by_offset: dict[int, float | None] = {}
+            units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
             ratio_base = ABSORBED_RATIO_BASE_BY_ROW_BASE.get(base)
+            allowed_offsets = SPARSE_PERIOD_OFFSETS_BY_BASE.get(base)
             for offset in condition.period_offsets:
+                if allowed_offsets is not None and offset not in allowed_offsets:
+                    values_by_offset[offset] = None
+                    units_by_offset[offset] = ""
+                    ratios_by_offset[offset] = None
+                    continue
+
                 filing = by_offset.get(offset)
                 if filing is None:
                     values_by_offset[offset] = None
+                    units_by_offset[offset] = ""
                     ratios_by_offset[offset] = None
                     continue
 
                 doc_id = str(filing["doc_id"])
                 raw_value = metric_values.get((doc_id, _metric_key(base)))
-                values_by_offset[offset] = _scale_value(base, raw_value)
+                values_by_offset[offset] = _scale_value_for_document_unit(
+                    base,
+                    raw_value,
+                    str(filing["document_display_unit"] or ""),
+                )
+                units_by_offset[offset] = (
+                    _display_unit_for_metric(base, str(filing["document_display_unit"] or ""))
+                    if raw_value is not None
+                    else ""
+                )
 
                 if base in CONSTANT_RATIO_BY_ROW_BASE:
                     ratios_by_offset[offset] = CONSTANT_RATIO_BY_ROW_BASE[base]
@@ -867,6 +1081,7 @@ def build_metric_excel_rows(
                     metric_base=base,
                     metric_label=_metric_label_for_excel(base, current["industry_33"]),
                     values_by_offset=values_by_offset,
+                    units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                 )
             )
@@ -903,6 +1118,28 @@ def _write_summary_sheet(
             ", ".join(PERIOD_LABEL_BY_OFFSET[offset] for offset in condition.period_offsets),
         ),
         ("trend", condition.trend),
+        (
+            "trend_min",
+            "" if condition.trend_min is None else condition.trend_min,
+        ),
+        (
+            "trend_max",
+            "" if condition.trend_max is None else condition.trend_max,
+        ),
+        (
+            "percent_filter_metrics",
+            ", ".join(condition.percent_filter_metric_labels)
+            if condition.percent_filter_metric_labels
+            else "",
+        ),
+        (
+            "percent_filter_min",
+            "" if condition.percent_filter_min is None else condition.percent_filter_min,
+        ),
+        (
+            "percent_filter_max",
+            "" if condition.percent_filter_max is None else condition.percent_filter_max,
+        ),
     ]
     for row in rows:
         ws.append(row)
@@ -945,7 +1182,7 @@ def _write_metric_sheet(
     headers = ["証券コード", "企業名", "業種", "期末年月日_当期", "指標"]
     for offset in period_offsets:
         label = PERIOD_LABEL_BY_OFFSET[offset]
-        headers.extend([f"{label}_数値", f"{label}_比率"])
+        headers.extend([f"{label}_数値", f"{label}_単位", f"{label}_比率"])
     ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="D9EAF7")
@@ -962,12 +1199,18 @@ def _write_metric_sheet(
             row.metric_label,
         ]
         for offset in period_offsets:
-            values.extend([row.values_by_offset.get(offset), row.ratios_by_offset.get(offset)])
+            values.extend(
+                [
+                    row.values_by_offset.get(offset),
+                    row.units_by_offset.get(offset, ""),
+                    row.ratios_by_offset.get(offset),
+                ]
+            )
         ws.append(values)
         current_row = ws.max_row
         for idx, offset in enumerate(period_offsets):
-            value_col = 6 + idx * 2
-            ratio_col = value_col + 1
+            value_col = 6 + idx * 3
+            ratio_col = value_col + 2
             _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
             ws.cell(current_row, ratio_col).number_format = "0.0%"
 
