@@ -37,6 +37,7 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(metric_base_to_display_name("NetSalesGrowthRate"), "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387")
         self.assertEqual(metric_base_to_display_name("OrdinaryIncomeGrowthRate"), "\u7d4c\u5e38\u5229\u76ca\u5897\u76ca\u7387")
         self.assertEqual(metric_base_to_display_name("CashBalanceGrowthRate"), "\u73fe\u91d1\u6b8b\u9ad8\u5897\u52a0\u7387")
+        self.assertEqual(metric_base_to_display_name("HalfNetSalesProgressRate"), "\u534a\u671f \u58f2\u4e0a\u9ad8\u9032\u6357\u7387")
         self.assertEqual(metric_base_to_display_name("NetSalesGrowthRate5Year"), "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387(\uff15\u5e74)")
         self.assertEqual(metric_base_to_display_name("OrdinaryIncomeGrowthRate10Year"), "\u7d4c\u5e38\u5229\u76ca\u5897\u76ca\u7387(10\u5e74)")
         self.assertEqual(metric_base_to_display_name("OutstandingSharesGrowthRate"), "\u767a\u884c\u682a\u6570\u5897\u52a0\u7387")

@@ -462,6 +462,130 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             ["NetSales", "CostOfSales", "NetAssets", "OutstandingShares", "EPS"],
         )
 
+    def test_build_rows_separates_annual_and_half_when_period_scope_all(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', '043A00',
+                      '2026-09-30', '2026-11-14 12:00', 0, '0', '1',
+                      'Japan GAAP', '逋ｾ荳・・', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', 'NetSalesCurrent',
+                      2026, '2026-09-30', 55.0, 'tag',
+                      'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.commit()
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
+                ("\u671f\u9593", "1\u5e74\u524d-\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "ALL"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        self.assertEqual([row.period_scope for row in rows], ["annual", "half"])
+        self.assertEqual(
+            [row.metric_label for row in rows],
+            ["\u58f2\u4e0a\u9ad8", "\u534a\u671f \u58f2\u4e0a\u9ad8"],
+        )
+        self.assertEqual(
+            [row.periods_by_offset[0] for row in rows],
+            ["", "\u534a\u671f 2026-09"],
+        )
+        self.assertEqual(
+            [row.periods_by_offset[1] for row in rows],
+            ["\u901a\u671f 2026-03", ""],
+        )
+        self.assertEqual([row.values_by_offset[0] for row in rows], [None, 55.0])
+        self.assertEqual([row.values_by_offset[1] for row in rows], [100.0, None])
+
+    def test_build_rows_buckets_half_with_corresponding_annual_period(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES (?, 'E00001', '11110', '043A00', ?, ?, 0, '0', '1',
+                      'Japan GAAP', '逋ｾ荳・・', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("E00001_HALF_0", "2025-09-30", "2025-11-14 12:00"),
+                ("E00001_HALF_1", "2024-09-30", "2024-11-14 12:00"),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES (?, 'E00001', '11110', 'NetSalesCurrent',
+                      ?, ?, ?, 'tag', 'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("E00001_HALF_0", 2025, "2025-09-30", 55.0),
+                ("E00001_HALF_1", 2024, "2024-09-30", 44.0),
+            ],
+        )
+        self.conn.commit()
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
+                ("\u671f\u9593", "\u524d\u671f-\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "ALL"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        self.assertEqual([row.period_scope for row in rows], ["annual", "half"])
+        self.assertEqual(
+            [row.periods_by_offset[0] for row in rows],
+            ["\u901a\u671f 2026-03", "\u534a\u671f 2025-09"],
+        )
+        self.assertEqual(
+            [row.periods_by_offset[1] for row in rows],
+            ["\u901a\u671f 2025-03", "\u534a\u671f 2024-09"],
+        )
+        self.assertEqual([row.values_by_offset[0] for row in rows], [100.0, 55.0])
+        self.assertEqual([row.values_by_offset[1] for row in rows], [80.0, 44.0])
+
     def test_build_rows_uses_industry_specific_labels_and_order(self) -> None:
         cases = [
             (
@@ -590,11 +714,13 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["E2"].value, "├売上原価")
-        self.assertEqual(ws["F2"].value, 60.0)
-        self.assertEqual(ws["G2"].value, "百万円")
-        self.assertEqual(ws["H2"].value, 0.6)
-        self.assertEqual(ws["H2"].number_format, "0.0%")
+        self.assertEqual(ws["D2"].value, "通期")
+        self.assertEqual(ws["F2"].value, "├売上原価")
+        self.assertEqual(ws["G2"].value, "通期 2026-03")
+        self.assertEqual(ws["H2"].value, 60.0)
+        self.assertEqual(ws["I2"].value, "百万円")
+        self.assertEqual(ws["J2"].value, 0.6)
+        self.assertEqual(ws["J2"].number_format, "0.0%")
 
     def test_export_metric_excel_formats_growth_rates_as_percent(self) -> None:
         self.conn.execute(
@@ -634,10 +760,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["E2"].value, "売上高増収率")
-        self.assertEqual(ws["F2"].value, 1.25)
-        self.assertEqual(ws["G2"].value, "%")
-        self.assertEqual(ws["F2"].number_format, "0.0%")
+        self.assertEqual(ws["F2"].value, "売上高増収率")
+        self.assertEqual(ws["G2"].value, "通期 2026-03")
+        self.assertEqual(ws["H2"].value, 1.25)
+        self.assertEqual(ws["I2"].value, "%")
+        self.assertEqual(ws["H2"].number_format, "0.0%")
 
     def test_percent_filter_keeps_matching_companies(self) -> None:
         self.conn.executemany(
@@ -726,7 +853,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         formats_by_label = {
-            ws.cell(row=row_index, column=5).value: ws.cell(row=row_index, column=6).number_format
+            ws.cell(row=row_index, column=6).value: ws.cell(row=row_index, column=8).number_format
             for row_index in range(2, ws.max_row + 1)
         }
         self.assertEqual(formats_by_label["EPS"], "#,##0.0")

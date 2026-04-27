@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from edinet_monitor.config.settings import DEFAULT_RULE_VERSION
+from edinet_monitor.services.collector.document_filter_service import is_half_form_type
 from edinet_monitor.services.normalizer.structure_classifier import classify_structure
 from edinet_pipeline.domain.tag_alias import normalize_tag_to_metric
 from edinet_pipeline.services.linkbase_analyzer import analyze_linkbase_structure
@@ -27,6 +28,12 @@ TARGET_CONTEXT_SUFFIXES = {
 MAX_PERIOD_FALLBACK_OFFSET = 4
 CANDIDATE_VALIDATION_STATUS_OK = "OK"
 CANDIDATE_VALIDATION_STATUS_EXCLUDE = "EXCLUDE"
+
+
+def _period_scope_from_form_type(form_type: str | None) -> str:
+    if is_half_form_type(form_type):
+        return "half"
+    return "annual"
 
 
 def _to_number(value_text: str | None) -> float | None:
@@ -82,12 +89,14 @@ def _suffix_from_period_offset(offset: int) -> str | None:
     return None
 
 
-def _is_full_year_duration(period_start: Any, period_end: Any) -> bool:
+def _is_expected_duration(period_start: Any, period_end: Any, *, period_scope: str) -> bool:
     start = _parse_iso_date(period_start)
     end = _parse_iso_date(period_end)
     if not start or not end or start >= end:
         return False
     days = (end - start).days + 1
+    if period_scope == "half":
+        return 120 <= days <= 220
     return 300 <= days <= 400
 
 
@@ -95,11 +104,12 @@ def _infer_suffix_and_period_kind_from_dates(
     row: dict[str, Any],
     *,
     filing_period_end: str | None,
+    period_scope: str = "annual",
 ) -> tuple[str, str] | None:
     period_type = str(row.get("period_type") or "").strip().lower()
     if period_type == "duration":
         period_end = row.get("period_end")
-        if not _is_full_year_duration(row.get("period_start"), period_end):
+        if not _is_expected_duration(row.get("period_start"), period_end, period_scope=period_scope):
             return None
         offset = _period_offset_from_filing_end(filing_period_end, period_end)
     elif period_type == "instant":
@@ -116,6 +126,29 @@ def _infer_suffix_and_period_kind_from_dates(
     if not suffix:
         return None
     return suffix, period_type
+
+
+def _half_suffix_from_dates(
+    row: dict[str, Any],
+    *,
+    filing_period_end: str | None,
+    expected_period_type: str,
+) -> str | None:
+    period_type = str(row.get("period_type") or "").strip().lower()
+    if period_type != expected_period_type:
+        return None
+    if period_type == "duration":
+        if not _is_expected_duration(row.get("period_start"), row.get("period_end"), period_scope="half"):
+            return None
+        target_date = row.get("period_end")
+    elif period_type == "instant":
+        target_date = row.get("instant_date") or row.get("period_end")
+    else:
+        return None
+    offset = _period_offset_from_filing_end(filing_period_end, target_date)
+    if offset is None:
+        return None
+    return _suffix_from_period_offset(offset)
 
 
 def _infer_filing_period_end(raw_rows: list[dict[str, Any]]) -> str | None:
@@ -522,6 +555,7 @@ def normalize_raw_fact_row(
     industry_33: str | None = None,
     structure_map: dict[str, dict[str, Any]] | None = None,
     filing_period_end: str | None = None,
+    form_type: str | None = None,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
 ) -> dict[str, Any] | None:
@@ -532,17 +566,30 @@ def normalize_raw_fact_row(
 
     context_ref = str(row.get("context_ref") or "")
     suffix_info = _get_suffix_and_period_kind(context_ref)
+    period_scope = _period_scope_from_form_type(form_type)
     period_source = "context_ref"
     if not suffix_info and enable_period_fallback:
         suffix_info = _infer_suffix_and_period_kind_from_dates(
             row,
             filing_period_end=filing_period_end,
+            period_scope=period_scope,
         )
         period_source = "period_fallback" if suffix_info else ""
     if not suffix_info:
         return None
 
     suffix, expected_period_type = suffix_info
+    if period_scope == "half":
+        half_suffix = _half_suffix_from_dates(
+            row,
+            filing_period_end=filing_period_end,
+            expected_period_type=expected_period_type,
+        )
+        if not half_suffix:
+            return None
+        if half_suffix != suffix:
+            suffix = half_suffix
+            period_source = "half_period_dates"
     period_type = str(row.get("period_type") or "")
     if period_type != expected_period_type:
         return None
@@ -666,6 +713,7 @@ def build_normalization_candidates(
     xbrl_path: str | None = None,
     zip_path: str | None = None,
     filing_period_end: str | None = None,
+    form_type: str | None = None,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
 ) -> list[dict[str, Any]]:
@@ -687,6 +735,7 @@ def build_normalization_candidates(
             industry_33=industry_33,
             structure_map=structure_map,
             filing_period_end=effective_filing_period_end,
+            form_type=form_type,
             enable_period_fallback=enable_period_fallback,
             enforce_candidate_validation=False,
         )
@@ -786,6 +835,7 @@ def normalize_raw_fact_rows(
     xbrl_path: str | None = None,
     zip_path: str | None = None,
     filing_period_end: str | None = None,
+    form_type: str | None = None,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
 ) -> list[dict[str, Any]]:
@@ -797,6 +847,7 @@ def normalize_raw_fact_rows(
         xbrl_path=xbrl_path,
         zip_path=zip_path,
         filing_period_end=filing_period_end,
+        form_type=form_type,
         enable_period_fallback=enable_period_fallback,
         enforce_candidate_validation=enforce_candidate_validation,
     )

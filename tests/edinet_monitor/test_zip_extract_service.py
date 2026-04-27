@@ -15,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.services.storage.zip_extract_service import (  # noqa: E402
     choose_preferred_xbrl_member,
+    extract_period_end_from_xbrl_member_name,
     extract_first_xbrl,
     extract_preferred_xbrl,
 )
@@ -42,6 +43,26 @@ class ZipExtractServiceTest(unittest.TestCase):
             selected,
             "XBRL/PublicDoc/jpcrp030000-asr-001_E00001-000_2026-03-31_01_2026-06-28.xbrl",
         )
+
+    def test_choose_preferred_xbrl_member_prefers_half_report_when_form_type_is_half(self) -> None:
+        members = [
+            "XBRL/PublicDoc/jpcrp030000-asr-001_E00001-000_2026-03-31_01_2026-06-28.xbrl",
+            "XBRL/PublicDoc/jpcrp040300-q2r-001_E00001-000_2026-09-30_01_2026-11-14.xbrl",
+        ]
+
+        selected = choose_preferred_xbrl_member(members, form_type="043A00")
+
+        self.assertEqual(
+            selected,
+            "XBRL/PublicDoc/jpcrp040300-q2r-001_E00001-000_2026-09-30_01_2026-11-14.xbrl",
+        )
+
+    def test_extract_period_end_from_xbrl_member_name_reads_half_period_end(self) -> None:
+        period_end = extract_period_end_from_xbrl_member_name(
+            "XBRL/PublicDoc/jpcrp040300-q2r-001_E00001-000_2026-09-30_01_2026-11-14.xbrl"
+        )
+
+        self.assertEqual(period_end, "2026-09-30")
 
     def test_extract_preferred_xbrl_returns_member_name_and_writes_selected_content(self) -> None:
         tmpdir = make_tempdir()

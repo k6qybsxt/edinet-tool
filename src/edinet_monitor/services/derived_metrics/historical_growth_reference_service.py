@@ -4,6 +4,8 @@ import sqlite3
 from datetime import date
 from typing import Any
 
+from edinet_monitor.services.collector.document_filter_service import is_half_form_type
+
 
 HISTORICAL_GROWTH_OFFSETS = (9,)
 HISTORICAL_NORMALIZED_METRIC_KEYS = {
@@ -17,6 +19,11 @@ HISTORICAL_DERIVED_METRIC_KEYS = {
 OUTSTANDING_SHARES_COMPONENT_KEYS = {
     "IssuedSharesCurrent",
     "TreasurySharesCurrent",
+}
+HALF_PROGRESS_ANNUAL_METRIC_KEYS = {
+    "NetSales": "NetSalesCurrent",
+    "OrdinaryIncome": "OrdinaryIncomeCurrent",
+    "ProfitLoss": "ProfitLossCurrent",
 }
 
 
@@ -60,13 +67,14 @@ def fetch_historical_growth_values(
     *,
     offsets: tuple[int, ...] = HISTORICAL_GROWTH_OFFSETS,
 ) -> dict[str, dict[int, dict[str, Any]]]:
-    """Fetch same-issuer annual current values used as long-term growth bases."""
+    """Fetch same-issuer current values used as long-term growth bases."""
 
     edinet_code = str(filing.get("edinet_code") or "").strip()
     current_period_end = _parse_date(filing.get("period_end"))
     if not edinet_code or not current_period_end:
         return {}
     conn.row_factory = sqlite3.Row
+    reference_form_type = "043A00" if is_half_form_type(filing.get("form_type")) else "030000"
 
     target_period_ends = {
         offset: _shift_year(current_period_end, offset).isoformat()
@@ -102,11 +110,11 @@ def fetch_historical_growth_values(
         INNER JOIN normalized_metrics nm
             ON nm.doc_id = f.doc_id
         WHERE f.edinet_code = ?
-          AND f.form_type = '030000'
+          AND f.form_type = ?
           AND f.period_end IN ({period_placeholders})
           AND nm.metric_key IN ({metric_placeholders})
         """,
-        (edinet_code, *period_params, *normalized_keys),
+        (edinet_code, reference_form_type, *period_params, *normalized_keys),
     ).fetchall()
     metric_key_to_base = {
         metric_key: metric_base
@@ -143,11 +151,11 @@ def fetch_historical_growth_values(
         INNER JOIN derived_metrics dm
             ON dm.doc_id = f.doc_id
         WHERE f.edinet_code = ?
-          AND f.form_type = '030000'
+          AND f.form_type = ?
           AND f.period_end IN ({period_placeholders})
           AND dm.metric_key IN ({derived_placeholders})
         """,
-        (edinet_code, *period_params, *derived_keys),
+        (edinet_code, reference_form_type, *period_params, *derived_keys),
     ).fetchall()
     derived_key_to_base = {
         metric_key: metric_base
@@ -187,11 +195,11 @@ def fetch_historical_growth_values(
         INNER JOIN normalized_metrics nm
             ON nm.doc_id = f.doc_id
         WHERE f.edinet_code = ?
-          AND f.form_type = '030000'
+          AND f.form_type = ?
           AND f.period_end IN ({period_placeholders})
           AND nm.metric_key IN ({share_placeholders})
         """,
-        (edinet_code, *period_params, *share_keys),
+        (edinet_code, reference_form_type, *period_params, *share_keys),
     ).fetchall()
     share_components: dict[tuple[int, str], dict[str, Any]] = {}
     for row in share_rows:
@@ -229,3 +237,65 @@ def fetch_historical_growth_values(
         }
 
     return {metric_base: values for metric_base, values in result.items() if values}
+
+
+def fetch_half_progress_annual_values(
+    conn: sqlite3.Connection,
+    filing: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Fetch the annual filing that corresponds to a half-year filing."""
+
+    if not is_half_form_type(filing.get("form_type")):
+        return {}
+
+    edinet_code = str(filing.get("edinet_code") or "").strip()
+    half_period_end = _parse_date(filing.get("period_end"))
+    if not edinet_code or not half_period_end:
+        return {}
+
+    conn.row_factory = sqlite3.Row
+    annual_doc = conn.execute(
+        """
+        SELECT doc_id, period_end
+        FROM filings
+        WHERE edinet_code = ?
+          AND form_type = '030000'
+          AND COALESCE(period_end, '') > ?
+          AND date(period_end) <= date(?, '+9 months')
+        ORDER BY period_end ASC, COALESCE(submit_date, '') ASC, doc_id ASC
+        LIMIT 1
+        """,
+        (edinet_code, half_period_end.isoformat(), half_period_end.isoformat()),
+    ).fetchone()
+    if not annual_doc:
+        return {}
+
+    metric_keys = tuple(HALF_PROGRESS_ANNUAL_METRIC_KEYS.values())
+    placeholders = ",".join("?" for _ in metric_keys)
+    rows = conn.execute(
+        f"""
+        SELECT metric_key, value_num, consolidation
+        FROM normalized_metrics
+        WHERE doc_id = ?
+          AND metric_key IN ({placeholders})
+        """,
+        (annual_doc["doc_id"], *metric_keys),
+    ).fetchall()
+
+    key_to_base = {
+        metric_key: metric_base
+        for metric_base, metric_key in HALF_PROGRESS_ANNUAL_METRIC_KEYS.items()
+    }
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        metric_base = key_to_base.get(str(row["metric_key"] or ""))
+        if not metric_base:
+            continue
+        out[metric_base] = {
+            "doc_id": annual_doc["doc_id"],
+            "metric_key": row["metric_key"],
+            "period_end": annual_doc["period_end"],
+            "consolidation": row["consolidation"],
+            "value_num": _to_float(row["value_num"]),
+        }
+    return out

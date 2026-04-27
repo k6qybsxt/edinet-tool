@@ -11,6 +11,10 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_raw_facts_saved,
     update_filing_parse_metadata,
 )
+from edinet_monitor.services.collector.document_filter_service import (
+    is_half_form_type,
+    normalize_form_codes,
+)
 from edinet_monitor.services.parser.raw_fact_mapper import to_raw_fact_rows
 from edinet_monitor.services.parser.raw_fact_store_service import (
     delete_raw_facts_by_doc_id,
@@ -19,10 +23,20 @@ from edinet_monitor.services.parser.raw_fact_store_service import (
 from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 
 
-def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[str, Any]:
+def _parse_mode_for_form_type(form_type: str) -> str:
+    return "half" if is_half_form_type(form_type) else "full"
+
+
+def run_save_raw_facts(
+    *,
+    batch_size: int = 20,
+    run_all: bool = False,
+    form_codes: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     create_tables()
 
     conn = get_connection()
+    target_form_codes = normalize_form_codes(form_codes)
     total_target = 0
     total_saved_docs = 0
     total_saved_rows = 0
@@ -31,7 +45,7 @@ def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[s
 
     try:
         while True:
-            rows = fetch_xbrl_ready_filings(conn, limit=batch_size)
+            rows = fetch_xbrl_ready_filings(conn, limit=batch_size, form_codes=target_form_codes)
             print(f"xbrl_ready_rows={len(rows)}")
 
             if not rows:
@@ -42,6 +56,7 @@ def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[s
 
             for row in rows:
                 doc_id = row["doc_id"]
+                form_type = str(row["form_type"] or "")
                 xbrl_path = Path(row["xbrl_path"])
                 xbrl_member_name = str(row["xbrl_member_name"] or "")
 
@@ -49,7 +64,7 @@ def run_save_raw_facts(*, batch_size: int = 20, run_all: bool = False) -> dict[s
                 print(f"[DEBUG] xbrl_path={xbrl_path}")
 
                 try:
-                    parsed = parse_xbrl_to_raw(xbrl_path)
+                    parsed = parse_xbrl_to_raw(xbrl_path, mode=_parse_mode_for_form_type(form_type))
                     raw_rows = to_raw_fact_rows(
                         doc_id,
                         parsed,
@@ -105,6 +120,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--run-all", action="store_true")
+    parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
     return parser
 
 
@@ -113,6 +129,7 @@ def main() -> None:
     run_save_raw_facts(
         batch_size=args.batch_size,
         run_all=args.run_all,
+        form_codes=normalize_form_codes(args.form_codes or None),
     )
 
 

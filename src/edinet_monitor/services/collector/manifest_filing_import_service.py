@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from edinet_monitor.services.collector.document_row_mapper import normalize_security_code, now_text
-from edinet_monitor.services.storage.manifest_service import build_manifest_path, read_manifest_rows
+from edinet_monitor.services.storage.manifest_service import (
+    build_manifest_path,
+    read_manifest_rows,
+    sanitize_manifest_name,
+)
 from edinet_monitor.services.storage.path_service import build_xbrl_save_path
 
 
@@ -30,12 +34,17 @@ def resolve_manifest_paths(
     manifest_root: Path,
     manifest_name: str = "",
     manifest_path: str | Path = "",
+    manifest_prefix: str = "",
 ) -> list[Path]:
     if manifest_path:
         return [Path(manifest_path)]
 
     if manifest_name:
         return [build_manifest_path(manifest_name)]
+
+    if manifest_prefix:
+        prefix = sanitize_manifest_name(manifest_prefix)
+        return sorted(path for path in Path(manifest_root).glob(f"{prefix}*.jsonl") if path.is_file())
 
     return sorted(path for path in Path(manifest_root).glob("*.jsonl") if path.is_file())
 

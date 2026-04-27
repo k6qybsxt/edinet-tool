@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from edinet_monitor.config.settings import DEFAULT_DERIVED_METRICS_RULE_VERSION
+from edinet_monitor.services.collector.document_filter_service import is_half_form_type
 
 
 ANNUAL_FORM_TYPES = {"030000"}
-HALF_FORM_TYPES = {"043000"}
+HALF_FORM_TYPES = {"043A00"}
 SUFFIX_TO_PERIOD_OFFSET = {
     "Current": 0,
     "Prior1": 1,
@@ -96,7 +97,7 @@ def infer_period_scope(form_type: str) -> str | None:
     text = str(form_type or "").strip()
     if text in ANNUAL_FORM_TYPES:
         return "annual"
-    if text in HALF_FORM_TYPES:
+    if is_half_form_type(text):
         return "half"
     return None
 
@@ -249,6 +250,43 @@ def _beginning_cash_balance_input(
         "reference_keys": [source_key],
         "display_formula": "cash_and_cash_equivalents_at_beginning_of_period",
         "stored_formula": "cash_and_cash_equivalents_prior_instant",
+    }
+
+
+def _half_progress_input(
+    metric_rows: dict[str, dict[str, Any]],
+    suffix: str,
+    *,
+    half_metric_base: str,
+    annual_metric_base: str,
+    half_progress_annual_values: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    half_input = _single_metric_input(metric_rows, half_metric_base, suffix)
+    annual_key = f"Annual{annual_metric_base}Current"
+    annual_value = None
+    annual_detail = half_progress_annual_values.get(annual_metric_base) or {}
+    if suffix == "Current":
+        annual_value = annual_detail.get("value_num")
+    value_num, calc_status = _ratio_status(
+        numerator=half_input["value_num"],
+        denominator=annual_value,
+        require_positive_denominator=False,
+    )
+    return {
+        "value_num": value_num,
+        "calc_status": calc_status,
+        "detail_inputs": {
+            **half_input["detail_inputs"],
+            annual_key: annual_value,
+        },
+        "reference_keys": half_input["reference_keys"],
+        "detail_extra": {
+            "annual_doc_id": annual_detail.get("doc_id"),
+            "annual_metric_key": annual_detail.get("metric_key"),
+            "annual_period_end": annual_detail.get("period_end"),
+        },
+        "display_formula": "half_value / annual_value * 100",
+        "stored_formula": "half_value / annual_value",
     }
 
 
@@ -1489,6 +1527,7 @@ def calculate_derived_metrics(
     document_display_unit: str = "",
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
     historical_growth_values: dict[str, dict[int, dict[str, Any]]] | None = None,
+    half_progress_annual_values: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if not normalized_rows:
         return []
@@ -1500,6 +1539,7 @@ def calculate_derived_metrics(
     sample_row = dict(normalized_rows[0])
     sample_row["period_scope"] = period_scope
     metric_rows = _metric_map(normalized_rows)
+    half_progress_annual_values = half_progress_annual_values or {}
     out_rows: list[dict[str, Any]] = []
 
     def _single_metric(metric_base: str, suffix: str) -> dict[str, Any]:
@@ -1918,6 +1958,31 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
+    if period_scope == "half":
+        for derived_base, half_base, annual_base in [
+            ("HalfNetSalesProgressRate", "NetSales", "NetSales"),
+            ("HalfOrdinaryIncomeProgressRate", "OrdinaryIncome", "OrdinaryIncome"),
+            ("HalfProfitProgressRate", "ProfitLoss", "ProfitLoss"),
+        ]:
+            _append_rows_from_inputs(
+                out_rows,
+                metric_rows=metric_rows,
+                sample_row=sample_row,
+                derived_metric_base=derived_base,
+                metric_group="progress",
+                formula_name="half_progress_rate",
+                value_unit="ratio",
+                input_builder=lambda rows, suffix, half_base=half_base, annual_base=annual_base: _half_progress_input(
+                    rows,
+                    suffix,
+                    half_metric_base=half_base,
+                    annual_metric_base=annual_base,
+                    half_progress_annual_values=half_progress_annual_values,
+                ),
+                accounting_standard=accounting_standard,
+                document_display_unit=document_display_unit,
+                rule_version=rule_version,
+            )
     _append_growth_rows_from_inputs(
         out_rows,
         metric_rows=metric_rows,

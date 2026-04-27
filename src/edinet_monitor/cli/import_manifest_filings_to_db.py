@@ -22,21 +22,24 @@ def run_import_manifest_filings_to_db(
     *,
     manifest_name: str = "",
     manifest_path_text: str = "",
+    manifest_prefix: str = "",
     import_all_manifests: bool = False,
     import_issuer_master: bool = True,
     master_csv_path: Path | None = None,
     manifest_root: Path = MANIFEST_ROOT,
 ) -> dict[str, Any]:
-    if manifest_name and manifest_path_text:
-        raise ValueError("Use either manifest_name or manifest_path, not both.")
+    selected_sources = [bool(manifest_name), bool(manifest_path_text), bool(manifest_prefix)]
+    if sum(selected_sources) > 1:
+        raise ValueError("Use only one of manifest_name, manifest_path, or manifest_prefix.")
 
     create_tables()
 
     csv_path = Path(master_csv_path or TSE_LISTING_MASTER_CSV_PATH)
     manifest_paths = resolve_manifest_paths(
         manifest_root=manifest_root,
-        manifest_name="" if import_all_manifests else manifest_name,
-        manifest_path="" if import_all_manifests else manifest_path_text,
+        manifest_name="" if import_all_manifests and not manifest_prefix else manifest_name,
+        manifest_path="" if import_all_manifests and not manifest_prefix else manifest_path_text,
+        manifest_prefix=manifest_prefix,
     )
     if not manifest_paths:
         raise FileNotFoundError(f"No manifest files found under {manifest_root}")
@@ -112,6 +115,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional full path to one manifest JSONL.",
     )
     parser.add_argument(
+        "--manifest-prefix",
+        default=os.getenv("EDINET_MANIFEST_PREFIX_FILTER", "").strip(),
+        help="Import manifest JSONL files whose names start with this prefix.",
+    )
+    parser.add_argument(
         "--all-manifests",
         action="store_true",
         help="Import all manifest JSONL files under MANIFEST_ROOT.",
@@ -134,7 +142,9 @@ def main() -> None:
     run_import_manifest_filings_to_db(
         manifest_name=args.manifest_name,
         manifest_path_text=args.manifest_path,
-        import_all_manifests=args.all_manifests or (not args.manifest_name and not args.manifest_path),
+        manifest_prefix=args.manifest_prefix,
+        import_all_manifests=args.all_manifests
+        or (not args.manifest_name and not args.manifest_path and not args.manifest_prefix),
         import_issuer_master=not args.skip_issuer_master,
         master_csv_path=Path(args.master_csv_path) if args.master_csv_path else None,
     )

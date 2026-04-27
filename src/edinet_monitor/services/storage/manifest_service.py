@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from edinet_monitor.config.settings import MANIFEST_ROOT
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 
 
 def sanitize_manifest_name(manifest_name: str) -> str:
@@ -18,6 +19,19 @@ def sanitize_manifest_name(manifest_name: str) -> str:
 
 def build_manifest_path(manifest_name: str) -> Path:
     return MANIFEST_ROOT / f"{sanitize_manifest_name(manifest_name)}.jsonl"
+
+
+def resolve_manifest_prefix_for_form_codes(
+    manifest_prefix: str,
+    *,
+    form_codes: Iterable[str] | str | None,
+) -> str:
+    base_prefix = str(manifest_prefix or "document_manifest").strip() or "document_manifest"
+    target_form_codes = normalize_form_codes(form_codes)
+    if target_form_codes == normalize_form_codes(None):
+        return base_prefix
+    suffix = "_".join(target_form_codes)
+    return f"{base_prefix}_{suffix}"
 
 
 def read_manifest_rows(manifest_path: Path) -> list[dict[str, Any]]:

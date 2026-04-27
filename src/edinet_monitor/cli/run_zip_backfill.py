@@ -28,10 +28,12 @@ from edinet_monitor.config.settings import (
     ensure_data_dirs,
 )
 from edinet_monitor.services.collector.issuer_master_csv_service import load_allowed_edinet_codes
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.storage.raw_retention_service import cleanup_old_raw_storage
 from edinet_monitor.services.storage.manifest_service import (
     build_manifest_path,
     read_manifest_rows,
+    resolve_manifest_prefix_for_form_codes,
     summarize_manifest_rows,
 )
 
@@ -163,6 +165,37 @@ def append_backfill_chunk_log(chunk_log_path: Path, row: dict[str, Any]) -> None
         f.write("\n")
 
 
+def _collect_manifest_rows(
+    collect_func: Callable[..., dict[str, Any]],
+    target_dates: list[date],
+    *,
+    api_key: str,
+    allowed_edinet_codes: set[str],
+    manifest_path: Path,
+    form_codes: tuple[str, ...],
+    overwrite: bool,
+) -> dict[str, Any]:
+    try:
+        return collect_func(
+            target_dates,
+            api_key=api_key,
+            allowed_edinet_codes=allowed_edinet_codes,
+            manifest_path=manifest_path,
+            form_codes=form_codes,
+            overwrite=overwrite,
+        )
+    except TypeError as exc:
+        if "form_codes" not in str(exc):
+            raise
+        return collect_func(
+            target_dates,
+            api_key=api_key,
+            allowed_edinet_codes=allowed_edinet_codes,
+            manifest_path=manifest_path,
+            overwrite=overwrite,
+        )
+
+
 def run_zip_backfill(
     *,
     api_key: str,
@@ -170,6 +203,7 @@ def run_zip_backfill(
     end_date: date,
     manifest_prefix: str = "document_manifest",
     manifest_granularity: str = "month",
+    form_codes: tuple[str, ...] | None = None,
     master_csv_path: Path = TSE_LISTING_MASTER_CSV_PATH,
     prepare_only: bool = False,
     overwrite_manifests: bool = False,
@@ -222,6 +256,8 @@ def run_zip_backfill(
     print(f"requested_download_profile={download_profile}")
     print(f"download_auto_peak_threshold={download_auto_peak_threshold}")
     print(f"manifest_granularity={manifest_granularity}")
+    target_form_codes = normalize_form_codes(form_codes)
+    print(f"form_codes={','.join(target_form_codes)}")
     print(f"backfill_run_log_path={run_log_path}")
     print(f"backfill_chunk_log_path={chunk_log_path}")
 
@@ -284,11 +320,13 @@ def run_zip_backfill(
 
             try:
                 if not manifest_exists or overwrite_manifests:
-                    collect_summary = collect_func(
+                    collect_summary = _collect_manifest_rows(
+                        collect_func,
                         chunk.target_dates,
                         api_key=api_key,
                         allowed_edinet_codes=allowed_edinet_codes,
                         manifest_path=manifest_path,
+                        form_codes=target_form_codes,
                         overwrite=overwrite_manifests,
                     )
                 else:
@@ -296,6 +334,7 @@ def run_zip_backfill(
                     collect_summary = {
                         "target_dates": [target_date.isoformat() for target_date in chunk.target_dates],
                         "manifest_path": str(manifest_path),
+                        "form_codes": target_form_codes,
                         "daily_summaries": [],
                         "totals": {
                             "dates": len(chunk.target_dates),
@@ -549,6 +588,7 @@ def run_zip_backfill(
                 "date_to": end_date.isoformat(),
                 "manifest_prefix": manifest_prefix,
                 "manifest_granularity": manifest_granularity,
+                "form_codes": list(target_form_codes),
                 "requested_download_profile": download_profile,
                 "download_auto_peak_threshold": download_auto_peak_threshold,
                 "prepare_only": bool(prepare_only),
@@ -587,6 +627,7 @@ def run_zip_backfill(
         "chunk_log_path": str(chunk_log_path),
         "months": len(chunks),
         "chunks": len(chunks),
+        "form_codes": list(target_form_codes),
         "manifest_rows_total": total_manifest_rows,
         "downloaded_total": total_downloaded,
         "existing_total": total_existing,
@@ -626,6 +667,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["month", "day"],
         default=os.getenv("EDINET_MANIFEST_GRANULARITY", "").strip().lower(),
         help="Split manifests by month or day. Empty means profile default.",
+    )
+    parser.add_argument(
+        "--form-codes",
+        default=os.getenv("EDINET_TARGET_FORM_CODES", "").strip(),
+        help="Comma-separated form codes. Example: 030000,043A00",
     )
     parser.add_argument(
         "--master-csv-path",
@@ -688,6 +734,11 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     start_date = date.fromisoformat(args.date_from)
     end_date = date.fromisoformat(args.date_to)
+    target_form_codes = normalize_form_codes(args.form_codes or None)
+    manifest_prefix = resolve_manifest_prefix_for_form_codes(
+        args.manifest_prefix,
+        form_codes=target_form_codes,
+    )
     master_csv_path = Path(args.master_csv_path or TSE_LISTING_MASTER_CSV_PATH)
     (
         download_submit_date_text,
@@ -707,8 +758,9 @@ def main() -> None:
         api_key=api_key,
         start_date=start_date,
         end_date=end_date,
-        manifest_prefix=args.manifest_prefix,
+        manifest_prefix=manifest_prefix,
         manifest_granularity=args.manifest_granularity,
+        form_codes=target_form_codes,
         master_csv_path=master_csv_path,
         prepare_only=args.prepare_only,
         overwrite_manifests=args.overwrite_manifests,

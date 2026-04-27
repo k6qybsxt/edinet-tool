@@ -10,12 +10,23 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_xbrl_extract_error,
     mark_xbrl_extract_success,
 )
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.storage.path_service import build_xbrl_save_path
-from edinet_monitor.services.storage.zip_extract_service import extract_preferred_xbrl, find_xbrl_member_names
+from edinet_monitor.services.storage.zip_extract_service import (
+    extract_period_end_from_xbrl_member_name,
+    extract_preferred_xbrl,
+    find_xbrl_member_names,
+)
 
 
-def run_extract_xbrl_from_zips(*, batch_size: int = 20, run_all: bool = False) -> dict[str, Any]:
+def run_extract_xbrl_from_zips(
+    *,
+    batch_size: int = 20,
+    run_all: bool = False,
+    form_codes: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     conn = get_connection()
+    target_form_codes = normalize_form_codes(form_codes)
     total_target = 0
     total_extracted = 0
     total_errors = 0
@@ -23,7 +34,11 @@ def run_extract_xbrl_from_zips(*, batch_size: int = 20, run_all: bool = False) -
 
     try:
         while True:
-            rows = fetch_downloaded_filings_without_xbrl(conn, limit=batch_size)
+            rows = fetch_downloaded_filings_without_xbrl(
+                conn,
+                limit=batch_size,
+                form_codes=target_form_codes,
+            )
             print(f"downloaded_rows_without_xbrl={len(rows)}")
 
             if not rows:
@@ -34,6 +49,7 @@ def run_extract_xbrl_from_zips(*, batch_size: int = 20, run_all: bool = False) -
 
             for row in rows:
                 doc_id = row["doc_id"]
+                form_type = str(row["form_type"] or "")
                 submit_date = row["submit_date"]
                 zip_path = Path(row["zip_path"])
 
@@ -45,13 +61,14 @@ def run_extract_xbrl_from_zips(*, batch_size: int = 20, run_all: bool = False) -
                     print(f"[DEBUG] xbrl_members={member_names[:5]}")
 
                     xbrl_path = build_xbrl_save_path(submit_date, doc_id)
-                    extracted = extract_preferred_xbrl(zip_path, xbrl_path)
+                    extracted = extract_preferred_xbrl(zip_path, xbrl_path, form_type=form_type)
 
                     mark_xbrl_extract_success(
                         conn,
                         doc_id,
                         str(extracted.output_path),
                         extracted.member_name,
+                        period_end=extract_period_end_from_xbrl_member_name(extracted.member_name),
                     )
                     total_extracted += 1
                     print(
@@ -85,6 +102,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--run-all", action="store_true")
+    parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
     return parser
 
 
@@ -93,6 +111,7 @@ def main() -> None:
     run_extract_xbrl_from_zips(
         batch_size=args.batch_size,
         run_all=args.run_all,
+        form_codes=normalize_form_codes(args.form_codes or None),
     )
 
 

@@ -2,10 +2,27 @@ from __future__ import annotations
 
 import sqlite3
 
-def fetch_pending_filings(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
+
+
+def _form_code_filter(form_codes: tuple[str, ...] | list[str] | str | None) -> tuple[str, list[str]]:
+    codes = normalize_form_codes(form_codes)
+    if not codes:
+        return "", []
+    placeholders = ",".join("?" for _ in codes)
+    return f" AND f.form_type IN ({placeholders})", list(codes)
+
+
+def fetch_pending_filings(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    *,
+    form_codes: tuple[str, ...] | list[str] | str | None = None,
+) -> list[sqlite3.Row]:
     cur = conn.cursor()
+    form_filter, form_params = _form_code_filter(form_codes)
     cur.execute(
-        """
+        f"""
         SELECT
             f.doc_id,
             f.edinet_code,
@@ -18,19 +35,27 @@ def fetch_pending_filings(conn: sqlite3.Connection, limit: int = 10) -> list[sql
         WHERE f.download_status = 'pending'
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
+          {form_filter}
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (limit,),
+        (*form_params, limit),
     )
     return cur.fetchall()
 
-def fetch_downloaded_filings_without_xbrl(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
+def fetch_downloaded_filings_without_xbrl(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    *,
+    form_codes: tuple[str, ...] | list[str] | str | None = None,
+) -> list[sqlite3.Row]:
     cur = conn.cursor()
+    form_filter, form_params = _form_code_filter(form_codes)
     cur.execute(
-        """
+        f"""
         SELECT
             f.doc_id,
+            f.form_type,
             f.submit_date,
             f.zip_path,
             f.xbrl_path
@@ -42,10 +67,11 @@ def fetch_downloaded_filings_without_xbrl(conn: sqlite3.Connection, limit: int =
           AND f.parse_status IN ('pending', 'xbrl_extract_error')
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
+          {form_filter}
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (limit,),
+        (*form_params, limit),
     )
     return cur.fetchall()
 
@@ -101,7 +127,9 @@ def mark_xbrl_extract_success(
     doc_id: str,
     xbrl_path: str,
     xbrl_member_name: str | None = None,
+    period_end: str | None = None,
 ) -> None:
+    period_end_text = str(period_end or "").strip()
     if _has_column(conn, "filings", "xbrl_member_name"):
         conn.execute(
             """
@@ -109,10 +137,11 @@ def mark_xbrl_extract_success(
             SET
                 xbrl_path = ?,
                 xbrl_member_name = ?,
+                period_end = CASE WHEN ? <> '' THEN ? ELSE period_end END,
                 parse_status = 'xbrl_ready'
             WHERE doc_id = ?
             """,
-            (xbrl_path, xbrl_member_name or "", doc_id),
+            (xbrl_path, xbrl_member_name or "", period_end_text, period_end_text, doc_id),
         )
         conn.commit()
         return
@@ -122,10 +151,11 @@ def mark_xbrl_extract_success(
         UPDATE filings
         SET
             xbrl_path = ?,
+            period_end = CASE WHEN ? <> '' THEN ? ELSE period_end END,
             parse_status = 'xbrl_ready'
         WHERE doc_id = ?
         """,
-        (xbrl_path, doc_id),
+        (xbrl_path, period_end_text, period_end_text, doc_id),
     )
     conn.commit()
 
@@ -142,13 +172,20 @@ def mark_xbrl_extract_error(conn: sqlite3.Connection, doc_id: str) -> None:
     )
     conn.commit()
 
-def fetch_xbrl_ready_filings(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
+def fetch_xbrl_ready_filings(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    *,
+    form_codes: tuple[str, ...] | list[str] | str | None = None,
+) -> list[sqlite3.Row]:
     cur = conn.cursor()
     member_column = "f.xbrl_member_name" if _has_column(conn, "filings", "xbrl_member_name") else "''"
+    form_filter, form_params = _form_code_filter(form_codes)
     cur.execute(
         f"""
         SELECT
             f.doc_id,
+            f.form_type,
             f.xbrl_path,
             {member_column} AS xbrl_member_name
         FROM filings f
@@ -159,10 +196,11 @@ def fetch_xbrl_ready_filings(conn: sqlite3.Connection, limit: int = 10) -> list[
           AND f.xbrl_path <> ''
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
+          {form_filter}
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (limit,),
+        (*form_params, limit),
     )
     return cur.fetchall()
 
@@ -215,14 +253,21 @@ def mark_raw_facts_error(conn: sqlite3.Connection, doc_id: str) -> None:
     )
     conn.commit()
 
-def fetch_raw_facts_saved_filings(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
+def fetch_raw_facts_saved_filings(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    *,
+    form_codes: tuple[str, ...] | list[str] | str | None = None,
+) -> list[sqlite3.Row]:
     cur = conn.cursor()
+    form_filter, form_params = _form_code_filter(form_codes)
     cur.execute(
-        """
+        f"""
         SELECT
             f.doc_id,
             f.edinet_code,
             f.security_code,
+            f.form_type,
             im.industry_33,
             f.period_end,
             f.xbrl_path,
@@ -233,10 +278,11 @@ def fetch_raw_facts_saved_filings(conn: sqlite3.Connection, limit: int = 10) -> 
         WHERE f.parse_status = 'raw_facts_saved'
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
+          {form_filter}
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (limit,),
+        (*form_params, limit),
     )
     return cur.fetchall()
 
@@ -271,10 +317,12 @@ def fetch_derived_metrics_target_filings(
     *,
     rule_version: str,
     limit: int = 10,
+    form_codes: tuple[str, ...] | list[str] | str | None = None,
 ) -> list[sqlite3.Row]:
     cur = conn.cursor()
+    form_filter, form_params = _form_code_filter(form_codes)
     cur.execute(
-        """
+        f"""
         SELECT
             f.doc_id,
             f.edinet_code,
@@ -300,6 +348,7 @@ def fetch_derived_metrics_target_filings(
             ON f.doc_id = dm.doc_id
         WHERE im.is_listed = 1
           AND im.exchange = 'TSE'
+          {form_filter}
           AND (
                 f.parse_status IN ('normalized_metrics_saved', 'derived_metrics_error')
                 OR (
@@ -310,7 +359,7 @@ def fetch_derived_metrics_target_filings(
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (rule_version, limit),
+        (rule_version, *form_params, limit),
     )
     return cur.fetchall()
 

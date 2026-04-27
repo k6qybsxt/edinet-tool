@@ -248,6 +248,39 @@ class DerivedMetricServiceTest(unittest.TestCase):
             "ok",
         )
 
+    def test_half_progress_rates_use_matching_annual_values(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 500_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 80_000),
+            build_normalized_row("ProfitLossCurrent", 40_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="043A00",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+            half_progress_annual_values={
+                "NetSales": {"value_num": 1_000_000, "doc_id": "ANNUAL1", "metric_key": "NetSalesCurrent"},
+                "OrdinaryIncome": {
+                    "value_num": 100_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "OrdinaryIncomeCurrent",
+                },
+                "ProfitLoss": {"value_num": 80_000, "doc_id": "ANNUAL1", "metric_key": "ProfitLossCurrent"},
+            },
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["value_num"], 0.5)
+        self.assertEqual(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["value_num"], 0.8)
+        self.assertEqual(by_key["HalfProfitProgressRateCurrent"]["value_num"], 0.5)
+        self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["period_scope"], "half")
+        self.assertEqual(
+            by_key["HalfNetSalesProgressRateCurrent"]["source_detail_json"]["annual_doc_id"],
+            "ANNUAL1",
+        )
+
     def test_long_term_growth_rates_use_historical_growth_values(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

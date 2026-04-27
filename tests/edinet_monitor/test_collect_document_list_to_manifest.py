@@ -131,7 +131,7 @@ class CollectDocumentListToManifestTest(unittest.TestCase):
                 results=[
                     build_document_row("S100AAAA"),
                     build_document_row("S100BBBB", edinetCode="E99999"),
-                    build_document_row("S100CCCC", formCode="043000"),
+                    build_document_row("S100CCCC", formCode="043A00", docTypeCode="160"),
                 ],
             )
 

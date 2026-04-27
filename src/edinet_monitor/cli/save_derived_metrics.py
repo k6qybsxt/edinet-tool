@@ -13,10 +13,15 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_derived_metrics_saved,
     update_filing_parse_metadata,
 )
+from edinet_monitor.services.collector.document_filter_service import (
+    is_half_form_type,
+    normalize_form_codes,
+)
 from edinet_monitor.services.derived_metrics.derived_metric_service import (
     calculate_derived_metrics,
 )
 from edinet_monitor.services.derived_metrics.historical_growth_reference_service import (
+    fetch_half_progress_annual_values,
     fetch_historical_growth_values,
 )
 from edinet_monitor.services.derived_metrics.derived_metric_store_service import (
@@ -65,7 +70,8 @@ def ensure_filing_parse_metadata(
     if not xbrl_path:
         return filing
 
-    parsed = parse_xbrl_to_raw(Path(xbrl_path))
+    parse_mode = "half" if is_half_form_type(filing.get("form_type")) else "full"
+    parsed = parse_xbrl_to_raw(Path(xbrl_path), mode=parse_mode)
     parsed_meta = dict(parsed.get("meta") or {})
     parsed_out = dict(parsed.get("out") or {})
 
@@ -91,11 +97,13 @@ def run_save_derived_metrics(
     *,
     batch_size: int = 100,
     run_all: bool = False,
+    form_codes: tuple[str, ...] | None = None,
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
 ) -> dict[str, Any]:
     create_tables()
 
     conn = get_connection()
+    target_form_codes = normalize_form_codes(form_codes)
     total_target = 0
     total_saved_docs = 0
     total_saved_rows = 0
@@ -108,6 +116,7 @@ def run_save_derived_metrics(
                 conn,
                 rule_version=rule_version,
                 limit=batch_size,
+                form_codes=target_form_codes,
             )
             print(f"derived_metrics_target_rows={len(filings)}")
 
@@ -127,6 +136,7 @@ def run_save_derived_metrics(
                     filing = ensure_filing_parse_metadata(conn, filing)
                     normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
                     historical_growth_values = fetch_historical_growth_values(conn, filing)
+                    half_progress_annual_values = fetch_half_progress_annual_values(conn, filing)
                     derived_rows = calculate_derived_metrics(
                         normalized_rows,
                         form_type=str(filing.get("form_type") or ""),
@@ -134,6 +144,7 @@ def run_save_derived_metrics(
                         document_display_unit=str(filing.get("document_display_unit") or ""),
                         rule_version=rule_version,
                         historical_growth_values=historical_growth_values,
+                        half_progress_annual_values=half_progress_annual_values,
                     )
 
                     print(
@@ -181,6 +192,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--run-all", action="store_true")
+    parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
     return parser
 
 
@@ -189,6 +201,7 @@ def main() -> None:
     run_save_derived_metrics(
         batch_size=args.batch_size,
         run_all=args.run_all,
+        form_codes=normalize_form_codes(args.form_codes or None),
     )
 
 

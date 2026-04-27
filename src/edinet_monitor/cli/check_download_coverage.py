@@ -18,6 +18,7 @@ from edinet_monitor.config.settings import (
     ZIP_ROOT,
 )
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.collector.document_list_service import (
     DocumentListResult,
     fetch_document_list,
@@ -25,7 +26,10 @@ from edinet_monitor.services.collector.document_list_service import (
 from edinet_monitor.services.collector.document_row_mapper import normalize_security_code
 from edinet_monitor.services.collector.issuer_master_csv_service import load_allowed_edinet_codes
 from edinet_monitor.services.collector.target_date_service import resolve_target_dates
-from edinet_monitor.services.storage.manifest_service import read_manifest_rows
+from edinet_monitor.services.storage.manifest_service import (
+    read_manifest_rows,
+    resolve_manifest_prefix_for_form_codes,
+)
 
 
 DEFAULT_OUTPUT_DIR = Path("D:/\u4f5c\u696d\u7528")
@@ -59,6 +63,7 @@ class CoverageOptions:
     zip_root: Path
     master_csv_path: Path
     manifest_prefix: str
+    form_codes: tuple[str, ...]
     scan_all_manifests: bool
     skip_edinet: bool
     validate_zip: bool
@@ -225,10 +230,11 @@ def fetch_expected_records_for_date(
     api_key: str,
     allowed_edinet_codes: set[str],
     zip_root: Path,
+    form_codes: tuple[str, ...],
     fetcher: Callable[..., DocumentListResult] = fetch_document_list,
 ) -> dict[str, Any]:
     result = fetcher(target_date=target_date, api_key=api_key, list_type=2)
-    filtered_rows = filter_target_filings(result.results)
+    filtered_rows = filter_target_filings(result.results, form_codes=form_codes)
     issuer_rows = [
         row
         for row in filtered_rows
@@ -400,6 +406,7 @@ def build_daily_coverage_rows(
                         api_key=options.api_key,
                         allowed_edinet_codes=allowed_edinet_codes,
                         zip_root=options.zip_root,
+                        form_codes=options.form_codes,
                         fetcher=fetcher,
                     )
                     metadata = expected["metadata"]
@@ -521,6 +528,7 @@ def render_report(rows: list[dict[str, Any]], options: CoverageOptions) -> str:
         f"manifest_root: {options.manifest_root}",
         f"zip_root: {options.zip_root}",
         f"manifest_prefix: {options.manifest_prefix}",
+        f"form_codes: {','.join(options.form_codes)}",
         f"date_from: {options.target_dates[0].isoformat() if options.target_dates else ''}",
         f"date_to: {options.target_dates[-1].isoformat() if options.target_dates else ''}",
         f"days: {len(options.target_dates)}",
@@ -648,6 +656,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.getenv("EDINET_MANIFEST_PREFIX", DEFAULT_MANIFEST_PREFIX).strip() or DEFAULT_MANIFEST_PREFIX,
     )
     parser.add_argument(
+        "--form-codes",
+        default=os.getenv("EDINET_TARGET_FORM_CODES", "").strip(),
+        help="Comma-separated form codes. Example: 030000,043A00",
+    )
+    parser.add_argument(
         "--manifest-root",
         default=os.getenv("EDINET_MANIFEST_ROOT", str(MANIFEST_ROOT)),
     )
@@ -709,6 +722,12 @@ def parse_options(args: argparse.Namespace) -> CoverageOptions:
     if not args.skip_edinet and not api_key:
         raise RuntimeError("Set EDINET_API_KEY or use --skip-edinet for local-only checks.")
 
+    target_form_codes = normalize_form_codes(args.form_codes or None)
+    manifest_prefix = resolve_manifest_prefix_for_form_codes(
+        str(args.manifest_prefix or DEFAULT_MANIFEST_PREFIX).strip() or DEFAULT_MANIFEST_PREFIX,
+        form_codes=target_form_codes,
+    )
+
     return CoverageOptions(
         target_dates=target_dates,
         api_key=api_key,
@@ -717,7 +736,8 @@ def parse_options(args: argparse.Namespace) -> CoverageOptions:
         manifest_root=Path(str(args.manifest_root)),
         zip_root=Path(str(args.zip_root)),
         master_csv_path=Path(str(args.master_csv_path)),
-        manifest_prefix=str(args.manifest_prefix or DEFAULT_MANIFEST_PREFIX).strip() or DEFAULT_MANIFEST_PREFIX,
+        manifest_prefix=manifest_prefix,
+        form_codes=target_form_codes,
         scan_all_manifests=bool(args.scan_all_manifests),
         skip_edinet=bool(args.skip_edinet),
         validate_zip=bool(args.validate_zip),

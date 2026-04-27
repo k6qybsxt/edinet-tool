@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from edinet_monitor.config.settings import TSE_LISTING_MASTER_CSV_PATH, ensure_data_dirs
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.collector.document_list_service import (
     DocumentListResult,
     fetch_document_list,
@@ -19,6 +20,7 @@ from edinet_monitor.services.storage.manifest_service import (
     build_manifest_path,
     merge_manifest_rows,
     read_manifest_rows,
+    resolve_manifest_prefix_for_form_codes,
     write_manifest_rows,
 )
 
@@ -41,6 +43,7 @@ def collect_document_manifest_for_date(
     *,
     api_key: str,
     allowed_edinet_codes: set[str],
+    form_codes: tuple[str, ...] | None = None,
     fetcher: Callable[..., DocumentListResult] = fetch_document_list,
 ) -> dict[str, Any]:
     result = fetcher(
@@ -48,7 +51,8 @@ def collect_document_manifest_for_date(
         api_key=api_key,
         list_type=2,
     )
-    filtered_rows = filter_target_filings(result.results)
+    target_form_codes = normalize_form_codes(form_codes)
+    filtered_rows = filter_target_filings(result.results, form_codes=target_form_codes)
     issuer_rows = [
         row for row in filtered_rows
         if str(row.get("edinetCode") or "") in allowed_edinet_codes
@@ -68,6 +72,7 @@ def collect_document_manifest_for_date(
         "issuer_target_results": len(issuer_rows),
         "manifest_rows": manifest_rows,
         "sample_rows": manifest_rows[:5],
+        "form_codes": target_form_codes,
     }
 
 
@@ -77,6 +82,7 @@ def collect_document_manifest_for_dates(
     api_key: str,
     allowed_edinet_codes: set[str],
     manifest_path: Path,
+    form_codes: tuple[str, ...] | None = None,
     append: bool = False,
     overwrite: bool = False,
     fetcher: Callable[..., DocumentListResult] = fetch_document_list,
@@ -89,6 +95,7 @@ def collect_document_manifest_for_dates(
             f"Manifest already exists: {manifest_path}. Use --append or --overwrite."
         )
 
+    target_form_codes = normalize_form_codes(form_codes)
     daily_summaries: list[dict[str, Any]] = []
     incoming_rows: list[dict[str, Any]] = []
     totals = {
@@ -104,6 +111,7 @@ def collect_document_manifest_for_dates(
             target_date,
             api_key=api_key,
             allowed_edinet_codes=allowed_edinet_codes,
+            form_codes=target_form_codes,
             fetcher=fetcher,
         )
         daily_summaries.append(summary)
@@ -118,6 +126,7 @@ def collect_document_manifest_for_dates(
         print(f"metadata_date={summary['metadata_date']}")
         print(f"metadata_status={summary['metadata_status']}")
         print(f"metadata_message={summary['metadata_message']}")
+        print(f"form_codes={','.join(target_form_codes)}")
         print(f"all_results={summary['all_results']}")
         print(f"target_results={summary['target_results']}")
         print(f"issuer_target_results={summary['issuer_target_results']}")
@@ -151,6 +160,7 @@ def collect_document_manifest_for_dates(
     return {
         "target_dates": [target_date.isoformat() for target_date in target_dates],
         "manifest_path": str(manifest_path),
+        "form_codes": target_form_codes,
         "daily_summaries": daily_summaries,
         "totals": totals,
         "existing_manifest_rows": len(existing_rows),
@@ -185,6 +195,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.getenv("EDINET_TSE_MASTER_CSV", "").strip(),
         help="Path to TSE issuer master CSV.",
     )
+    parser.add_argument(
+        "--form-codes",
+        default=os.getenv("EDINET_TARGET_FORM_CODES", "").strip(),
+        help="Comma-separated form codes. Default uses settings TARGET_FORM_CODES.",
+    )
     parser.add_argument("--append", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -207,7 +222,19 @@ def main() -> None:
     csv_path = Path(args.master_csv_path or TSE_LISTING_MASTER_CSV_PATH)
     allowed_edinet_codes = load_allowed_edinet_codes(csv_path)
 
-    manifest_name = args.manifest_name or build_default_manifest_name(target_dates)
+    target_form_codes = normalize_form_codes(args.form_codes or None)
+    if args.manifest_name:
+        manifest_name = args.manifest_name
+    else:
+        manifest_prefix = resolve_manifest_prefix_for_form_codes(
+            "document_manifest",
+            form_codes=target_form_codes,
+        )
+        manifest_name = build_default_manifest_name(target_dates).replace(
+            "document_manifest",
+            manifest_prefix,
+            1,
+        )
     manifest_path = build_manifest_path(manifest_name)
 
     collect_document_manifest_for_dates(
@@ -215,6 +242,7 @@ def main() -> None:
         api_key=api_key,
         allowed_edinet_codes=allowed_edinet_codes,
         manifest_path=manifest_path,
+        form_codes=target_form_codes,
         append=args.append,
         overwrite=args.overwrite,
     )

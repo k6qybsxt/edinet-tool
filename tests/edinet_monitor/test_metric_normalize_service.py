@@ -629,6 +629,48 @@ class MetricNormalizeServiceTest(unittest.TestCase):
 
         self.assertIsNone(normalized)
 
+    def test_half_period_fallback_accepts_half_year_duration_rows(self) -> None:
+        row = build_raw_fact(
+            tag_name="NetSales",
+            context_ref="CustomHalfDuration",
+            period_start="2025-04-01",
+            period_end="2025-09-30",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            filing_period_end="2025-09-30",
+            form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "NetSalesCurrent")
+
+    def test_half_period_fallback_maps_prior_year_same_half_end_to_prior1(self) -> None:
+        row = build_raw_fact(
+            tag_name="NetSales",
+            context_ref="CustomHalfDuration",
+            period_start="2024-04-01",
+            period_end="2024-09-30",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+            filing_period_end="2025-09-30",
+            form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "NetSalesPrior1")
+
     def test_candidate_validation_is_audit_only_by_default(self) -> None:
         row = build_raw_fact(
             tag_name="NetSales",

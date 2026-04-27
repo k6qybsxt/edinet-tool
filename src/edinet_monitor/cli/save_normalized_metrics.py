@@ -10,6 +10,7 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_normalized_metrics_error,
     mark_normalized_metrics_saved,
 )
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.normalizer.metric_normalize_service import normalize_raw_fact_rows
 from edinet_monitor.services.normalizer.normalized_metric_store_service import (
     delete_normalized_metrics_by_doc_id,
@@ -58,12 +59,14 @@ def fetch_raw_fact_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict]:
 def run_save_normalized_metrics(
     *,
     batch_size: int = 100,
+    form_codes: tuple[str, ...] | None = None,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
 ) -> dict[str, Any]:
     create_tables()
 
     conn = get_connection()
+    target_form_codes = normalize_form_codes(form_codes)
     total_target = 0
     total_saved_docs = 0
     total_saved_rows = 0
@@ -72,7 +75,7 @@ def run_save_normalized_metrics(
 
     try:
         while True:
-            filings = fetch_raw_facts_saved_filings(conn, limit=batch_size)
+            filings = fetch_raw_facts_saved_filings(conn, limit=batch_size, form_codes=target_form_codes)
             print(f"raw_facts_saved_rows={len(filings)}")
 
             if not filings:
@@ -87,6 +90,7 @@ def run_save_normalized_metrics(
                 edinet_code = filing["edinet_code"]
                 security_code = filing["security_code"]
                 filing_period_end = str(filing.get("period_end") or "")
+                form_type = str(filing.get("form_type") or "")
                 xbrl_path = str(filing.get("xbrl_path") or "")
                 zip_path = str(filing.get("zip_path") or "")
 
@@ -102,6 +106,7 @@ def run_save_normalized_metrics(
                         xbrl_path=xbrl_path,
                         zip_path=zip_path,
                         filing_period_end=filing_period_end,
+                        form_type=form_type,
                         enable_period_fallback=enable_period_fallback,
                         enforce_candidate_validation=enforce_candidate_validation,
                     )
@@ -152,6 +157,7 @@ def run_save_normalized_metrics(
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
     parser.add_argument("--enable-period-fallback", action="store_true")
     parser.add_argument("--enforce-candidate-validation", action="store_true")
     return parser
@@ -161,6 +167,7 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     run_save_normalized_metrics(
         batch_size=args.batch_size,
+        form_codes=normalize_form_codes(args.form_codes or None),
         enable_period_fallback=args.enable_period_fallback,
         enforce_candidate_validation=args.enforce_candidate_validation,
     )
