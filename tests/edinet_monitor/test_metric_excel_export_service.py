@@ -526,6 +526,27 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual([row.metric_base for row in rows], ["CashAndCashEquivalents"])
         self.assertEqual(rows[0].metric_label, "期末残")
 
+    def test_beginning_cash_balance_metric_label_is_registered(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
+                ("\u6307\u6a19", "\u671f\u9996\u6b8b\u9ad8"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, _target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual([row.metric_base for row in rows], ["BeginningCashBalance"])
+        self.assertEqual(rows[0].metric_label, "\u671f\u9996\u6b8b\u9ad8")
+
     def test_eps_growth_metric_label_uses_prior_period_suffix(self) -> None:
         path = self.tmp_path / "condition.xlsx"
         _create_condition_workbook(

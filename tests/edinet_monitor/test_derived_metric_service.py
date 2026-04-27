@@ -129,6 +129,16 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertIsNone(by_key["NetSalesGrowthRate10YearCurrent"]["value_num"])
         self.assertEqual(by_key["OrdinaryIncomeGrowthRate5YearCurrent"]["value_num"], 2.0)
         self.assertAlmostEqual(by_key["CashBalanceGrowthRate5YearCurrent"]["value_num"], 300_000 / 140_000)
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["value_num"], 250_000)
+        self.assertEqual(by_key["BeginningCashBalancePrior1"]["value_num"], 200_000)
+        self.assertEqual(by_key["BeginningCashBalancePrior3"]["value_num"], 140_000)
+        self.assertIsNone(by_key["BeginningCashBalancePrior4"]["value_num"])
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["metric_group"], "cashflow")
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["value_unit"], "yen")
+        self.assertEqual(
+            by_key["BeginningCashBalanceCurrent"]["source_detail_json"]["inputs"],
+            {"CashAndCashEquivalentsPrior1": 250_000.0},
+        )
         self.assertEqual(by_key["GrossProfitCurrent"]["value_num"], 700_000)
         self.assertEqual(
             by_key["GrossProfitCurrent"]["source_detail_json"]["selected_source"],

@@ -17,6 +17,13 @@ SUFFIX_TO_PERIOD_OFFSET = {
 FULL_SUFFIXES = ["Current", "Prior1", "Prior2", "Prior3", "Prior4"]
 GROWTH_SUFFIXES = ["Current", "Prior1", "Prior2", "Prior3"]
 LONG_TERM_GROWTH_BASE_OFFSET = 9
+BEGINNING_CASH_BALANCE_SOURCE_SUFFIX = {
+    "Current": "Prior1",
+    "Prior1": "Prior2",
+    "Prior2": "Prior3",
+    "Prior3": "Prior4",
+    "Prior4": "Prior5",
+}
 
 SAFE_COST_OF_SALES_SOURCE_TAGS = {
     "CostOfSales",
@@ -224,6 +231,24 @@ def _single_metric_input(
         "value_num": value_num,
         "detail_inputs": {metric_key: value_num},
         "reference_keys": [metric_key],
+    }
+
+
+def _beginning_cash_balance_input(
+    metric_rows: dict[str, dict[str, Any]],
+    suffix: str,
+) -> dict[str, Any]:
+    source_suffix = BEGINNING_CASH_BALANCE_SOURCE_SUFFIX[suffix]
+    source_key = _build_metric_key("CashAndCashEquivalents", source_suffix)
+    value_num = _metric_value(metric_rows, source_key)
+    calc_status = "ok" if value_num is not None else "missing_input"
+    return {
+        "value_num": value_num,
+        "calc_status": calc_status,
+        "detail_inputs": {source_key: value_num},
+        "reference_keys": [source_key],
+        "display_formula": "cash_and_cash_equivalents_at_beginning_of_period",
+        "stored_formula": "cash_and_cash_equivalents_prior_instant",
     }
 
 
@@ -1876,6 +1901,19 @@ def calculate_derived_metrics(
         current_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
         base_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
         historical_growth_values=historical_growth_values,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="BeginningCashBalance",
+        metric_group="cashflow",
+        formula_name="beginning_cash_balance",
+        value_unit="yen",
+        input_builder=_beginning_cash_balance_input,
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

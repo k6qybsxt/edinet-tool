@@ -18,6 +18,7 @@ METRIC_BASE_LABELS = {
     "FinancingCash": "\u8ca1\u52d9CF",
     "TotalAssets": "\u7dcf\u8cc7\u7523",
     "NetAssets": "\u7d14\u8cc7\u7523",
+    "BeginningCashBalance": "\u671f\u9996\u6b8b\u9ad8",
     "CashAndCashEquivalents": "\u671f\u672b\u6b8b",
     "IssuedShares": "\u767a\u884c\u6e08\u682a\u5f0f\u6570",
     "TreasuryShares": "\u81ea\u5df1\u682a\u5f0f\u6570",

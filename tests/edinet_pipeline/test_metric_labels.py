@@ -29,6 +29,7 @@ class MetricLabelsTest(unittest.TestCase):
             metric_base_to_display_name("CostOfSalesAndSellingGeneralAndAdministrativeExpenses"),
             "\u8cbb\u7528\u5408\u8a08",
         )
+        self.assertEqual(metric_base_to_display_name("BeginningCashBalance"), "\u671f\u9996\u6b8b\u9ad8")
         self.assertEqual(metric_base_to_display_name("CashAndCashEquivalents"), "\u671f\u672b\u6b8b")
         self.assertEqual(metric_base_to_display_name("OutstandingShares"), "\u767a\u884c\u682a\u6570")
         self.assertEqual(metric_base_to_display_name("EPS"), "EPS")
