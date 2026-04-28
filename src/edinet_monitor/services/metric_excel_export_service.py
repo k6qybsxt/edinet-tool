@@ -414,6 +414,18 @@ CONDITION_KEYS = {
     "指標": "metrics",
     "決算種別": "period_scopes",
     "期間": "periods",
+    "期間Start": "period_start",
+    "期間End": "period_end",
+    "連続増減": "trend",
+    "連続増減判定": "trend",
+    "連続増減指標": "trend_metrics",
+    "連続増減期間": "trend_periods",
+    "連続増減期間Start": "trend_period_start",
+    "連続増減期間End": "trend_period_end",
+    "連続増減下限": "trend_min",
+    "連続増減以上": "trend_min",
+    "連続増減上限": "trend_max",
+    "連続増減以下": "trend_max",
     "増減判定": "trend",
     "増減判定指標": "trend_metrics",
     "増減判定期間": "trend_periods",
@@ -424,6 +436,24 @@ CONDITION_KEYS = {
     "％条件指標": "percent_filter_metrics",
     "%条件指標": "percent_filter_metrics",
     "比率条件指標": "percent_filter_metrics",
+    "比率条件": "percent_filter_metrics",
+    "比率条件期間": "percent_filter_periods",
+    "比率条件期間Start": "percent_filter_period_start",
+    "比率条件期間End": "percent_filter_period_end",
+    "％条件期間": "percent_filter_periods",
+    "%条件期間": "percent_filter_periods",
+    "比率条件下限": "percent_filter_min",
+    "比率条件以上": "percent_filter_min",
+    "比率条件上限": "percent_filter_max",
+    "比率条件以下": "percent_filter_max",
+    "％条件下限": "percent_filter_min",
+    "%条件下限": "percent_filter_min",
+    "％条件以上": "percent_filter_min",
+    "%条件以上": "percent_filter_min",
+    "％条件上限": "percent_filter_max",
+    "%条件上限": "percent_filter_max",
+    "％条件以下": "percent_filter_max",
+    "%条件以下": "percent_filter_max",
     "％下限": "percent_filter_min",
     "%下限": "percent_filter_min",
     "比率下限": "percent_filter_min",
@@ -450,7 +480,7 @@ class MetricExcelCondition:
     security_codes: list[str] = field(default_factory=list)
     company_names: list[str] = field(default_factory=list)
     metric_labels: list[str] = field(default_factory=list)
-    period_scopes: list[str] = field(default_factory=lambda: ["annual"])
+    period_scopes: list[str] = field(default_factory=lambda: ["annual", "half"])
     period_offsets: list[int] = field(default_factory=lambda: list(range(9, -1, -1)))
     trend: str = "none"
     trend_metric_labels: list[str] = field(default_factory=list)
@@ -458,6 +488,7 @@ class MetricExcelCondition:
     trend_min: float | None = None
     trend_max: float | None = None
     percent_filter_metric_labels: list[str] = field(default_factory=list)
+    percent_filter_period_offsets: list[int] = field(default_factory=lambda: [0])
     percent_filter_min: float | None = None
     percent_filter_max: float | None = None
     raw_values: dict[str, str] = field(default_factory=dict)
@@ -570,6 +601,28 @@ def _parse_periods(value: str | None) -> list[int]:
     return offsets
 
 
+def _period_range_text(
+    raw: dict[str, str],
+    *,
+    combined_key: str,
+    start_key: str,
+    end_key: str,
+) -> str | None:
+    combined = str(raw.get(combined_key) or "").strip()
+    if combined:
+        return combined
+
+    start = str(raw.get(start_key) or "").strip()
+    end = str(raw.get(end_key) or "").strip()
+    if not start and not end:
+        return None
+    if not start or not end:
+        return start or end
+    if start.upper() == "ALL" or end.upper() == "ALL":
+        return "all"
+    return f"{start}-{end}"
+
+
 def _condition_cell_value(cell: Any, key: str) -> str:
     value = getattr(cell, "value", None)
     if value is None:
@@ -603,7 +656,7 @@ def _parse_percent_threshold(value: str | None) -> float | None:
 def _parse_period_scopes(value: str | None) -> list[str]:
     text = str(value or "").strip()
     if not text:
-        return ["annual"]
+        return ["annual", "half"]
     if text.upper() == "ALL":
         return ["annual", "half"]
     mapping = {
@@ -653,12 +706,32 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
     if trend in {"", "all"}:
         trend = "none"
     if trend not in {"none", "increase", "decrease"}:
-        raise ValueError("増減判定は none / increase / decrease のいずれかで指定してください。")
+        raise ValueError("連続増減は none / increase / decrease のいずれかで指定してください。")
 
-    period_offsets = _parse_periods(raw.get("periods"))
-    trend_period_offsets = _parse_periods(raw.get("trend_periods")) if raw.get("trend_periods") else period_offsets
+    period_text = _period_range_text(
+        raw,
+        combined_key="periods",
+        start_key="period_start",
+        end_key="period_end",
+    )
+    trend_period_text = _period_range_text(
+        raw,
+        combined_key="trend_periods",
+        start_key="trend_period_start",
+        end_key="trend_period_end",
+    )
+    percent_filter_period_text = _period_range_text(
+        raw,
+        combined_key="percent_filter_periods",
+        start_key="percent_filter_period_start",
+        end_key="percent_filter_period_end",
+    )
+
+    period_offsets = _parse_periods(period_text)
+    trend_period_offsets = _parse_periods(trend_period_text) if trend_period_text else period_offsets
     trend_min = _parse_percent_threshold(raw.get("trend_min"))
     trend_max = _parse_percent_threshold(raw.get("trend_max"))
+    percent_filter_period_offsets = _parse_periods(percent_filter_period_text) if percent_filter_period_text else [0]
     percent_filter_min = _parse_percent_threshold(raw.get("percent_filter_min"))
     percent_filter_max = _parse_percent_threshold(raw.get("percent_filter_max"))
 
@@ -675,6 +748,7 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
         trend_min=trend_min,
         trend_max=trend_max,
         percent_filter_metric_labels=_split_multi(raw.get("percent_filter_metrics")),
+        percent_filter_period_offsets=percent_filter_period_offsets,
         percent_filter_min=percent_filter_min,
         percent_filter_max=percent_filter_max,
         raw_values=raw,
@@ -1012,6 +1086,7 @@ def _passes_value_thresholds(
 def _passes_percent_filters(
     *,
     filter_bases: list[str],
+    filter_offsets: list[int],
     by_offset: dict[int, sqlite3.Row],
     metric_values: dict[tuple[str, str], float | None],
     min_value: float | None,
@@ -1019,19 +1094,21 @@ def _passes_percent_filters(
 ) -> bool:
     if not filter_bases or (min_value is None and max_value is None):
         return True
-    current = by_offset.get(0)
-    if current is None:
-        return False
-    doc_id = str(current["doc_id"])
+    offsets = filter_offsets or [0]
     for base in filter_bases:
-        value = metric_values.get((doc_id, _metric_key(base)))
-        if value is None:
-            return False
-        numeric_value = float(value)
-        if min_value is not None and numeric_value < min_value:
-            return False
-        if max_value is not None and numeric_value > max_value:
-            return False
+        for offset in offsets:
+            filing = by_offset.get(offset)
+            if filing is None:
+                return False
+            doc_id = str(filing["doc_id"])
+            value = metric_values.get((doc_id, _metric_key(base)))
+            if value is None:
+                return False
+            numeric_value = float(value)
+            if min_value is not None and numeric_value < min_value:
+                return False
+            if max_value is not None and numeric_value > max_value:
+                return False
     return True
 
 
@@ -1130,6 +1207,7 @@ def build_metric_excel_rows(
 
         if not _passes_percent_filters(
             filter_bases=percent_filter_bases_by_sheet.get(sheet_name, []),
+            filter_offsets=condition.percent_filter_period_offsets,
             by_offset=by_offset,
             metric_values=metric_values,
             min_value=condition.percent_filter_min,
@@ -1264,27 +1342,42 @@ def _write_summary_sheet(
             "periods",
             ", ".join(PERIOD_LABEL_BY_OFFSET[offset] for offset in condition.period_offsets),
         ),
-        ("trend", condition.trend),
+        ("連続増減", condition.trend),
         (
-            "trend_min",
+            "連続増減指標",
+            ", ".join(condition.trend_metric_labels) if condition.trend_metric_labels else "",
+        ),
+        (
+            "連続増減期間",
+            ", ".join(PERIOD_LABEL_BY_OFFSET[offset] for offset in condition.trend_period_offsets),
+        ),
+        (
+            "連続増減下限",
             "" if condition.trend_min is None else condition.trend_min,
         ),
         (
-            "trend_max",
+            "連続増減上限",
             "" if condition.trend_max is None else condition.trend_max,
         ),
         (
-            "percent_filter_metrics",
+            "比率条件指標",
             ", ".join(condition.percent_filter_metric_labels)
             if condition.percent_filter_metric_labels
             else "",
         ),
         (
-            "percent_filter_min",
+            "比率条件期間",
+            ", ".join(
+                PERIOD_LABEL_BY_OFFSET[offset]
+                for offset in condition.percent_filter_period_offsets
+            ),
+        ),
+        (
+            "比率条件下限",
             "" if condition.percent_filter_min is None else condition.percent_filter_min,
         ),
         (
-            "percent_filter_max",
+            "比率条件上限",
             "" if condition.percent_filter_max is None else condition.percent_filter_max,
         ),
     ]
