@@ -26,6 +26,45 @@ BEGINNING_CASH_BALANCE_SOURCE_SUFFIX = {
     "Prior4": "Prior5",
 }
 
+ROIC_EXCLUDED_INDUSTRIES = {
+    "\u9280\u884c\u696d",
+    "\u8a3c\u5238\u3001\u5546\u54c1\u5148\u7269\u53d6\u5f15\u696d",
+    "\u4fdd\u967a\u696d",
+}
+
+INTEREST_BEARING_DEBT_TIERS = [
+    (
+        "interest_bearing_liabilities_total",
+        [
+            "InterestBearingLiabilitiesCurrent",
+            "InterestBearingLiabilitiesNonCurrent",
+        ],
+    ),
+    (
+        "bonds_and_borrowings_plus_lease_liabilities",
+        [
+            "BondsAndBorrowingsCurrent",
+            "BondsAndBorrowingsNonCurrent",
+            "LeaseLiabilitiesCurrent",
+            "LeaseLiabilitiesNonCurrent",
+        ],
+    ),
+    (
+        "explicit_component_sum",
+        [
+            "ShortTermLoansPayable",
+            "CurrentPortionOfLongTermLoansPayable",
+            "LongTermLoansPayable",
+            "CurrentPortionOfBonds",
+            "ShortTermBondsPayable",
+            "BondsPayable",
+            "CommercialPapersLiabilities",
+            "LeaseLiabilitiesCurrent",
+            "LeaseLiabilitiesNonCurrent",
+        ],
+    ),
+]
+
 SAFE_COST_OF_SALES_SOURCE_TAGS = {
     "CostOfSales",
     "CostOfSalesIFRS",
@@ -235,6 +274,31 @@ def _single_metric_input(
     }
 
 
+def _optional_sum_input(
+    metric_rows: dict[str, dict[str, Any]],
+    metric_bases: list[str],
+    suffix: str,
+) -> dict[str, Any]:
+    detail_inputs: dict[str, float | None] = {}
+    reference_keys: list[str] = []
+    total = 0.0
+    found = False
+    for metric_base in metric_bases:
+        metric_key = _build_metric_key(metric_base, suffix)
+        value_num = _metric_value(metric_rows, metric_key)
+        detail_inputs[metric_key] = value_num
+        reference_keys.append(metric_key)
+        if value_num is not None:
+            total += value_num
+            found = True
+    return {
+        "value_num": total if found else None,
+        "calc_status": "ok" if found else "missing_input",
+        "detail_inputs": detail_inputs,
+        "reference_keys": reference_keys,
+    }
+
+
 def _beginning_cash_balance_input(
     metric_rows: dict[str, dict[str, Any]],
     suffix: str,
@@ -355,6 +419,25 @@ def _scaled_status(
     if value_num is None:
         return None, "missing_input"
     return value_num * scale, "ok"
+
+
+def _adopted_tax_rate_status(
+    *,
+    profit_before_tax: float | None,
+    income_taxes: float | None,
+) -> tuple[float | None, str, float | None, str]:
+    if profit_before_tax is None:
+        return None, "missing_input", None, "missing_profit_before_tax"
+    if profit_before_tax <= 0:
+        return 0.30, "ok", None, "profit_before_tax_nonpositive_default_30pct"
+    if income_taxes is None:
+        return None, "missing_input", None, "missing_income_taxes"
+    effective_tax_rate = income_taxes / profit_before_tax
+    if effective_tax_rate < 0:
+        return 0.30, "ok", effective_tax_rate, "negative_effective_tax_rate_default_30pct"
+    if effective_tax_rate > 0.50:
+        return 0.30, "ok", effective_tax_rate, "high_effective_tax_rate_default_30pct"
+    return effective_tax_rate, "ok", effective_tax_rate, "effective_tax_rate"
 
 
 def _discount_evaluation_rate_status(
@@ -999,6 +1082,9 @@ def _append_fixed_period_growth_rows(
     document_display_unit: str,
     rule_version: str,
 ) -> None:
+    if str(sample_row.get("period_scope") or "") == "half":
+        return
+
     current_input = current_input_builder(metric_rows, "Current")
     prior4_input = base_input_builder(metric_rows, "Prior4")
     _append_fixed_growth_row_from_inputs(
@@ -1523,6 +1609,7 @@ def calculate_derived_metrics(
     normalized_rows: list[dict[str, Any]],
     *,
     form_type: str,
+    industry_33: str | None = None,
     accounting_standard: str = "",
     document_display_unit: str = "",
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
@@ -1872,6 +1959,191 @@ def calculate_derived_metrics(
             right_metric_base="InvestmentCash",
             suffix=suffix,
         )
+
+    def _abs_investment_cash_to_net_sales_input(
+        metric_rows: dict[str, dict[str, Any]],
+        suffix: str,
+    ) -> dict[str, Any]:
+        investment_cash_inputs = _single_metric("InvestmentCash", suffix)
+        net_sales_inputs = _single_metric("NetSales", suffix)
+        numerator = (
+            abs(investment_cash_inputs["value_num"])
+            if investment_cash_inputs["value_num"] is not None
+            else None
+        )
+        value_num, calc_status = _ratio_status(
+            numerator=numerator,
+            denominator=net_sales_inputs["value_num"],
+            require_positive_denominator=True,
+        )
+        return {
+            "value_num": value_num,
+            "calc_status": calc_status,
+            "detail_inputs": {
+                **investment_cash_inputs["detail_inputs"],
+                **net_sales_inputs["detail_inputs"],
+                "abs_investment_cash": numerator,
+            },
+            "reference_keys": [
+                *investment_cash_inputs["reference_keys"],
+                *net_sales_inputs["reference_keys"],
+            ],
+            "display_formula": "abs(investment_cash) / net_sales",
+            "stored_formula": "abs(investment_cash) / net_sales",
+        }
+
+    def _abs_investment_cash_to_operating_cash_input(
+        metric_rows: dict[str, dict[str, Any]],
+        suffix: str,
+    ) -> dict[str, Any]:
+        investment_cash_inputs = _single_metric("InvestmentCash", suffix)
+        operating_cash_inputs = _single_metric("OperatingCash", suffix)
+        numerator = (
+            abs(investment_cash_inputs["value_num"])
+            if investment_cash_inputs["value_num"] is not None
+            else None
+        )
+        value_num, calc_status = _ratio_status(
+            numerator=numerator,
+            denominator=operating_cash_inputs["value_num"],
+            require_positive_denominator=True,
+        )
+        return {
+            "value_num": value_num,
+            "calc_status": calc_status,
+            "detail_inputs": {
+                **investment_cash_inputs["detail_inputs"],
+                **operating_cash_inputs["detail_inputs"],
+                "abs_investment_cash": numerator,
+            },
+            "reference_keys": [
+                *investment_cash_inputs["reference_keys"],
+                *operating_cash_inputs["reference_keys"],
+            ],
+            "display_formula": "abs(investment_cash) / operating_cash",
+            "stored_formula": "abs(investment_cash) / operating_cash",
+        }
+
+    def _income_taxes_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
+        direct_inputs = _single_metric("IncomeTaxes", suffix)
+        if direct_inputs["value_num"] is not None:
+            return {
+                **direct_inputs,
+                "calc_status": "ok",
+                "detail_extra": {"selected_source": "direct_income_taxes"},
+            }
+        component_inputs = _optional_sum_input(
+            metric_rows,
+            ["IncomeTaxesCurrentExpense", "IncomeTaxesDeferredExpense"],
+            suffix,
+        )
+        return {
+            **component_inputs,
+            "detail_extra": {"selected_source": "current_plus_deferred"},
+        }
+
+    def _interest_bearing_debt_input(
+        metric_rows: dict[str, dict[str, Any]],
+        suffix: str,
+    ) -> dict[str, Any]:
+        all_tier_bases = {
+            metric_base
+            for _tier_name, tier_bases in INTEREST_BEARING_DEBT_TIERS
+            for metric_base in tier_bases
+        }
+        for tier_name, tier_bases in INTEREST_BEARING_DEBT_TIERS:
+            tier_inputs = _optional_sum_input(metric_rows, tier_bases, suffix)
+            if tier_inputs["value_num"] is None:
+                continue
+            included_bases = [
+                metric_base
+                for metric_base in tier_bases
+                if _metric_value(metric_rows, _build_metric_key(metric_base, suffix)) is not None
+            ]
+            excluded_bases = sorted(all_tier_bases - set(tier_bases))
+            return {
+                **tier_inputs,
+                "detail_extra": {
+                    "selected_tier": tier_name,
+                    "included_bases": included_bases,
+                    "excluded_bases_due_to_precedence": excluded_bases,
+                },
+                "display_formula": f"{tier_name} component sum",
+                "stored_formula": "interest_bearing_debt_whitelist_precedence",
+            }
+        detail_inputs = {
+            _build_metric_key(metric_base, suffix): None
+            for metric_base in sorted(all_tier_bases)
+        }
+        return {
+            "value_num": None,
+            "calc_status": "missing_input",
+            "detail_inputs": detail_inputs,
+            "reference_keys": list(detail_inputs),
+            "detail_extra": {"selected_tier": ""},
+            "display_formula": "interest_bearing_debt whitelist",
+            "stored_formula": "interest_bearing_debt_whitelist_precedence",
+        }
+
+    def _roic_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
+        operating_income_inputs = _single_metric("OperatingIncome", suffix)
+        profit_before_tax_inputs = _single_metric("ProfitBeforeTax", suffix)
+        income_taxes_inputs = _income_taxes_input(metric_rows, suffix)
+        net_assets_inputs = _single_metric("NetAssets", suffix)
+        debt_inputs = _interest_bearing_debt_input(metric_rows, suffix)
+        cash_inputs = _single_metric("CashAndCashEquivalents", suffix)
+        adopted_tax_rate, tax_rate_status, effective_tax_rate, tax_rate_reason = _adopted_tax_rate_status(
+            profit_before_tax=profit_before_tax_inputs["value_num"],
+            income_taxes=income_taxes_inputs["value_num"],
+        )
+        after_tax_operating_income = None
+        if operating_income_inputs["value_num"] is not None and adopted_tax_rate is not None:
+            after_tax_operating_income = operating_income_inputs["value_num"] * (1 - adopted_tax_rate)
+        denominator = None
+        if (
+            net_assets_inputs["value_num"] is not None
+            and debt_inputs["value_num"] is not None
+            and cash_inputs["value_num"] is not None
+        ):
+            denominator = net_assets_inputs["value_num"] + debt_inputs["value_num"] - cash_inputs["value_num"]
+        value_num, calc_status = _ratio_status(
+            numerator=after_tax_operating_income,
+            denominator=denominator,
+            require_positive_denominator=True,
+        )
+        if calc_status == "missing_input" and tax_rate_status != "ok":
+            calc_status = tax_rate_status
+        return {
+            "value_num": value_num,
+            "calc_status": calc_status,
+            "detail_inputs": {
+                **operating_income_inputs["detail_inputs"],
+                **profit_before_tax_inputs["detail_inputs"],
+                **income_taxes_inputs["detail_inputs"],
+                **net_assets_inputs["detail_inputs"],
+                **debt_inputs["detail_inputs"],
+                **cash_inputs["detail_inputs"],
+                "adopted_tax_rate": adopted_tax_rate,
+                "effective_tax_rate": effective_tax_rate,
+                "after_tax_operating_income": after_tax_operating_income,
+                "invested_capital": denominator,
+            },
+            "reference_keys": [
+                *operating_income_inputs["reference_keys"],
+                *profit_before_tax_inputs["reference_keys"],
+                *income_taxes_inputs["reference_keys"],
+                *net_assets_inputs["reference_keys"],
+                *debt_inputs["reference_keys"],
+                *cash_inputs["reference_keys"],
+            ],
+            "detail_extra": {
+                "tax_rate_reason": tax_rate_reason,
+                "debt_detail": debt_inputs.get("detail_extra"),
+                "income_taxes_detail": income_taxes_inputs.get("detail_extra"),
+            },
+            "display_formula": "operating_income * (1 - adopted_tax_rate) / (net_assets + interest_bearing_debt - cash_and_cash_equivalents)",
+            "stored_formula": "after_tax_operating_income / invested_capital",
+        }
 
     _append_growth_rows(
         out_rows,
@@ -2316,6 +2588,33 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
+    if period_scope == "annual" and str(industry_33 or "").strip() not in ROIC_EXCLUDED_INDUSTRIES:
+        _append_rows_from_inputs(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            derived_metric_base="InterestBearingDebt",
+            metric_group="safety",
+            formula_name="interest_bearing_debt",
+            value_unit="yen",
+            input_builder=_interest_bearing_debt_input,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
+        _append_rows_from_inputs(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            derived_metric_base="ROIC",
+            metric_group="return",
+            formula_name="roic",
+            value_unit="ratio",
+            input_builder=_roic_input,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
     _append_rows_from_inputs(
         out_rows,
         metric_rows=metric_rows,
@@ -2463,6 +2762,32 @@ def calculate_derived_metrics(
         metric_group="cashflow",
         formula_name="free_cash_flow",
         display_formula="operating_cash + investment_cash",
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="InvestmentCashToNetSalesRatio",
+        metric_group="cashflow",
+        formula_name="investment_cash_to_net_sales_ratio",
+        value_unit="ratio",
+        input_builder=_abs_investment_cash_to_net_sales_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+    )
+    _append_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="InvestmentCashToOperatingCashRatio",
+        metric_group="cashflow",
+        formula_name="investment_cash_to_operating_cash_ratio",
+        value_unit="ratio",
+        input_builder=_abs_investment_cash_to_operating_cash_input,
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

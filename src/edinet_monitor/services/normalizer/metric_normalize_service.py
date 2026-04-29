@@ -377,6 +377,33 @@ MANUAL_SOURCE_TAG_PRIORITY_OVERRIDES = {
     },
 }
 
+PROFIT_BEFORE_TAX_SOURCE_TAGS = {
+    "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults",
+    "ProfitBeforeIncomeTaxesFromContinuingIFRSKeyFinancialData",
+    "ProfitBeforeTax",
+    "ProfitBeforeTaxIFRS",
+    "ProfitLossBeforeTax",
+    "ProfitLossBeforeTaxIFRS",
+    "ProfitLossBeforeIncomeTaxes",
+    "ProfitLossBeforeIncomeTaxesIFRS",
+    "IncomeBeforeIncomeTaxes",
+    "IncomeBeforeIncomeTaxesIFRS",
+    "ProfitBeforeIncomeTaxes",
+    "ProfitBeforeIncomeTaxesIFRS",
+    "ProfitBeforeTaxFromContinuingOperationsIFRS",
+    "ProfitBeforeTaxFromContinuingOperations",
+}
+
+SECONDARY_METRIC_BASES_BY_TAG = {
+    tag_name: ("ProfitBeforeTax",)
+    for tag_name in PROFIT_BEFORE_TAX_SOURCE_TAGS
+}
+
+MONTH_TO_YEAR_TAGS = {
+    "AverageAgeMonthsInformationAboutReportingCompanyInformationAboutEmployees",
+    "AverageLengthOfServiceMonthsInformationAboutReportingCompanyInformationAboutEmployees",
+}
+
 
 def _get_source_tag_priority(metric_base: str, tag_name: str) -> int:
     metric_map = SOURCE_TAG_PRIORITY_MAP.get(metric_base, {})
@@ -501,6 +528,29 @@ CONSOLIDATED_REPORTING_GUARD_METRIC_BASES = {
     "PolicyReserveProvision",
     "InvestmentExpenses",
     "ProjectExpenses",
+    "ProfitBeforeTax",
+    "IncomeTaxes",
+    "IncomeTaxesCurrentExpense",
+    "IncomeTaxesDeferredExpense",
+    "InterestBearingLiabilitiesCurrent",
+    "InterestBearingLiabilitiesNonCurrent",
+    "BondsAndBorrowingsCurrent",
+    "BondsAndBorrowingsNonCurrent",
+    "BorrowingsCurrent",
+    "BorrowingsNonCurrent",
+    "LeaseLiabilitiesCurrent",
+    "LeaseLiabilitiesNonCurrent",
+    "ShortTermLoansPayable",
+    "CurrentPortionOfLongTermLoansPayable",
+    "LongTermLoansPayable",
+    "BondsPayable",
+    "CurrentPortionOfBonds",
+    "ShortTermBondsPayable",
+    "CommercialPapersLiabilities",
+    "NumberOfEmployees",
+    "AverageAge",
+    "AverageLengthOfService",
+    "AverageAnnualSalary",
 }
 
 
@@ -597,6 +647,8 @@ def normalize_raw_fact_row(
     value_num = _to_number(row.get("value_text"))
     if value_num is None:
         return None
+    if tag_name in MONTH_TO_YEAR_TAGS:
+        value_num = value_num / 12.0
 
     consolidation = row.get("consolidation")
     if _is_forbidden_candidate(metric_base, tag_name, consolidation, industry_33=industry_33):
@@ -636,6 +688,35 @@ def normalize_raw_fact_row(
         "_candidate_validation_status": validation["status"],
         "_candidate_validation_issues": validation["issues"],
     }
+
+
+def _clone_normalized_candidate_for_metric_base(
+    row: dict[str, Any],
+    metric_base: str,
+    *,
+    structure_info: dict[str, Any] | None,
+) -> dict[str, Any]:
+    metric_key = str(row.get("metric_key") or "")
+    suffix = ""
+    for candidate_suffix in sorted(TARGET_CONTEXT_SUFFIXES.values(), key=lambda x: len(x[0]), reverse=True):
+        suffix_text = candidate_suffix[0]
+        if metric_key.endswith(suffix_text):
+            suffix = suffix_text
+            break
+    cloned = dict(row)
+    cloned["metric_key"] = _build_metric_key(metric_base, suffix)
+    cloned["_metric_base"] = metric_base
+    cloned["_tag_priority"] = _get_source_tag_priority(metric_base, str(row.get("source_tag") or ""))
+    cloned["_structure_priority"] = _structure_priority(
+        metric_base,
+        str(row.get("source_tag") or ""),
+        structure_info,
+    )
+    cloned["_manual_override_priority"] = _get_manual_source_tag_priority(
+        metric_base,
+        str(row.get("source_tag") or ""),
+    )
+    return cloned
 
 
 def _dedupe_group_key(row: dict[str, Any]) -> tuple:
@@ -741,6 +822,16 @@ def build_normalization_candidates(
         )
         if normalized is not None:
             candidates.append(normalized)
+            tag_name = str(normalized.get("source_tag") or "")
+            structure_info = structure_map.get(tag_name)
+            for secondary_metric_base in SECONDARY_METRIC_BASES_BY_TAG.get(tag_name, ()):
+                candidates.append(
+                    _clone_normalized_candidate_for_metric_base(
+                        normalized,
+                        secondary_metric_base,
+                        structure_info=structure_info,
+                    )
+                )
 
     if enforce_candidate_validation:
         candidates = _filter_enforced_candidates_with_consolidated_currency_guard(candidates)

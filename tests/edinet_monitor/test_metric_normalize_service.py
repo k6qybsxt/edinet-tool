@@ -228,6 +228,43 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "SellingExpensesCurrent")
         self.assertEqual(normalized["source_tag"], "SellingGeneralAndAdministrativeExpensesGAS")
 
+    def test_profit_before_tax_tag_is_saved_for_ordinary_income_and_profit_before_tax(self) -> None:
+        row = build_raw_fact(tag_name="IncomeBeforeIncomeTaxes", value_text="1000")
+
+        candidates = build_normalization_candidates(
+            [row],
+            edinet_code="E00000",
+            security_code="1234",
+        )
+        by_key = {candidate["metric_key"]: candidate for candidate in candidates}
+
+        self.assertIn("OrdinaryIncomeCurrent", by_key)
+        self.assertIn("ProfitBeforeTaxCurrent", by_key)
+        self.assertEqual(by_key["ProfitBeforeTaxCurrent"]["value_num"], 1000.0)
+
+    def test_average_age_months_are_converted_to_years(self) -> None:
+        row = build_raw_fact(
+            tag_name="AverageAgeMonthsInformationAboutReportingCompanyInformationAboutEmployees",
+            value_text="420",
+            context_ref="CurrentYearInstant_ConsolidatedMember",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2025-03-31",
+            unit_ref="pure",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="1234",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "AverageAgeCurrent")
+        self.assertEqual(normalized["value_num"], 35.0)
+
     def test_gas_supply_and_sales_expenses_maps_to_selling_expenses_only(self) -> None:
         row = build_raw_fact(tag_name="SupplyAndSalesExpensesGAS")
 

@@ -329,6 +329,7 @@ def fetch_derived_metrics_target_filings(
             f.security_code,
             f.form_type,
             f.period_end,
+            im.industry_33,
             f.accounting_standard,
             f.document_display_unit,
             f.xbrl_path,

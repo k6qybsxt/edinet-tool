@@ -265,6 +265,7 @@ def rebuild_metrics_for_scope(
             derived_rows = calculate_derived_metrics(
                 normalized_rows,
                 form_type=str(filing.get("form_type") or ""),
+                industry_33=str(filing.get("industry_33") or ""),
                 accounting_standard=str(filing.get("accounting_standard") or ""),
                 document_display_unit=str(filing.get("document_display_unit") or ""),
                 rule_version=rule_version,

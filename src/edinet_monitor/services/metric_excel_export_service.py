@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 import re
@@ -89,8 +89,25 @@ HALF_ONLY_BASES = {
     "HalfOrdinaryIncomeProgressRate",
     "HalfProfitProgressRate",
 }
+HALF_DISABLED_BASES = {
+    "NetSalesGrowthRate5Year",
+    "NetSalesGrowthRate10Year",
+    "OrdinaryIncomeGrowthRate5Year",
+    "OrdinaryIncomeGrowthRate10Year",
+    "CashBalanceGrowthRate5Year",
+    "CashBalanceGrowthRate10Year",
+    "OutstandingSharesGrowthRate5Year",
+    "OutstandingSharesGrowthRate10Year",
+    "TheoreticalSharePriceGrowthRate5Year",
+    "TheoreticalSharePriceGrowthRate10Year",
+}
 HALF_PREFIX = "\u534a\u671f "
 HALF_YOY_PREFIX = "\u534a\u671f\u524d\u5e74\u6bd4 "
+INDUSTRY_ONLY_TOKEN = "\u696d\u7a2e\u306e\u307f"
+ROW_KIND_DETAIL = "\u660e\u7d30"
+ROW_KIND_AVERAGE = "\u5e73\u5747\u5024"
+ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
+SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES)
 
 MONETARY_BASES = {
     "NetSales",
@@ -118,9 +135,19 @@ MONETARY_BASES = {
     "PolicyReserveProvision",
     "InvestmentExpenses",
     "ProjectExpenses",
+    "ProfitBeforeTax",
+    "IncomeTaxes",
+    "InterestBearingDebt",
 }
 
-PERCENT_VALUE_BASES = {"ROA", "ROE", "EquityRatio"} | ABSORBED_RATIO_BASES
+PERCENT_VALUE_BASES = {
+    "ROA",
+    "ROE",
+    "ROIC",
+    "EquityRatio",
+    "InvestmentCashToNetSalesRatio",
+    "InvestmentCashToOperatingCashRatio",
+} | ABSORBED_RATIO_BASES
 RATIO_VALUE_BASES = {
     "TheoreticalPBR",
     "TheoreticalPER",
@@ -146,6 +173,8 @@ ONE_DECIMAL_VALUE_BASES = {
     "TheoreticalPBR",
     "TheoreticalPER",
     "TheoreticalPCFR",
+    "AverageAge",
+    "AverageLengthOfService",
 }
 
 INTEGER_VALUE_BASES = {
@@ -159,6 +188,8 @@ INTEGER_VALUE_BASES = {
     "InvestmentCashPerShare",
     "FinancingCashPerShare",
     "FCFPerShare",
+    "NumberOfEmployees",
+    "AverageAnnualSalary",
 }
 
 GROWTH_RATIO_BASES = {
@@ -181,6 +212,32 @@ GROWTH_RATIO_BASES = {
     "HalfNetSalesProgressRate",
     "HalfOrdinaryIncomeProgressRate",
     "HalfProfitProgressRate",
+    "InvestmentCashToNetSalesRatio",
+    "InvestmentCashToOperatingCashRatio",
+}
+
+INDUSTRY_AGGREGATE_VALUE_BASES = {
+    "NetSales",
+    "GrossProfit",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "CostOfSales",
+    "SellingExpenses",
+    "GeneralAndAdministrativeExpenses",
+    "SellingExpensesOnly",
+    "OperatingIncome",
+    "OrdinaryIncome",
+    "ProfitLoss",
+    "EstimatedNetIncome",
+    "TotalAssets",
+    "NetAssets",
+    "BeginningCashBalance",
+    "CashAndCashEquivalents",
+    "OperatingCash",
+    "InvestmentCash",
+    "FinancingCash",
+    "FCF",
+    "InterestBearingDebt",
+    "NumberOfEmployees",
 }
 
 SPARSE_PERIOD_OFFSETS_BY_BASE = {
@@ -216,6 +273,9 @@ FIXED_ROW_BASE_ORDER = [
     "InvestmentCash",
     "FinancingCash",
     "FCF",
+    "InvestmentCashToNetSalesRatio",
+    "InvestmentCashToOperatingCashRatio",
+    "InterestBearingDebt",
     "OutstandingShares",
     "EPS",
     "EPSGrowthRate",
@@ -239,6 +299,7 @@ FIXED_ROW_BASE_ORDER = [
     "LiabilitiesPerShare",
     "ROA",
     "ROE",
+    "ROIC",
     "EquityRatio",
     "AssetValue",
     "BusinessValue",
@@ -253,6 +314,10 @@ FIXED_ROW_BASE_ORDER = [
     "FinancingCashPerShare",
     "FCFPerShare",
     "TheoreticalPCFR",
+    "NumberOfEmployees",
+    "AverageAge",
+    "AverageLengthOfService",
+    "AverageAnnualSalary",
 ]
 
 ROW_BASE_ORDER_INDEX = {
@@ -321,6 +386,7 @@ COMMON_TAIL_BASES = [
 ]
 
 POST_BPS_TAIL_BASES = FIXED_ROW_BASE_ORDER[FIXED_ROW_BASE_ORDER.index("BPS") + 1 :]
+POST_BPS_TAIL_BASES_FOR_FINANCIAL = [base for base in POST_BPS_TAIL_BASES if base != "ROIC"]
 
 DEFAULT_BASES_BY_SHEET = {
     GENERAL_SHEET: list(FIXED_ROW_BASE_ORDER),
@@ -347,7 +413,7 @@ DEFAULT_BASES_BY_SHEET = {
         "EPSGrowthRate",
         "BPS",
     ]
-    + POST_BPS_TAIL_BASES,
+    + POST_BPS_TAIL_BASES_FOR_FINANCIAL,
     SECURITIES_INDUSTRY_LABEL: [
         "NetSales",
         "GrossProfit",
@@ -373,7 +439,7 @@ DEFAULT_BASES_BY_SHEET = {
         "EPSGrowthRate",
         "BPS",
     ]
-    + POST_BPS_TAIL_BASES,
+    + POST_BPS_TAIL_BASES_FOR_FINANCIAL,
     INSURANCE_INDUSTRY_LABEL: [
         "NetSales",
         "GrossProfit",
@@ -399,7 +465,7 @@ DEFAULT_BASES_BY_SHEET = {
         "EPSGrowthRate",
         "BPS",
     ]
-    + POST_BPS_TAIL_BASES,
+    + POST_BPS_TAIL_BASES_FOR_FINANCIAL,
 }
 
 ROW_BASE_ORDER_INDEX_BY_SHEET = {
@@ -477,6 +543,7 @@ INDUSTRY_ALIASES = {
 @dataclass(frozen=True)
 class MetricExcelCondition:
     industries: list[str] = field(default_factory=list)
+    industry_only: bool = False
     security_codes: list[str] = field(default_factory=list)
     company_names: list[str] = field(default_factory=list)
     metric_labels: list[str] = field(default_factory=list)
@@ -494,7 +561,7 @@ class MetricExcelCondition:
     raw_values: dict[str, str] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class MetricExcelRow:
     sheet_name: str
     security_code: str
@@ -508,6 +575,9 @@ class MetricExcelRow:
     values_by_offset: dict[int, float | None]
     units_by_offset: dict[int, str]
     ratios_by_offset: dict[int, float | None]
+    row_kind: str = ROW_KIND_DETAIL
+    raw_values_by_offset: dict[int, float | None] = field(default_factory=dict)
+    ranks_by_offset: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -734,9 +804,17 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
     percent_filter_period_offsets = _parse_periods(percent_filter_period_text) if percent_filter_period_text else [0]
     percent_filter_min = _parse_percent_threshold(raw.get("percent_filter_min"))
     percent_filter_max = _parse_percent_threshold(raw.get("percent_filter_max"))
+    industries = _split_industries(raw.get("industries"))
+    industry_only = any(_normalize_text(item) == _normalize_text(INDUSTRY_ONLY_TOKEN) for item in industries)
+    industries = [
+        item
+        for item in industries
+        if _normalize_text(item) != _normalize_text(INDUSTRY_ONLY_TOKEN)
+    ]
 
     return MetricExcelCondition(
-        industries=_split_industries(raw.get("industries")),
+        industries=industries,
+        industry_only=industry_only,
         security_codes=[_normalize_security_code(code) for code in _split_multi(raw.get("security_codes"))],
         company_names=_split_multi(raw.get("company_names")),
         metric_labels=_split_multi(raw.get("metrics")),
@@ -1021,6 +1099,12 @@ def _scale_value_for_document_unit(
 
 
 def _display_unit_for_metric(metric_base: str, document_display_unit: str | None) -> str:
+    if metric_base == "NumberOfEmployees":
+        return "\u4eba"
+    if metric_base in {"AverageAge", "AverageLengthOfService"}:
+        return "\u5e74"
+    if metric_base == "AverageAnnualSalary":
+        return "\u5186"
     if metric_base in MONETARY_BASES:
         display_unit = str(document_display_unit or "").strip()
         if display_unit in {"百万円", "千円"}:
@@ -1051,6 +1135,225 @@ def _period_display_for_filing(filing: sqlite3.Row | dict[str, Any] | None) -> s
 
 def _period_scope_label(period_scope: str) -> str:
     return "\u534a\u671f" if period_scope == "half" else "\u901a\u671f"
+
+
+def _calendar_year_bucket(period_bucket_end: str | None) -> int | None:
+    text = str(period_bucket_end or "").strip()
+    if len(text) < 4:
+        return None
+    try:
+        year = int(text[:4])
+    except ValueError:
+        return None
+    return year
+
+
+def _aggregate_period_display(period_scope: str, calendar_year: int | None) -> str:
+    if calendar_year is None:
+        return ""
+    return f"{_period_scope_label(period_scope)} {calendar_year}\u5e74\u6c7a\u7b97"
+
+
+def _scale_industry_aggregate_value(metric_base: str, value: float | None) -> tuple[float | None, str]:
+    if value is None:
+        return None, ""
+    if metric_base in MONETARY_BASES:
+        return value / 100_000_000, "\u5104\u5186"
+    if metric_base == "NumberOfEmployees":
+        return value, "\u4eba"
+    return value, _display_unit_for_metric(metric_base, "")
+
+
+def _aggregate_ratio_for_row_base(metric_base: str, sums: dict[str, float]) -> float | None:
+    def ratio(numerator_base: str, denominator_base: str, *, positive_denominator: bool = True) -> float | None:
+        numerator = sums.get(numerator_base)
+        denominator = sums.get(denominator_base)
+        if numerator is None or denominator is None:
+            return None
+        if positive_denominator and denominator <= 0:
+            return None
+        if denominator == 0:
+            return None
+        return numerator / denominator
+
+    if metric_base in CONSTANT_RATIO_BY_ROW_BASE:
+        return 1.0 if sums.get(metric_base) is not None else None
+    if metric_base == "GrossProfit":
+        return ratio("GrossProfit", "NetSales")
+    if metric_base == "CostOfSales":
+        return ratio("CostOfSales", "NetSales")
+    if metric_base == "SellingExpenses":
+        return ratio("SellingExpenses", "NetSales")
+    if metric_base == "OperatingIncome":
+        return ratio("OperatingIncome", "NetSales")
+    if metric_base == "OrdinaryIncome":
+        return ratio("OrdinaryIncome", "NetSales")
+    if metric_base == "ProfitLoss":
+        return ratio("ProfitLoss", "NetSales")
+    if metric_base == "NetAssets":
+        return ratio("NetAssets", "TotalAssets", positive_denominator=False)
+    return None
+
+
+def _append_warning_once(warnings: list[str], warning: str) -> None:
+    if warning not in warnings:
+        warnings.append(warning)
+
+
+def _filter_excel_visible_bases(
+    bases: list[str],
+    *,
+    warnings: list[str],
+    explicit_metric_request: bool,
+) -> list[str]:
+    suppressed = [base for base in bases if base in SUPPRESSED_EXCEL_BASES]
+    if suppressed and explicit_metric_request:
+        labels = ", ".join(_base_metric_label_for_excel(base) for base in suppressed)
+        _append_warning_once(warnings, f"excel_suppressed_metrics={labels}")
+    return [base for base in bases if base not in SUPPRESSED_EXCEL_BASES]
+
+
+def _mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def _stat_value_and_unit(
+    metric_base: str,
+    value: float | None,
+    *,
+    industry_only: bool,
+) -> tuple[float | None, str]:
+    if value is None:
+        return None, ""
+    if metric_base in MONETARY_BASES:
+        if industry_only:
+            return value / 100_000_000, "\u5104\u5186"
+        return value / 1_000_000, "\u767e\u4e07\u5186"
+    return value, _display_unit_for_metric(metric_base, "")
+
+
+def _period_text_for_stats(rows: list[MetricExcelRow], offset: int) -> str:
+    for row in rows:
+        text = row.periods_by_offset.get(offset, "")
+        if text:
+            return text
+    return ""
+
+
+def _raw_value_for_export_stats(row: MetricExcelRow, offset: int) -> float | None:
+    value = row.raw_values_by_offset.get(offset)
+    if value is not None:
+        return value
+    return row.values_by_offset.get(offset)
+
+
+def _assign_ranks(rows: list[MetricExcelRow], period_offsets: list[int]) -> None:
+    groups: dict[tuple[str, str, str, int], list[tuple[int, float]]] = {}
+    group_sizes: dict[tuple[str, str, str, int], int] = {}
+    for index, row in enumerate(rows):
+        if row.row_kind != ROW_KIND_DETAIL:
+            continue
+        for offset in period_offsets:
+            key = (row.sheet_name, row.period_scope, row.metric_base, offset)
+            group_sizes[key] = group_sizes.get(key, 0) + 1
+            value = _raw_value_for_export_stats(row, offset)
+            if value is None:
+                continue
+            groups.setdefault(key, []).append((index, float(value)))
+
+    for key, values in groups.items():
+        denominator = group_sizes.get(key, len(values))
+        previous_value: float | None = None
+        previous_rank = 0
+        for position, (row_index, value) in enumerate(
+            sorted(values, key=lambda item: item[1], reverse=True),
+            start=1,
+        ):
+            if previous_value is None or value != previous_value:
+                previous_rank = position
+                previous_value = value
+            rows[row_index].ranks_by_offset[key[3]] = f"{previous_rank}/{denominator}"
+
+
+def _append_stat_rows(
+    rows: list[MetricExcelRow],
+    period_offsets: list[int],
+    *,
+    industry_only: bool,
+) -> list[MetricExcelRow]:
+    detail_rows = [row for row in rows if row.row_kind == ROW_KIND_DETAIL]
+    grouped: dict[tuple[str, str, str], list[MetricExcelRow]] = {}
+    for row in detail_rows:
+        grouped.setdefault((row.sheet_name, row.period_scope, row.metric_base), []).append(row)
+
+    stat_rows: list[MetricExcelRow] = []
+    for (_sheet, _scope, metric_base), group_rows in grouped.items():
+        for row_kind, aggregator in (
+            (ROW_KIND_AVERAGE, _mean),
+            (ROW_KIND_MEDIAN, _median),
+        ):
+            periods_by_offset: dict[int, str] = {}
+            values_by_offset: dict[int, float | None] = {}
+            units_by_offset: dict[int, str] = {}
+            ratios_by_offset: dict[int, float | None] = {}
+            raw_values_by_offset: dict[int, float | None] = {}
+
+            for offset in period_offsets:
+                raw_values = [
+                    float(raw_value)
+                    for row in group_rows
+                    if (raw_value := _raw_value_for_export_stats(row, offset)) is not None
+                ]
+                ratio_values = [
+                    float(row.ratios_by_offset[offset])
+                    for row in group_rows
+                    if row.ratios_by_offset.get(offset) is not None
+                ]
+                raw_stat = aggregator(raw_values)
+                display_stat, unit = _stat_value_and_unit(
+                    metric_base,
+                    raw_stat,
+                    industry_only=industry_only,
+                )
+                periods_by_offset[offset] = _period_text_for_stats(group_rows, offset)
+                values_by_offset[offset] = display_stat
+                units_by_offset[offset] = unit if raw_stat is not None else ""
+                ratios_by_offset[offset] = aggregator(ratio_values)
+                raw_values_by_offset[offset] = raw_stat
+
+            first = group_rows[0]
+            stat_rows.append(
+                MetricExcelRow(
+                    sheet_name=first.sheet_name,
+                    security_code="",
+                    company_name="",
+                    industry_33="",
+                    period_scope=first.period_scope,
+                    row_kind=row_kind,
+                    current_period_end=first.current_period_end,
+                    metric_base=metric_base,
+                    metric_label=row_kind,
+                    periods_by_offset=periods_by_offset,
+                    values_by_offset=values_by_offset,
+                    units_by_offset=units_by_offset,
+                    ratios_by_offset=ratios_by_offset,
+                    raw_values_by_offset=raw_values_by_offset,
+                )
+            )
+
+    return [*rows, *stat_rows]
 
 
 def _passes_trend(values: list[float | None], direction: str) -> bool:
@@ -1128,12 +1431,170 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
     return preview
 
 
-def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, str, int]:
+def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str]:
     sheet_order = SHEET_ORDER.index(row.sheet_name)
     sheet_metric_order = ROW_BASE_ORDER_INDEX_BY_SHEET.get(row.sheet_name, ROW_BASE_ORDER_INDEX)
     metric_order = sheet_metric_order.get(row.metric_base, len(sheet_metric_order))
     scope_order = 0 if row.period_scope == "annual" else 1
-    return (sheet_order, metric_order, row.security_code, scope_order)
+    row_kind_order = {
+        ROW_KIND_DETAIL: 0,
+        ROW_KIND_AVERAGE: 1,
+        ROW_KIND_MEDIAN: 2,
+    }.get(row.row_kind, 9)
+    return (sheet_order, metric_order, scope_order, row_kind_order, row.security_code)
+
+
+def _aggregate_required_bases(row_bases: list[str]) -> list[str]:
+    required = set(row_bases)
+    for base in row_bases:
+        ratio_base = ABSORBED_RATIO_BASE_BY_ROW_BASE.get(base)
+        if ratio_base:
+            required.add(ratio_base)
+        if base in {
+            "GrossProfit",
+            "CostOfSales",
+            "SellingExpenses",
+            "OperatingIncome",
+            "OrdinaryIncome",
+            "ProfitLoss",
+        }:
+            required.add("NetSales")
+        if base == "NetAssets":
+            required.add("TotalAssets")
+    return sorted(required)
+
+
+def _build_industry_only_metric_excel_rows(
+    conn: sqlite3.Connection,
+    condition: MetricExcelCondition,
+    *,
+    preview_limit: int,
+) -> tuple[list[MetricExcelRow], list[str], list[str], list[dict[str, Any]], int]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    query_condition = replace(condition, period_scopes=["annual"])
+    filings = _fetch_ranked_filings(conn, query_condition)
+    if condition.period_scopes != ["annual"]:
+        warnings.append("industry_only_mode_forced_to_annual")
+    if condition.security_codes:
+        warnings.append("industry_only_mode_security_codes_filter_applied")
+    if condition.company_names:
+        warnings.append("industry_only_mode_company_names_filter_applied")
+
+    selected_row_bases = _resolve_row_bases(GENERAL_SHEET, condition.metric_labels, errors)
+    selected_row_bases = [
+        base
+        for base in selected_row_bases
+        if base in INDUSTRY_AGGREGATE_VALUE_BASES
+    ]
+    selected_row_bases = _filter_excel_visible_bases(
+        selected_row_bases,
+        warnings=warnings,
+        explicit_metric_request=bool(condition.metric_labels),
+    )
+    selected_value_bases = _aggregate_required_bases(selected_row_bases)
+
+    latest_by_company_scope_fy: dict[tuple[str, str, int], sqlite3.Row] = {}
+    max_fiscal_year_by_scope: dict[str, int] = {}
+    for row in filings:
+        period_scope = PERIOD_SCOPE_BY_FORM_TYPE.get(str(row["form_type"] or ""), "annual")
+        fiscal_year = _calendar_year_bucket(str(row["period_bucket_end"] or row["period_end"] or ""))
+        if fiscal_year is None:
+            continue
+        max_fiscal_year_by_scope[period_scope] = max(
+            max_fiscal_year_by_scope.get(period_scope, fiscal_year),
+            fiscal_year,
+        )
+        key = (str(row["edinet_code"]), period_scope, fiscal_year)
+        current = latest_by_company_scope_fy.get(key)
+        if current is None or (
+            str(row["submit_date"] or ""),
+            str(row["doc_id"] or ""),
+        ) > (
+            str(current["submit_date"] or ""),
+            str(current["doc_id"] or ""),
+        ):
+            latest_by_company_scope_fy[key] = row
+
+    selected_filings = list(latest_by_company_scope_fy.values())
+    metric_values = _fetch_metric_values(
+        conn,
+        doc_ids=[str(row["doc_id"]) for row in selected_filings],
+        metric_bases=selected_value_bases,
+    )
+
+    sums_by_key: dict[tuple[str, str, int], dict[str, float]] = {}
+    for row in selected_filings:
+        industry = str(row["industry_33"] or "")
+        period_scope = PERIOD_SCOPE_BY_FORM_TYPE.get(str(row["form_type"] or ""), "annual")
+        fiscal_year = _calendar_year_bucket(str(row["period_bucket_end"] or row["period_end"] or ""))
+        if fiscal_year is None:
+            continue
+        key = (industry, period_scope, fiscal_year)
+        bucket = sums_by_key.setdefault(key, {})
+        doc_id = str(row["doc_id"])
+        for base in selected_value_bases:
+            value = metric_values.get((doc_id, _metric_key(base)))
+            if value is None:
+                continue
+            bucket[base] = bucket.get(base, 0.0) + float(value)
+
+    industries = sorted({industry for industry, _scope, _fy in sums_by_key})
+    rows: list[MetricExcelRow] = []
+    for industry in industries:
+        for period_scope in ["annual"]:
+            max_fiscal_year = max_fiscal_year_by_scope.get(period_scope)
+            if max_fiscal_year is None:
+                continue
+            row_bases = list(selected_row_bases)
+            if period_scope != "half":
+                row_bases = [base for base in row_bases if base not in HALF_ONLY_BASES]
+            else:
+                row_bases = [base for base in row_bases if base not in HALF_DISABLED_BASES]
+            for base in row_bases:
+                periods_by_offset: dict[int, str] = {}
+                values_by_offset: dict[int, float | None] = {}
+                units_by_offset: dict[int, str] = {}
+                ratios_by_offset: dict[int, float | None] = {}
+                raw_values_by_offset: dict[int, float | None] = {}
+                for offset in condition.period_offsets:
+                    fiscal_year = max_fiscal_year - offset
+                    sums = sums_by_key.get((industry, period_scope, fiscal_year), {})
+                    raw_value = sums.get(base)
+                    periods_by_offset[offset] = _aggregate_period_display(period_scope, fiscal_year)
+                    scaled_value, unit = _scale_industry_aggregate_value(base, raw_value)
+                    values_by_offset[offset] = scaled_value
+                    raw_values_by_offset[offset] = raw_value
+                    units_by_offset[offset] = unit if raw_value is not None else ""
+                    ratios_by_offset[offset] = _aggregate_ratio_for_row_base(base, sums)
+                rows.append(
+                    MetricExcelRow(
+                        sheet_name=GENERAL_SHEET,
+                        security_code="",
+                        company_name="",
+                        industry_33=industry,
+                        period_scope=period_scope,
+                        row_kind=ROW_KIND_DETAIL,
+                        current_period_end=_aggregate_period_display(period_scope, max_fiscal_year),
+                        metric_base=base,
+                        metric_label=_metric_label_for_excel(
+                            base,
+                            industry,
+                            period_scope=period_scope,
+                        ),
+                        periods_by_offset=periods_by_offset,
+                        values_by_offset=values_by_offset,
+                        units_by_offset=units_by_offset,
+                        ratios_by_offset=ratios_by_offset,
+                        raw_values_by_offset=raw_values_by_offset,
+                    )
+                )
+
+    _assign_ranks(rows, condition.period_offsets)
+    rows = _append_stat_rows(rows, condition.period_offsets, industry_only=True)
+    rows.sort(key=_row_sort_key)
+    preview_rows = _build_preview_rows(rows, condition.period_offsets, preview_limit)
+    return rows, errors, warnings, preview_rows, len(industries)
 
 
 def build_metric_excel_rows(
@@ -1142,6 +1603,13 @@ def build_metric_excel_rows(
     *,
     preview_limit: int = 10,
 ) -> tuple[list[MetricExcelRow], list[str], list[str], list[dict[str, Any]], int]:
+    if condition.industry_only:
+        return _build_industry_only_metric_excel_rows(
+            conn,
+            condition,
+            preview_limit=preview_limit,
+        )
+
     errors: list[str] = []
     warnings: list[str] = []
     filings = _fetch_ranked_filings(conn, condition)
@@ -1152,7 +1620,11 @@ def build_metric_excel_rows(
         filings_by_company_scope.setdefault((str(row["edinet_code"]), period_scope), []).append(row)
 
     selected_row_bases_by_sheet = {
-        sheet: _resolve_row_bases(sheet, condition.metric_labels, errors)
+        sheet: _filter_excel_visible_bases(
+            _resolve_row_bases(sheet, condition.metric_labels, errors),
+            warnings=warnings,
+            explicit_metric_request=bool(condition.metric_labels),
+        )
         for sheet in SHEET_ORDER
     }
 
@@ -1204,6 +1676,8 @@ def build_metric_excel_rows(
         row_bases = selected_row_bases_by_sheet[sheet_name]
         if current_period_scope != "half":
             row_bases = [base for base in row_bases if base not in HALF_ONLY_BASES]
+        else:
+            row_bases = [base for base in row_bases if base not in HALF_DISABLED_BASES]
 
         if not _passes_percent_filters(
             filter_bases=percent_filter_bases_by_sheet.get(sheet_name, []),
@@ -1250,6 +1724,7 @@ def build_metric_excel_rows(
             values_by_offset: dict[int, float | None] = {}
             units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
+            raw_values_by_offset: dict[int, float | None] = {}
             ratio_base = ABSORBED_RATIO_BASE_BY_ROW_BASE.get(base)
             allowed_offsets = SPARSE_PERIOD_OFFSETS_BY_BASE.get(base)
             for offset in condition.period_offsets:
@@ -1258,6 +1733,7 @@ def build_metric_excel_rows(
                     values_by_offset[offset] = None
                     units_by_offset[offset] = ""
                     ratios_by_offset[offset] = None
+                    raw_values_by_offset[offset] = None
                     continue
 
                 filing = by_offset.get(offset)
@@ -1266,11 +1742,13 @@ def build_metric_excel_rows(
                     values_by_offset[offset] = None
                     units_by_offset[offset] = ""
                     ratios_by_offset[offset] = None
+                    raw_values_by_offset[offset] = None
                     continue
 
                 doc_id = str(filing["doc_id"])
                 periods_by_offset[offset] = _period_display_for_filing(filing)
                 raw_value = metric_values.get((doc_id, _metric_key(base)))
+                raw_values_by_offset[offset] = raw_value
                 values_by_offset[offset] = _scale_value_for_document_unit(
                     base,
                     raw_value,
@@ -1296,6 +1774,7 @@ def build_metric_excel_rows(
                     company_name=str(current["company_name"] or ""),
                     industry_33=str(current["industry_33"] or ""),
                     period_scope=current_period_scope,
+                    row_kind=ROW_KIND_DETAIL,
                     current_period_end=str(current["period_end"] or ""),
                     metric_base=base,
                     metric_label=_metric_label_for_excel(
@@ -1307,12 +1786,16 @@ def build_metric_excel_rows(
                     values_by_offset=values_by_offset,
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
+                    raw_values_by_offset=raw_values_by_offset,
                 )
             )
 
+    target_companies = len({row.security_code for row in rows if row.row_kind == ROW_KIND_DETAIL})
+    _assign_ranks(rows, condition.period_offsets)
+    rows = _append_stat_rows(rows, condition.period_offsets, industry_only=False)
     rows.sort(key=_row_sort_key)
     preview_rows = _build_preview_rows(rows, condition.period_offsets, preview_limit)
-    return rows, errors, warnings, preview_rows, len({row.security_code for row in rows})
+    return rows, errors, warnings, preview_rows, target_companies
 
 
 def _write_summary_sheet(
@@ -1333,6 +1816,17 @@ def _write_summary_sheet(
         ("output_rows", output_rows),
         ("errors", len(errors)),
         ("warnings", len(warnings)),
+        ("industry_only", "1" if condition.industry_only else "0"),
+        (
+            "aggregation_basis_note",
+            (
+                "\u96c6\u8a08\u57fa\u6e96: "
+                f"{datetime.now().isoformat(timespec='minutes')}"
+                "\u6642\u70b9\u3067DB\u306b\u53cd\u6620\u6e08\u307f\u306e\u6c7a\u7b97\u671f\u672b\u65e5\u30d9\u30fc\u30b9"
+            )
+            if condition.industry_only
+            else "",
+        ),
         ("industries", ", ".join(condition.industries) if condition.industries else "ALL"),
         ("security_codes", ", ".join(condition.security_codes) if condition.security_codes else "ALL"),
         ("company_names", ", ".join(condition.company_names) if condition.company_names else "ALL"),
@@ -1423,6 +1917,26 @@ def _write_metric_sheet(
     for offset in period_offsets:
         label = PERIOD_LABEL_BY_OFFSET[offset]
         headers.extend([f"{label}_期間", f"{label}_数値", f"{label}_単位", f"{label}_比率"])
+    headers = [
+        "\u8a3c\u5238\u30b3\u30fc\u30c9",
+        "\u4f01\u696d\u540d",
+        "\u696d\u7a2e",
+        "\u6c7a\u7b97\u7a2e\u5225",
+        "\u884c\u7a2e\u5225",
+        "\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f",
+        "\u6307\u6a19",
+    ]
+    for offset in period_offsets:
+        label = PERIOD_LABEL_BY_OFFSET[offset]
+        headers.extend(
+            [
+                f"{label}_\u671f\u9593",
+                f"{label}_\u6570\u5024",
+                f"{label}_\u5358\u4f4d",
+                f"{label}_\u6bd4\u7387",
+                f"{label}_\u9806\u4f4d",
+            ]
+        )
     ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="D9EAF7")
@@ -1436,6 +1950,7 @@ def _write_metric_sheet(
             row.company_name,
             row.industry_33,
             _period_scope_label(row.period_scope),
+            row.row_kind,
             row.current_period_end,
             row.metric_label,
         ]
@@ -1446,29 +1961,31 @@ def _write_metric_sheet(
                     row.values_by_offset.get(offset),
                     row.units_by_offset.get(offset, ""),
                     row.ratios_by_offset.get(offset),
+                    row.ranks_by_offset.get(offset, ""),
                 ]
             )
         ws.append(values)
         current_row = ws.max_row
         for idx, offset in enumerate(period_offsets):
-            value_col = 8 + idx * 4
+            value_col = 9 + idx * 5
             ratio_col = value_col + 2
             _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
             ws.cell(current_row, ratio_col).number_format = "0.0%"
 
-    ws.freeze_panes = "G2"
+    ws.freeze_panes = "H2"
     ws.auto_filter.ref = ws.dimensions
     widths = {
         "A": 12,
         "B": 28,
         "C": 18,
         "D": 12,
-        "E": 16,
-        "F": 24,
+        "E": 12,
+        "F": 16,
+        "G": 24,
     }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
-    for col_idx in range(7, ws.max_column + 1):
+    for col_idx in range(8, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 14
 
 
@@ -1493,11 +2010,13 @@ def _write_vertical_data_sheet(
         "\u4f01\u696d\u540d",
         "\u696d\u7a2e",
         "\u6c7a\u7b97\u7a2e\u5225",
+        "\u884c\u7a2e\u5225",
         "\u671f\u9593",
         "\u6307\u6a19",
         "\u6570\u5024",
         "\u5358\u4f4d",
         "\u6bd4\u7387",
+        "\u9806\u4f4d",
     ]
     ws.append(headers)
 
@@ -1517,16 +2036,18 @@ def _write_vertical_data_sheet(
                     row.company_name,
                     row.industry_33,
                     _period_scope_label(row.period_scope),
+                    row.row_kind,
                     period_text,
                     row.metric_label,
                     row.values_by_offset.get(offset),
                     row.units_by_offset.get(offset, ""),
                     row.ratios_by_offset.get(offset),
+                    row.ranks_by_offset.get(offset, ""),
                 ]
             )
             current_row = ws.max_row
-            _format_value_cell(ws.cell(current_row, 7), row.metric_base)
-            ws.cell(current_row, 9).number_format = "0.0%"
+            _format_value_cell(ws.cell(current_row, 8), row.metric_base)
+            ws.cell(current_row, 10).number_format = "0.0%"
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
@@ -1535,11 +2056,13 @@ def _write_vertical_data_sheet(
         "B": 28,
         "C": 18,
         "D": 12,
-        "E": 14,
-        "F": 28,
-        "G": 16,
-        "H": 10,
-        "I": 12,
+        "E": 12,
+        "F": 14,
+        "G": 28,
+        "H": 16,
+        "I": 10,
+        "J": 12,
+        "K": 12,
     }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
@@ -1553,6 +2076,7 @@ def write_metric_excel(
     db_path: str | Path,
     errors: list[str],
     warnings: list[str],
+    target_companies: int | None = None,
 ) -> Path:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1565,7 +2089,9 @@ def write_metric_excel(
         condition=condition,
         db_path=db_path,
         output_rows=len(rows),
-        target_companies=len({row.security_code for row in rows}),
+        target_companies=target_companies
+        if target_companies is not None
+        else len({row.security_code for row in rows}),
         errors=errors,
         warnings=warnings,
     )
@@ -1609,6 +2135,7 @@ def export_metric_excel(
         db_path=db_path,
         errors=errors,
         warnings=warnings,
+        target_companies=target_companies,
     )
     return MetricExcelExportResult(
         output_path=path,

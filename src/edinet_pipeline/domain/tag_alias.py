@@ -223,6 +223,44 @@ TAG_ALIAS = {
     "TotalNumberOfTreasurySharesSummaryOfBusinessResults": "TreasuryShares",
     "NumberOfTreasurySharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc": "TreasuryShares",
     "TreasurySharesAtTheEndOfFiscalYearIssuedSharesTotalNumberOfSharesEtc": "TreasuryShares",
+
+    # ROIC inputs
+    "IncomeTaxes": "IncomeTaxes",
+    "IncomeTaxExpenseIFRS": "IncomeTaxes",
+    "IncomeTaxExpenseIFRSSummaryOfBusinessResults": "IncomeTaxes",
+    "IncomeTaxesCurrent": "IncomeTaxesCurrentExpense",
+    "IncomeTaxesDeferred": "IncomeTaxesDeferredExpense",
+
+    # Interest-bearing debt candidates. ROIC uses these only through derived-side
+    # whitelist precedence, so these aliases intentionally keep components separate.
+    "InterestBearingLiabilitiesCLIFRS": "InterestBearingLiabilitiesCurrent",
+    "InterestBearingLiabilitiesNCLIFRS": "InterestBearingLiabilitiesNonCurrent",
+    "BondsAndBorrowingsCLIFRS": "BondsAndBorrowingsCurrent",
+    "BondsAndBorrowingsNCLIFRS": "BondsAndBorrowingsNonCurrent",
+    "BorrowingsCLIFRS": "BorrowingsCurrent",
+    "BorrowingsNCLIFRS": "BorrowingsNonCurrent",
+    "LeaseLiabilitiesCLIFRS": "LeaseLiabilitiesCurrent",
+    "LeaseLiabilitiesNCLIFRS": "LeaseLiabilitiesNonCurrent",
+    "ShortTermLoansPayable": "ShortTermLoansPayable",
+    "CurrentPortionOfLongTermLoansPayable": "CurrentPortionOfLongTermLoansPayable",
+    "LongTermLoansPayable": "LongTermLoansPayable",
+    "BondsPayable": "BondsPayable",
+    "CurrentPortionOfBonds": "CurrentPortionOfBonds",
+    "ShortTermBondsPayable": "ShortTermBondsPayable",
+    "CommercialPapersLiabilities": "CommercialPapersLiabilities",
+    "LeaseObligationsCL": "LeaseLiabilitiesCurrent",
+    "LeaseObligationsNCL": "LeaseLiabilitiesNonCurrent",
+    "LeaseObligations": "LeaseLiabilitiesNonCurrent",
+
+    # Employee data
+    "NumberOfEmployees": "NumberOfEmployees",
+    "NumberOfEmployeesInformationAboutReportingCompanyInformationAboutEmployees": "NumberOfEmployees",
+    "NumberOfEmployeesIFRS": "NumberOfEmployees",
+    "AverageAgeYearsInformationAboutReportingCompanyInformationAboutEmployees": "AverageAge",
+    "AverageAgeMonthsInformationAboutReportingCompanyInformationAboutEmployees": "AverageAge",
+    "AverageLengthOfServiceYearsInformationAboutReportingCompanyInformationAboutEmployees": "AverageLengthOfService",
+    "AverageLengthOfServiceMonthsInformationAboutReportingCompanyInformationAboutEmployees": "AverageLengthOfService",
+    "AverageAnnualSalaryInformationAboutReportingCompanyInformationAboutEmployees": "AverageAnnualSalary",
 }
 
 

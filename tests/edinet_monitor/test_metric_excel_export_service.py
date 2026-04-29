@@ -18,6 +18,11 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     GENERAL_SHEET,
+    ROW_KIND_AVERAGE,
+    ROW_KIND_DETAIL,
+    ROW_KIND_MEDIAN,
+    SUMMARY_SHEET,
+    VERTICAL_DATA_SHEET,
     build_metric_excel_rows,
     export_metric_excel,
     read_metric_excel_condition,
@@ -112,6 +117,10 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def _detail_rows(rows):
+    return [row for row in rows if row.row_kind == ROW_KIND_DETAIL]
 
 
 def _insert_company(
@@ -411,7 +420,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        by_metric = {row.metric_base: row for row in rows}
+        by_metric = {row.metric_base: row for row in _detail_rows(rows)}
         self.assertEqual(set(by_metric), {"NetSales", "CostOfSales", "NetAssets"})
         self.assertEqual(by_metric["NetSales"].values_by_offset[0], 100.0)
         self.assertEqual(by_metric["NetSales"].ratios_by_offset[0], 1.0)
@@ -440,7 +449,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        self.assertEqual({row.security_code for row in rows}, {"1111"})
+        self.assertEqual({row.security_code for row in _detail_rows(rows)}, {"1111"})
 
     def test_trend_threshold_keeps_companies_above_lower_bound_every_period(self) -> None:
         self.conn.executemany(
@@ -487,7 +496,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        self.assertEqual({row.security_code for row in rows}, {"1111"})
+        self.assertEqual({row.security_code for row in _detail_rows(rows)}, {"1111"})
 
     def test_build_rows_uses_fixed_metric_order(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -507,8 +516,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(errors, [])
+        detail_rows = _detail_rows(rows)
         self.assertEqual(
-            [row.metric_base for row in rows],
+            [row.metric_base for row in detail_rows],
             ["NetSales", "CostOfSales", "NetAssets", "OutstandingShares", "EPS"],
         )
 
@@ -555,23 +565,24 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             condition,
         )
 
+        detail_rows = _detail_rows(rows)
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        self.assertEqual([row.period_scope for row in rows], ["annual", "half"])
+        self.assertEqual([row.period_scope for row in detail_rows], ["annual", "half"])
         self.assertEqual(
-            [row.metric_label for row in rows],
+            [row.metric_label for row in detail_rows],
             ["\u58f2\u4e0a\u9ad8", "\u534a\u671f \u58f2\u4e0a\u9ad8"],
         )
         self.assertEqual(
-            [row.periods_by_offset[0] for row in rows],
+            [row.periods_by_offset[0] for row in detail_rows],
             ["", "\u534a\u671f 2026-09"],
         )
         self.assertEqual(
-            [row.periods_by_offset[1] for row in rows],
+            [row.periods_by_offset[1] for row in detail_rows],
             ["\u901a\u671f 2026-03", ""],
         )
-        self.assertEqual([row.values_by_offset[0] for row in rows], [None, 55.0])
-        self.assertEqual([row.values_by_offset[1] for row in rows], [100.0, None])
+        self.assertEqual([row.values_by_offset[0] for row in detail_rows], [None, 55.0])
+        self.assertEqual([row.values_by_offset[1] for row in detail_rows], [100.0, None])
 
     def test_build_rows_buckets_half_with_corresponding_annual_period(self) -> None:
         self.conn.executemany(
@@ -622,19 +633,20 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             condition,
         )
 
+        detail_rows = _detail_rows(rows)
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        self.assertEqual([row.period_scope for row in rows], ["annual", "half"])
+        self.assertEqual([row.period_scope for row in detail_rows], ["annual", "half"])
         self.assertEqual(
-            [row.periods_by_offset[0] for row in rows],
+            [row.periods_by_offset[0] for row in detail_rows],
             ["\u901a\u671f 2026-03", "\u534a\u671f 2025-09"],
         )
         self.assertEqual(
-            [row.periods_by_offset[1] for row in rows],
+            [row.periods_by_offset[1] for row in detail_rows],
             ["\u901a\u671f 2025-03", "\u534a\u671f 2024-09"],
         )
-        self.assertEqual([row.values_by_offset[0] for row in rows], [100.0, 55.0])
-        self.assertEqual([row.values_by_offset[1] for row in rows], [80.0, 44.0])
+        self.assertEqual([row.values_by_offset[0] for row in detail_rows], [100.0, 55.0])
+        self.assertEqual([row.values_by_offset[1] for row in detail_rows], [80.0, 44.0])
 
     def test_build_rows_uses_industry_specific_labels_and_order(self) -> None:
         cases = [
@@ -674,8 +686,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 )
 
                 self.assertEqual(errors, [])
+                detail_rows = _detail_rows(rows)
                 self.assertEqual(
-                    [row.metric_label for row in rows[: len(expected_labels)]],
+                    [row.metric_label for row in detail_rows[: len(expected_labels)]],
                     expected_labels,
                 )
 
@@ -697,8 +710,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(errors, [])
-        self.assertEqual([row.metric_base for row in rows], ["CashAndCashEquivalents"])
-        self.assertEqual(rows[0].metric_label, "期末残")
+        detail_rows = _detail_rows(rows)
+        self.assertEqual([row.metric_base for row in detail_rows], ["CashAndCashEquivalents"])
+        self.assertEqual(detail_rows[0].metric_label, "期末残")
 
     def test_beginning_cash_balance_metric_label_is_registered(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -718,8 +732,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(errors, [])
-        self.assertEqual([row.metric_base for row in rows], ["BeginningCashBalance"])
-        self.assertEqual(rows[0].metric_label, "\u671f\u9996\u6b8b\u9ad8")
+        detail_rows = _detail_rows(rows)
+        self.assertEqual([row.metric_base for row in detail_rows], ["BeginningCashBalance"])
+        self.assertEqual(detail_rows[0].metric_label, "\u671f\u9996\u6b8b\u9ad8")
 
     def test_eps_growth_metric_label_uses_prior_period_suffix(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -739,8 +754,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(errors, [])
-        self.assertEqual([row.metric_base for row in rows], ["EPSGrowthRate"])
-        self.assertEqual(rows[0].metric_label, "EPS増加率（前期比）")
+        detail_rows = _detail_rows(rows)
+        self.assertEqual([row.metric_base for row in detail_rows], ["EPSGrowthRate"])
+        self.assertEqual(detail_rows[0].metric_label, "EPS増加率（前期比）")
 
     def test_export_metric_excel_writes_percent_format(self) -> None:
         condition_path = self.tmp_path / "condition.xlsx"
@@ -765,12 +781,13 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         self.assertEqual(ws["D2"].value, "通期")
-        self.assertEqual(ws["F2"].value, "├売上原価")
-        self.assertEqual(ws["G2"].value, "通期 2026-03")
-        self.assertEqual(ws["H2"].value, 60.0)
-        self.assertEqual(ws["I2"].value, "百万円")
-        self.assertEqual(ws["J2"].value, 0.6)
-        self.assertEqual(ws["J2"].number_format, "0.0%")
+        self.assertEqual(ws["E2"].value, "明細")
+        self.assertEqual(ws["G2"].value, "├売上原価")
+        self.assertEqual(ws["H2"].value, "通期 2026-03")
+        self.assertEqual(ws["I2"].value, 60.0)
+        self.assertEqual(ws["J2"].value, "百万円")
+        self.assertEqual(ws["K2"].value, 0.6)
+        self.assertEqual(ws["K2"].number_format, "0.0%")
 
     def test_export_metric_excel_formats_growth_rates_as_percent(self) -> None:
         self.conn.execute(
@@ -810,11 +827,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["F2"].value, "売上高増収率")
-        self.assertEqual(ws["G2"].value, "通期 2026-03")
-        self.assertEqual(ws["H2"].value, 1.25)
-        self.assertEqual(ws["I2"].value, "%")
-        self.assertEqual(ws["H2"].number_format, "0.0%")
+        self.assertEqual(ws["G2"].value, "売上高増収率")
+        self.assertEqual(ws["H2"].value, "通期 2026-03")
+        self.assertEqual(ws["I2"].value, 1.25)
+        self.assertEqual(ws["J2"].value, "%")
+        self.assertEqual(ws["I2"].number_format, "0.0%")
 
     def test_percent_filter_keeps_matching_companies(self) -> None:
         self.conn.executemany(
@@ -855,7 +872,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        self.assertEqual({row.security_code for row in rows}, {"1111"})
+        self.assertEqual({row.security_code for row in _detail_rows(rows)}, {"1111"})
 
     def test_percent_filter_period_requires_each_selected_period(self) -> None:
         self.conn.executemany(
@@ -899,7 +916,196 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
-        self.assertEqual({row.security_code for row in rows}, {"1111"})
+        self.assertEqual({row.security_code for row in _detail_rows(rows)}, {"1111"})
+
+    def test_industry_only_aggregates_additive_metrics_in_oku_yen(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u696d\u7a2e", "\u696d\u7a2e\u306e\u307f"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8,\u58f2\u4e0a\u539f\u4fa1"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertTrue(condition.industry_only)
+        self.assertGreaterEqual(target_companies, 1)
+        detail_rows = _detail_rows(rows)
+        net_sales_row = next(
+            row
+            for row in detail_rows
+            if row.metric_base == "NetSales" and row.values_by_offset[0] == 1.7
+        )
+        by_base = {
+            row.metric_base: row
+            for row in detail_rows
+            if row.industry_33 == net_sales_row.industry_33
+        }
+        self.assertEqual(set(by_base), {"NetSales", "CostOfSales"})
+        self.assertEqual(by_base["NetSales"].security_code, "")
+        self.assertEqual(by_base["NetSales"].company_name, "")
+        self.assertAlmostEqual(by_base["NetSales"].values_by_offset[0], 1.7)
+        self.assertEqual(by_base["NetSales"].units_by_offset[0], "\u5104\u5186")
+        self.assertAlmostEqual(by_base["CostOfSales"].values_by_offset[0], 1.2)
+        self.assertAlmostEqual(by_base["CostOfSales"].ratios_by_offset[0], 120_000_000 / 170_000_000)
+
+    def test_build_rows_adds_average_median_and_rank_rows(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111,2222"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 2)
+        self.assertEqual([row.row_kind for row in rows], [ROW_KIND_DETAIL, ROW_KIND_DETAIL, ROW_KIND_AVERAGE, ROW_KIND_MEDIAN])
+        self.assertEqual([row.ranks_by_offset.get(0) for row in rows[:2]], ["1/2", "2/2"])
+        average_row = next(row for row in rows if row.row_kind == ROW_KIND_AVERAGE)
+        median_row = next(row for row in rows if row.row_kind == ROW_KIND_MEDIAN)
+        self.assertEqual(average_row.metric_label, ROW_KIND_AVERAGE)
+        self.assertEqual(median_row.metric_label, ROW_KIND_MEDIAN)
+        self.assertAlmostEqual(average_row.values_by_offset[0], 85.0)
+        self.assertAlmostEqual(median_row.values_by_offset[0], 85.0)
+        self.assertEqual(average_row.units_by_offset[0], "\u767e\u4e07\u5186")
+
+    def test_export_metric_excel_writes_row_kind_rank_and_vertical_data(self) -> None:
+        condition_path = self.tmp_path / "condition.xlsx"
+        output_path = self.tmp_path / "rank.xlsx"
+        _create_condition_workbook(
+            condition_path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111,2222"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
+            ],
+        )
+
+        result = export_metric_excel(
+            self.conn,
+            condition_xlsx=condition_path,
+            output_path=output_path,
+            db_path=":memory:",
+        )
+
+        self.assertEqual(result.errors, [])
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        self.assertEqual(ws["E1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(ws["L1"].value, "\u5f53\u671f_\u9806\u4f4d")
+        self.assertEqual(ws["E2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(ws["L2"].value, "1/2")
+        vertical = workbook[VERTICAL_DATA_SHEET]
+        self.assertEqual(vertical["E1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(vertical["K1"].value, "\u9806\u4f4d")
+        self.assertEqual(vertical["E2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(vertical["K2"].value, "1/2")
+
+    def test_half_progress_metrics_are_suppressed_in_excel_rows(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
+                ("\u6307\u6a19", "HalfNetSalesProgressRate"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "ALL"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(rows, [])
+        self.assertEqual(target_companies, 0)
+        self.assertTrue(any("excel_suppressed_metrics" in warning for warning in warnings))
+
+    def test_industry_only_forces_annual_calendar_year_and_adds_summary_note(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', '043A00',
+                      '2026-09-30', '2026-11-14 12:00', 0, '0', '1',
+                      'Japan GAAP', '逋ｾ荳・・', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', 'NetSalesCurrent',
+                      2026, '2026-09-30', 55_000_000.0, 'tag',
+                      'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.commit()
+        condition_path = self.tmp_path / "industry_condition.xlsx"
+        output_path = self.tmp_path / "industry.xlsx"
+        _create_condition_workbook(
+            condition_path,
+            [
+                ("\u696d\u7a2e", "\u696d\u7a2e\u306e\u307f"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "ALL"),
+            ],
+        )
+        condition = read_metric_excel_condition(condition_path)
+
+        rows, errors, warnings, _preview, _target = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        detail_rows = _detail_rows(rows)
+        self.assertEqual(errors, [])
+        self.assertTrue(all(row.period_scope == "annual" for row in detail_rows))
+        self.assertTrue(all(row.periods_by_offset[0].startswith("\u901a\u671f 2026") for row in detail_rows))
+        self.assertTrue(any(warning == "industry_only_mode_forced_to_annual" for warning in warnings))
+        self.assertTrue(any(row.ranks_by_offset.get(0, "").endswith(f"/{len(detail_rows)}") for row in detail_rows))
+
+        result = export_metric_excel(
+            self.conn,
+            condition_xlsx=condition_path,
+            output_path=output_path,
+            db_path=":memory:",
+        )
+        self.assertEqual(result.errors, [])
+        workbook = load_workbook(output_path)
+        summary = workbook[SUMMARY_SHEET]
+        summary_values = {summary.cell(row=i, column=1).value: summary.cell(row=i, column=2).value for i in range(1, summary.max_row + 1)}
+        self.assertIn("\u96c6\u8a08\u57fa\u6e96:", summary_values["aggregation_basis_note"])
 
     def test_export_metric_excel_formats_per_share_and_theoretical_values(self) -> None:
         self.conn.executemany(
@@ -947,7 +1153,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         formats_by_label = {
-            ws.cell(row=row_index, column=6).value: ws.cell(row=row_index, column=8).number_format
+            ws.cell(row=row_index, column=7).value: ws.cell(row=row_index, column=9).number_format
             for row_index in range(2, ws.max_row + 1)
         }
         self.assertEqual(formats_by_label["EPS"], "#,##0.0")

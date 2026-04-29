@@ -82,7 +82,8 @@ class ExportMetricExcelCliTest(unittest.TestCase):
             output = stdout.getvalue()
             self.assertIn("output_path=", output)
             self.assertIn("target_companies=1", output)
-            self.assertIn("output_rows=1", output)
+            self.assertIn("output_rows=3", output)
+            self.assertIn("preview_rows=3", output)
             self.assertIn("errors=0", output)
             self.assertTrue((output_dir / "result.xlsx").exists())
         finally:

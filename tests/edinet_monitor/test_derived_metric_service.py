@@ -486,6 +486,117 @@ class DerivedMetricServiceTest(unittest.TestCase):
             "cost_of_sales_plus_selling_expenses",
         )
 
+    def test_investment_cash_ratios_are_built_from_absolute_investment_cash(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 1_000_000),
+            build_normalized_row("OperatingCashCurrent", 200_000),
+            build_normalized_row("InvestmentCashCurrent", -50_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["InvestmentCashToNetSalesRatioCurrent"]["value_num"], 0.05)
+        self.assertEqual(by_key["InvestmentCashToOperatingCashRatioCurrent"]["value_num"], 0.25)
+
+    def test_investment_cash_to_operating_cash_requires_positive_operating_cash(self) -> None:
+        normalized_rows = [
+            build_normalized_row("OperatingCashCurrent", 0),
+            build_normalized_row("InvestmentCashCurrent", -50_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertIsNone(by_key["InvestmentCashToOperatingCashRatioCurrent"]["value_num"])
+        self.assertEqual(by_key["InvestmentCashToOperatingCashRatioCurrent"]["calc_status"], "zero_or_negative_base")
+
+    def test_interest_bearing_debt_prefers_total_tier_and_roic_uses_adopted_tax_rate(self) -> None:
+        normalized_rows = [
+            build_normalized_row("OperatingIncomeCurrent", 100_000),
+            build_normalized_row("ProfitBeforeTaxCurrent", 80_000),
+            build_normalized_row("IncomeTaxesCurrent", 24_000),
+            build_normalized_row("NetAssetsCurrent", 500_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 50_000),
+            build_normalized_row("InterestBearingLiabilitiesCurrentCurrent", 100_000),
+            build_normalized_row("InterestBearingLiabilitiesNonCurrentCurrent", 200_000),
+            build_normalized_row("ShortTermLoansPayableCurrent", 999_999),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="化学",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["InterestBearingDebtCurrent"]["value_num"], 300_000)
+        self.assertEqual(
+            by_key["InterestBearingDebtCurrent"]["source_detail_json"]["selected_tier"],
+            "interest_bearing_liabilities_total",
+        )
+        self.assertAlmostEqual(
+            by_key["ROICCurrent"]["value_num"],
+            (100_000 * (1 - 0.3)) / (500_000 + 300_000 - 50_000),
+        )
+
+    def test_roic_is_not_generated_for_half_or_financial_industries(self) -> None:
+        normalized_rows = [
+            build_normalized_row("OperatingIncomeCurrent", 100_000),
+            build_normalized_row("ProfitBeforeTaxCurrent", 80_000),
+            build_normalized_row("IncomeTaxesCurrent", 24_000),
+            build_normalized_row("NetAssetsCurrent", 500_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 50_000),
+            build_normalized_row("ShortTermLoansPayableCurrent", 100_000),
+        ]
+
+        half_rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="043A00",
+            industry_33="化学",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        bank_rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="銀行業",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+
+        self.assertNotIn("ROICCurrent", {row["metric_key"] for row in half_rows})
+        self.assertNotIn("ROICCurrent", {row["metric_key"] for row in bank_rows})
+
+    def test_half_long_term_growth_rows_are_not_generated(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 1_000),
+            build_normalized_row("NetSalesPrior4", 500),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="043A00",
+            accounting_standard="jpgaap",
+            document_display_unit="逋ｾ荳・・",
+        )
+        keys = {row["metric_key"] for row in rows}
+
+        self.assertNotIn("NetSalesGrowthRate5YearCurrent", keys)
+        self.assertNotIn("NetSalesGrowthRate10YearCurrent", keys)
+
     def test_gross_profit_prefers_tag_and_records_difference(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

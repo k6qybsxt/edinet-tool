@@ -265,6 +265,96 @@ METRICS = {
         "kind": "instant_num",
         "unit": "ones",
     },
+
+    "ProfitBeforeTax": {
+        "tags": [
+            "jpcrp_cor:ProfitLossBeforeTaxIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:ProfitBeforeIncomeTaxesFromContinuingIFRSKeyFinancialData",
+            "jpigp_cor:ProfitBeforeTaxIFRS",
+            "jpigp_cor:ProfitLossBeforeTaxIFRS",
+            "jpigp_cor:ProfitLossBeforeIncomeTaxesIFRS",
+            "jpigp_cor:IncomeBeforeIncomeTaxesIFRS",
+            "jpigp_cor:ProfitBeforeIncomeTaxesIFRS",
+            "jppfs_cor:IncomeBeforeIncomeTaxes",
+            "jppfs_cor:ProfitBeforeIncomeTaxes",
+            "jppfs_cor:ProfitLossBeforeIncomeTaxes",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+
+    "IncomeTaxes": {
+        "tags": [
+            "jppfs_cor:IncomeTaxes",
+            "jppfs_cor:IncomeTaxesCurrent",
+            "jppfs_cor:IncomeTaxesDeferred",
+            "jpigp_cor:IncomeTaxExpenseIFRS",
+            "jpcrp_cor:IncomeTaxExpenseIFRSSummaryOfBusinessResults",
+        ],
+        "kind": "duration",
+        "unit": "millions",
+    },
+
+    "InterestBearingDebt": {
+        "tags": [
+            "jpigp_cor:InterestBearingLiabilitiesCLIFRS",
+            "jpigp_cor:InterestBearingLiabilitiesNCLIFRS",
+            "jpigp_cor:BondsAndBorrowingsCLIFRS",
+            "jpigp_cor:BondsAndBorrowingsNCLIFRS",
+            "jpigp_cor:BorrowingsCLIFRS",
+            "jpigp_cor:BorrowingsNCLIFRS",
+            "jpigp_cor:LeaseLiabilitiesCLIFRS",
+            "jpigp_cor:LeaseLiabilitiesNCLIFRS",
+            "jppfs_cor:ShortTermLoansPayable",
+            "jppfs_cor:CurrentPortionOfLongTermLoansPayable",
+            "jppfs_cor:LongTermLoansPayable",
+            "jppfs_cor:BondsPayable",
+            "jppfs_cor:CurrentPortionOfBonds",
+            "jppfs_cor:ShortTermBondsPayable",
+            "jppfs_cor:CommercialPapersLiabilities",
+            "jppfs_cor:LeaseObligationsCL",
+            "jppfs_cor:LeaseObligationsNCL",
+            "jppfs_cor:LeaseObligations",
+        ],
+        "kind": "instant_num",
+        "unit": "millions",
+    },
+
+    "NumberOfEmployees": {
+        "tags": [
+            "jpcrp_cor:NumberOfEmployees",
+            "jpcrp_cor:NumberOfEmployeesInformationAboutReportingCompanyInformationAboutEmployees",
+            "jpcrp_cor:NumberOfEmployeesIFRS",
+        ],
+        "kind": "instant_num",
+        "unit": "ones",
+    },
+
+    "AverageAge": {
+        "tags": [
+            "jpcrp_cor:AverageAgeYearsInformationAboutReportingCompanyInformationAboutEmployees",
+            "jpcrp_cor:AverageAgeMonthsInformationAboutReportingCompanyInformationAboutEmployees",
+        ],
+        "kind": "instant_num",
+        "unit": "ones",
+    },
+
+    "AverageLengthOfService": {
+        "tags": [
+            "jpcrp_cor:AverageLengthOfServiceYearsInformationAboutReportingCompanyInformationAboutEmployees",
+            "jpcrp_cor:AverageLengthOfServiceMonthsInformationAboutReportingCompanyInformationAboutEmployees",
+        ],
+        "kind": "instant_num",
+        "unit": "ones",
+    },
+
+    "AverageAnnualSalary": {
+        "tags": [
+            "jpcrp_cor:AverageAnnualSalaryInformationAboutReportingCompanyInformationAboutEmployees",
+        ],
+        "kind": "duration",
+        "unit": "yen",
+    },
     }
 
 
