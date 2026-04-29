@@ -352,7 +352,7 @@ METRICS = {
         "tags": [
             "jpcrp_cor:AverageAnnualSalaryInformationAboutReportingCompanyInformationAboutEmployees",
         ],
-        "kind": "duration",
+        "kind": "instant_num",
         "unit": "yen",
     },
     }

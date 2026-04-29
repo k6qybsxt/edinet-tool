@@ -220,6 +220,8 @@ def _schema_type_kind(schema_type: Any) -> str:
 
 
 def _expected_unit_kind(metric_base: str) -> str:
+    if metric_base in {"NumberOfEmployees", "AverageAge", "AverageLengthOfService"}:
+        return ""
     unit = str((METRICS.get(metric_base) or {}).get("unit") or "").lower()
     if unit == "ones":
         return "shares"
@@ -548,9 +550,6 @@ CONSOLIDATED_REPORTING_GUARD_METRIC_BASES = {
     "ShortTermBondsPayable",
     "CommercialPapersLiabilities",
     "NumberOfEmployees",
-    "AverageAge",
-    "AverageLengthOfService",
-    "AverageAnnualSalary",
 }
 
 

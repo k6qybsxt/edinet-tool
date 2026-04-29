@@ -265,6 +265,67 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "AverageAgeCurrent")
         self.assertEqual(normalized["value_num"], 35.0)
 
+    def test_employee_metrics_accept_pure_unit_and_nonconsolidated_profile_values(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NumberOfEmployees",
+                value_text="17414",
+                context_ref="CurrentYearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-03-31",
+                consolidation="Consolidated",
+                unit_ref="pure",
+            ),
+            build_raw_fact(
+                tag_name="AverageAgeYearsInformationAboutReportingCompanyInformationAboutEmployees",
+                value_text="42.5",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-03-31",
+                consolidation="NonConsolidated",
+                unit_ref="pure",
+            ),
+            build_raw_fact(
+                tag_name="AverageLengthOfServiceYearsInformationAboutReportingCompanyInformationAboutEmployees",
+                value_text="18.7",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-03-31",
+                consolidation="NonConsolidated",
+                unit_ref="pure",
+            ),
+            build_raw_fact(
+                tag_name="AverageAnnualSalaryInformationAboutReportingCompanyInformationAboutEmployees",
+                value_text="8448000",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-03-31",
+                consolidation="NonConsolidated",
+                unit_ref="JPY",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00893",
+            security_code="4613",
+            enforce_candidate_validation=True,
+        )
+        by_key = {row["metric_key"]: row for row in normalized_rows}
+
+        self.assertEqual(by_key["NumberOfEmployeesCurrent"]["value_num"], 17414.0)
+        self.assertEqual(by_key["AverageAgeCurrent"]["value_num"], 42.5)
+        self.assertEqual(by_key["AverageLengthOfServiceCurrent"]["value_num"], 18.7)
+        self.assertEqual(by_key["AverageAnnualSalaryCurrent"]["value_num"], 8448000.0)
+
     def test_gas_supply_and_sales_expenses_maps_to_selling_expenses_only(self) -> None:
         row = build_raw_fact(tag_name="SupplyAndSalesExpensesGAS")
 
