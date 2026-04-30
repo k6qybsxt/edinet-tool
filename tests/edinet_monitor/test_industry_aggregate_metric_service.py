@@ -249,6 +249,31 @@ class IndustryAggregateMetricServiceTest(unittest.TestCase):
                 "OutstandingShares": 20.0,
             },
         )
+        for period_end, company_values in [
+            (
+                "2022-03-31",
+                [
+                    ("E00001", "1111", "A社", {"OrdinaryIncome": 5.0, "NetAssets": 25.0, "OutstandingShares": 10.0}),
+                    ("E00002", "2222", "B社", {"OrdinaryIncome": 10.0, "NetAssets": 50.0, "OutstandingShares": 20.0}),
+                ],
+            ),
+            (
+                "2017-03-31",
+                [
+                    ("E00001", "1111", "A社", {"OrdinaryIncome": 2.0, "NetAssets": 10.0, "OutstandingShares": 10.0}),
+                    ("E00002", "2222", "B社", {"OrdinaryIncome": 4.0, "NetAssets": 20.0, "OutstandingShares": 20.0}),
+                ],
+            ),
+        ]:
+            for edinet_code, security_code, company_name, values in company_values:
+                _insert_company_year(
+                    self.conn,
+                    edinet_code=edinet_code,
+                    security_code=security_code,
+                    company_name=company_name,
+                    period_end=period_end,
+                    values=values,
+                )
         self.conn.commit()
 
     def tearDown(self) -> None:
@@ -267,6 +292,12 @@ class IndustryAggregateMetricServiceTest(unittest.TestCase):
         self.assertAlmostEqual(self._row_by_base_year(rows, "NetSales", 2026)["value_num"], 300.0)
         self.assertAlmostEqual(self._row_by_base_year(rows, "EPS", 2026)["value_num"], 1.4)
         self.assertAlmostEqual(self._row_by_base_year(rows, "BPS", 2026)["value_num"], 250.0 / 30.0)
+        self.assertAlmostEqual(self._row_by_base_year(rows, "EPSGrowthRate", 2026)["value_num"], 2.0)
+        self.assertAlmostEqual(self._row_by_base_year(rows, "EPSGrowthRate5Year", 2026)["value_num"], 4.0)
+        self.assertAlmostEqual(self._row_by_base_year(rows, "EPSGrowthRate10Year", 2026)["value_num"], 10.0)
+        self.assertAlmostEqual(self._row_by_base_year(rows, "BPSGrowthRate", 2026)["value_num"], 2.0)
+        self.assertAlmostEqual(self._row_by_base_year(rows, "BPSGrowthRate5Year", 2026)["value_num"], 250.0 / 75.0)
+        self.assertAlmostEqual(self._row_by_base_year(rows, "BPSGrowthRate10Year", 2026)["value_num"], 250.0 / 30.0)
         self.assertAlmostEqual(self._row_by_base_year(rows, "NetSalesGrowthRate", 2026)["value_num"], 2.0)
         self.assertAlmostEqual(self._row_by_base_year(rows, "ROA", 2026)["value_num"], 42.0 / 500.0)
         self.assertAlmostEqual(self._row_by_base_year(rows, "ROE", 2026)["value_num"], 42.0 / 250.0)

@@ -41,7 +41,12 @@ FORMULA_METRIC_BASES = [
     "EstimatedNetIncome",
     "EPS",
     "EPSGrowthRate",
+    "EPSGrowthRate5Year",
+    "EPSGrowthRate10Year",
     "BPS",
+    "BPSGrowthRate",
+    "BPSGrowthRate5Year",
+    "BPSGrowthRate10Year",
     "NetSalesGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
@@ -123,7 +128,12 @@ METRIC_GROUP_BY_BASE = {
     "OutstandingShares": "share",
     "EPS": "share",
     "EPSGrowthRate": "growth",
+    "EPSGrowthRate5Year": "growth",
+    "EPSGrowthRate10Year": "growth",
     "BPS": "share",
+    "BPSGrowthRate": "growth",
+    "BPSGrowthRate5Year": "growth",
+    "BPSGrowthRate10Year": "growth",
     "NetSalesGrowthRate": "growth",
     "NetSalesGrowthRate5Year": "growth",
     "NetSalesGrowthRate10Year": "growth",
@@ -144,6 +154,11 @@ METRIC_GROUP_BY_BASE = {
 
 RATIO_BASES = {
     "EPSGrowthRate",
+    "EPSGrowthRate5Year",
+    "EPSGrowthRate10Year",
+    "BPSGrowthRate",
+    "BPSGrowthRate5Year",
+    "BPSGrowthRate10Year",
     "NetSalesGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
@@ -473,8 +488,14 @@ def build_industry_aggregate_metric_rows(
 
     rows: list[dict[str, Any]] = []
     eps_by_key: dict[tuple[str, int], float | None] = {}
+    bps_by_key: dict[tuple[str, int], float | None] = {}
     for key, bucket in buckets.items():
         eps_by_key[key] = _eps(bucket)[0]
+        bps_by_key[key] = _ratio(
+            _sum_value(bucket, "NetAssets"),
+            _sum_value(bucket, "OutstandingShares"),
+            require_positive_denominator=True,
+        )[0]
 
     for (industry, fiscal_year), bucket in sorted(buckets.items()):
         for base in SUM_METRIC_BASES:
@@ -609,6 +630,11 @@ def build_industry_aggregate_metric_rows(
 
         growth_specs = [
             ("EPSGrowthRate", "EPS", 1),
+            ("EPSGrowthRate5Year", "EPS", 4),
+            ("EPSGrowthRate10Year", "EPS", 9),
+            ("BPSGrowthRate", "BPS", 1),
+            ("BPSGrowthRate5Year", "BPS", 4),
+            ("BPSGrowthRate10Year", "BPS", 9),
             ("NetSalesGrowthRate", "NetSales", 1),
             ("NetSalesGrowthRate5Year", "NetSales", 4),
             ("NetSalesGrowthRate10Year", "NetSales", 9),
@@ -625,6 +651,10 @@ def build_industry_aggregate_metric_rows(
                 current_value = eps_value
                 prior_value = eps_by_key.get((industry, fiscal_year - years_back))
                 source_count = _source_count_for_ratio(bucket, "OrdinaryIncome", "OutstandingShares")
+            elif source_base == "BPS":
+                current_value = bps_value
+                prior_value = bps_by_key.get((industry, fiscal_year - years_back))
+                source_count = _source_count_for_ratio(bucket, "NetAssets", "OutstandingShares")
             else:
                 current_value = _sum_value(bucket, source_base)
                 prior_value = _sum_value(prior_bucket, source_base) if prior_bucket else None

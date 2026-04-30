@@ -55,16 +55,34 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
                 ("S100OTHER", "NetSalesCurrent", 999_999, "2018-03-31", "Consolidated"),
             ]
             conn.executemany("INSERT INTO normalized_metrics VALUES (?, ?, ?, ?, ?)", rows)
-            conn.execute(
+            conn.executemany(
                 "INSERT INTO derived_metrics VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    "S100OLD",
-                    "TheoreticalSharePriceCurrent",
-                    1200,
-                    "2017-03-31",
-                    "Consolidated",
-                    "ok",
-                ),
+                [
+                    (
+                        "S100OLD",
+                        "EPSCurrent",
+                        0.2,
+                        "2017-03-31",
+                        "Consolidated",
+                        "ok",
+                    ),
+                    (
+                        "S100OLD",
+                        "BPSCurrent",
+                        4.0,
+                        "2017-03-31",
+                        "Consolidated",
+                        "ok",
+                    ),
+                    (
+                        "S100OLD",
+                        "TheoreticalSharePriceCurrent",
+                        1200,
+                        "2017-03-31",
+                        "Consolidated",
+                        "ok",
+                    ),
+                ],
             )
 
             values = fetch_historical_growth_values(
@@ -82,6 +100,8 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
         self.assertEqual(values["OrdinaryIncome"][9]["value_num"], 80_000)
         self.assertEqual(values["CashAndCashEquivalents"][9]["value_num"], 100_000)
         self.assertEqual(values["OutstandingShares"][9]["value_num"], 950_000)
+        self.assertEqual(values["EPS"][9]["value_num"], 0.2)
+        self.assertEqual(values["BPS"][9]["value_num"], 4.0)
         self.assertEqual(values["TheoreticalSharePrice"][9]["value_num"], 1200)
         self.assertEqual(values["NetSales"][9]["doc_id"], "S100OLD")
 

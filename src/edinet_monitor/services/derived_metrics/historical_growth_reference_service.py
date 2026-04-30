@@ -14,6 +14,8 @@ HISTORICAL_NORMALIZED_METRIC_KEYS = {
     "CashAndCashEquivalents": "CashAndCashEquivalentsCurrent",
 }
 HISTORICAL_DERIVED_METRIC_KEYS = {
+    "EPS": "EPSCurrent",
+    "BPS": "BPSCurrent",
     "TheoreticalSharePrice": "TheoreticalSharePriceCurrent",
 }
 OUTSTANDING_SHARES_COMPONENT_KEYS = {

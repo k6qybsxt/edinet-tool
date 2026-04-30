@@ -816,7 +816,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(errors, [])
         detail_rows = _detail_rows(rows)
         self.assertEqual([row.metric_base for row in detail_rows], ["EPSGrowthRate"])
-        self.assertEqual(detail_rows[0].metric_label, "EPS増加率（前期比）")
+        self.assertEqual(detail_rows[0].metric_label, "EPS増加率")
 
     def test_export_metric_excel_writes_percent_format(self) -> None:
         condition_path = self.tmp_path / "condition.xlsx"
@@ -1097,7 +1097,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(ws["L1"].value, "\u5f53\u671f_\u9806\u4f4d")
         self.assertEqual(ws["E2"].value, ROW_KIND_DETAIL)
         self.assertEqual(ws["L2"].value, "1/2")
-        self.assertEqual(ws["H1"].fill.fgColor.rgb, "00EAF4FF")
+        self.assertEqual(ws["H1"].fill.fgColor.rgb, "00D9EAF7")
         self.assertEqual(ws["H2"].border.left.style, "thin")
         vertical = workbook[VERTICAL_DATA_SHEET]
         self.assertEqual(vertical["E1"].value, "\u884c\u7a2e\u5225")

@@ -161,6 +161,20 @@ class DerivedMetricServiceTest(unittest.TestCase):
             by_key["EPSGrowthRateCurrent"]["value_num"],
             (168_000 / 950_000) / (140_000 / 948_000),
         )
+        self.assertAlmostEqual(
+            by_key["EPSGrowthRate5YearCurrent"]["value_num"],
+            (168_000 / 950_000) / (84_000 / 920_000),
+        )
+        self.assertIsNone(by_key["EPSGrowthRate10YearCurrent"]["value_num"])
+        self.assertAlmostEqual(
+            by_key["BPSGrowthRateCurrent"]["value_num"],
+            (1_000_000 / 950_000) / (900_000 / 948_000),
+        )
+        self.assertAlmostEqual(
+            by_key["BPSGrowthRate5YearCurrent"]["value_num"],
+            (1_000_000 / 950_000) / (700_000 / 920_000),
+        )
+        self.assertIsNone(by_key["BPSGrowthRate10YearCurrent"]["value_num"])
         self.assertAlmostEqual(by_key["OutstandingSharesGrowthRateCurrent"]["value_num"], 950_000 / 948_000)
         self.assertAlmostEqual(by_key["OutstandingSharesGrowthRate5YearCurrent"]["value_num"], 950_000 / 920_000)
         self.assertAlmostEqual(by_key["BPSCurrent"]["value_num"], 1_000_000 / 950_000)
@@ -286,6 +300,7 @@ class DerivedMetricServiceTest(unittest.TestCase):
             build_normalized_row("NetSalesCurrent", 1_200_000),
             build_normalized_row("OrdinaryIncomeCurrent", 240_000),
             build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
+            build_normalized_row("NetAssetsCurrent", 1_000_000),
             build_normalized_row("IssuedSharesCurrent", 1_000_000),
             build_normalized_row("TreasurySharesCurrent", 50_000),
         ]
@@ -322,6 +337,22 @@ class DerivedMetricServiceTest(unittest.TestCase):
                     "value_num": 800_000,
                 },
             },
+            "EPS": {
+                9: {
+                    "doc_id": "S100OLD",
+                    "metric_key": "EPSCurrent",
+                    "period_end": "2017-03-31",
+                    "value_num": 0.2,
+                },
+            },
+            "BPS": {
+                9: {
+                    "doc_id": "S100OLD",
+                    "metric_key": "BPSCurrent",
+                    "period_end": "2017-03-31",
+                    "value_num": 4.0,
+                },
+            },
         }
 
         rows = calculate_derived_metrics(
@@ -336,6 +367,8 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["NetSalesGrowthRate10YearCurrent"]["value_num"], 4.0)
         self.assertEqual(by_key["OrdinaryIncomeGrowthRate10YearCurrent"]["value_num"], 3.0)
         self.assertEqual(by_key["CashBalanceGrowthRate10YearCurrent"]["value_num"], 3.0)
+        self.assertAlmostEqual(by_key["EPSGrowthRate10YearCurrent"]["value_num"], (168_000 / 950_000) / 0.2)
+        self.assertAlmostEqual(by_key["BPSGrowthRate10YearCurrent"]["value_num"], (1_000_000 / 950_000) / 4.0)
         self.assertAlmostEqual(by_key["OutstandingSharesGrowthRate10YearCurrent"]["value_num"], 950_000 / 800_000)
         self.assertEqual(
             by_key["NetSalesGrowthRate10YearCurrent"]["source_detail_json"]["base_detail"]["base_doc_id"],
@@ -596,6 +629,10 @@ class DerivedMetricServiceTest(unittest.TestCase):
 
         self.assertNotIn("NetSalesGrowthRate5YearCurrent", keys)
         self.assertNotIn("NetSalesGrowthRate10YearCurrent", keys)
+        self.assertNotIn("EPSGrowthRate5YearCurrent", keys)
+        self.assertNotIn("EPSGrowthRate10YearCurrent", keys)
+        self.assertNotIn("BPSGrowthRate5YearCurrent", keys)
+        self.assertNotIn("BPSGrowthRate10YearCurrent", keys)
 
     def test_gross_profit_prefers_tag_and_records_difference(self) -> None:
         normalized_rows = [

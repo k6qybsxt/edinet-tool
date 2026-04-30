@@ -101,6 +101,10 @@ HALF_DISABLED_BASES = {
     "OrdinaryIncomeGrowthRate10Year",
     "CashBalanceGrowthRate5Year",
     "CashBalanceGrowthRate10Year",
+    "EPSGrowthRate5Year",
+    "EPSGrowthRate10Year",
+    "BPSGrowthRate5Year",
+    "BPSGrowthRate10Year",
     "OutstandingSharesGrowthRate5Year",
     "OutstandingSharesGrowthRate10Year",
     "TheoreticalSharePriceGrowthRate5Year",
@@ -113,8 +117,8 @@ ROW_KIND_DETAIL = "\u660e\u7d30"
 ROW_KIND_AVERAGE = "\u5e73\u5747\u5024"
 ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
 SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES)
-PERIOD_BLOCK_FILL_COLORS = ("F4F9FE", "FFFFFF")
-CURRENT_PERIOD_BLOCK_FILL_COLOR = "EAF4FF"
+PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
+CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
 
 MONETARY_BASES = {
@@ -214,6 +218,11 @@ GROWTH_RATIO_BASES = {
     "OutstandingSharesGrowthRate5Year",
     "OutstandingSharesGrowthRate10Year",
     "EPSGrowthRate",
+    "EPSGrowthRate5Year",
+    "EPSGrowthRate10Year",
+    "BPSGrowthRate",
+    "BPSGrowthRate5Year",
+    "BPSGrowthRate10Year",
     "TheoreticalSharePriceGrowthRate",
     "TheoreticalSharePriceGrowthRate5Year",
     "TheoreticalSharePriceGrowthRate10Year",
@@ -230,11 +239,15 @@ SPARSE_PERIOD_OFFSETS_BY_BASE = {
     "NetSalesGrowthRate5Year": {5, 0},
     "OrdinaryIncomeGrowthRate5Year": {5, 0},
     "CashBalanceGrowthRate5Year": {5, 0},
+    "EPSGrowthRate5Year": {5, 0},
+    "BPSGrowthRate5Year": {5, 0},
     "OutstandingSharesGrowthRate5Year": {5, 0},
     "TheoreticalSharePriceGrowthRate5Year": {5, 0},
     "NetSalesGrowthRate10Year": {0},
     "OrdinaryIncomeGrowthRate10Year": {0},
     "CashBalanceGrowthRate10Year": {0},
+    "EPSGrowthRate10Year": {0},
+    "BPSGrowthRate10Year": {0},
     "OutstandingSharesGrowthRate10Year": {0},
     "TheoreticalSharePriceGrowthRate10Year": {0},
 }
@@ -265,7 +278,12 @@ FIXED_ROW_BASE_ORDER = [
     "OutstandingShares",
     "EPS",
     "EPSGrowthRate",
+    "EPSGrowthRate5Year",
+    "EPSGrowthRate10Year",
     "BPS",
+    "BPSGrowthRate",
+    "BPSGrowthRate5Year",
+    "BPSGrowthRate10Year",
     "HalfNetSalesProgressRate",
     "HalfOrdinaryIncomeProgressRate",
     "HalfProfitProgressRate",
@@ -318,7 +336,7 @@ EXCEL_METRIC_LABEL_OVERRIDES = {
     "OperatingCash": "営業cf",
     "InvestmentCash": "投資cf",
     "FinancingCash": "財務cf",
-    "EPSGrowthRate": "EPS増加率（前期比）",
+    "EPSGrowthRate": "EPS増加率",
     "TheoreticalSharePriceGrowthRate": "理論株価上昇率",
     "TheoreticalSharePriceGrowthRate5Year": "理論株価上昇率(５年)",
     "TheoreticalSharePriceGrowthRate10Year": "理論株価上昇率(10年)",
