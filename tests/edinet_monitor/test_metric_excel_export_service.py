@@ -115,12 +115,72 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE industry_aggregate_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            industry_33 TEXT NOT NULL,
+            period_scope TEXT NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            period_bucket_start TEXT,
+            period_bucket_end TEXT,
+            metric_key TEXT NOT NULL,
+            metric_base TEXT NOT NULL,
+            metric_group TEXT NOT NULL,
+            value_num REAL,
+            value_unit TEXT NOT NULL,
+            calc_status TEXT NOT NULL,
+            formula_name TEXT NOT NULL,
+            source_company_count INTEGER NOT NULL DEFAULT 0,
+            source_detail_json TEXT,
+            rule_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX uq_industry_aggregate_metrics_scope
+        ON industry_aggregate_metrics(industry_33, period_scope, fiscal_year, metric_key);
         """
     )
 
 
 def _detail_rows(rows):
     return [row for row in rows if row.row_kind == ROW_KIND_DETAIL]
+
+
+def _insert_industry_aggregate_metric(
+    conn: sqlite3.Connection,
+    *,
+    industry_33: str,
+    fiscal_year: int,
+    metric_base: str,
+    value_num: float | None,
+    value_unit: str = "yen",
+    calc_status: str = "ok",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO industry_aggregate_metrics (
+            industry_33, period_scope, fiscal_year, period_bucket_start, period_bucket_end,
+            metric_key, metric_base, metric_group, value_num, value_unit, calc_status,
+            formula_name, source_company_count, source_detail_json, rule_version,
+            created_at, updated_at
+        ) VALUES (
+            ?, 'annual', ?, ?, ?, ?, ?, 'industry', ?, ?, ?,
+            'test', 2, '{}', 'v1', '2026-04-24', '2026-04-24'
+        )
+        """,
+        (
+            industry_33,
+            fiscal_year,
+            f"{fiscal_year}-01-01",
+            f"{fiscal_year}-12-31",
+            f"{metric_base}Current",
+            metric_base,
+            value_num,
+            value_unit,
+            calc_status,
+        ),
+    )
 
 
 def _insert_company(
@@ -919,6 +979,28 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual({row.security_code for row in _detail_rows(rows)}, {"1111"})
 
     def test_industry_only_aggregates_additive_metrics_in_oku_yen(self) -> None:
+        _insert_industry_aggregate_metric(
+            self.conn,
+            industry_33="化学",
+            fiscal_year=2026,
+            metric_base="NetSales",
+            value_num=170_000_000.0,
+        )
+        _insert_industry_aggregate_metric(
+            self.conn,
+            industry_33="化学",
+            fiscal_year=2026,
+            metric_base="CostOfSales",
+            value_num=120_000_000.0,
+        )
+        _insert_industry_aggregate_metric(
+            self.conn,
+            industry_33="化学",
+            fiscal_year=2026,
+            metric_base="CostOfSalesRatio",
+            value_num=120_000_000 / 170_000_000,
+            value_unit="ratio",
+        )
         path = self.tmp_path / "condition.xlsx"
         _create_condition_workbook(
             path,
@@ -1015,6 +1097,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(ws["L1"].value, "\u5f53\u671f_\u9806\u4f4d")
         self.assertEqual(ws["E2"].value, ROW_KIND_DETAIL)
         self.assertEqual(ws["L2"].value, "1/2")
+        self.assertEqual(ws["H1"].fill.fgColor.rgb, "00EAF4FF")
+        self.assertEqual(ws["H2"].border.left.style, "thin")
         vertical = workbook[VERTICAL_DATA_SHEET]
         self.assertEqual(vertical["E1"].value, "\u884c\u7a2e\u5225")
         self.assertEqual(vertical["K1"].value, "\u9806\u4f4d")
@@ -1045,6 +1129,13 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertTrue(any("excel_suppressed_metrics" in warning for warning in warnings))
 
     def test_industry_only_forces_annual_calendar_year_and_adds_summary_note(self) -> None:
+        _insert_industry_aggregate_metric(
+            self.conn,
+            industry_33="化学",
+            fiscal_year=2026,
+            metric_base="NetSales",
+            value_num=170_000_000.0,
+        )
         self.conn.execute(
             """
             INSERT INTO filings (

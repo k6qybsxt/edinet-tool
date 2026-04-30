@@ -123,6 +123,31 @@ def _ensure_pipeline_log_columns(cur: sqlite3.Cursor) -> None:
     if chunk_table_exists:
         _ensure_table_column(cur, "pipeline_run_chunks", "summary_json TEXT")
 
+
+def _create_industry_aggregate_metrics_table(cur: sqlite3.Cursor) -> None:
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS industry_aggregate_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        industry_33 TEXT NOT NULL,
+        period_scope TEXT NOT NULL,
+        fiscal_year INTEGER NOT NULL,
+        period_bucket_start TEXT,
+        period_bucket_end TEXT,
+        metric_key TEXT NOT NULL,
+        metric_base TEXT NOT NULL,
+        metric_group TEXT NOT NULL,
+        value_num REAL,
+        value_unit TEXT NOT NULL,
+        calc_status TEXT NOT NULL,
+        formula_name TEXT NOT NULL,
+        source_company_count INTEGER NOT NULL DEFAULT 0,
+        source_detail_json TEXT,
+        rule_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
 def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
         """
@@ -546,6 +571,8 @@ def create_tables() -> None:
     )
     """)
 
+    _create_industry_aggregate_metrics_table(cur)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS screening_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -727,6 +754,21 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_derived_metrics_status
     ON derived_metrics(calc_status)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_industry_aggregate_metrics_scope
+    ON industry_aggregate_metrics(industry_33, period_scope, fiscal_year, metric_key)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_industry_aggregate_metrics_base_year
+    ON industry_aggregate_metrics(metric_base, period_scope, fiscal_year)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_industry_aggregate_metrics_industry_year
+    ON industry_aggregate_metrics(industry_33, period_scope, fiscal_year)
     """)
 
     cur.execute("""
