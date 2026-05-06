@@ -1,0 +1,18 @@
+$env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
+$env:JQUANTS_API_KEY = "あなたのJ-Quants APIキー"
+
+$DATE_FROM = "2016-04-01"
+$DATE_TO   = "2026-04-01"
+$OUT_DIR   = "D:\作業用"
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_jquants_daily_quotes `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --codes all `
+  --output-dir $OUT_DIR
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.check_jquants_coverage `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --target quotes `
+  --output-dir $OUT_DIR

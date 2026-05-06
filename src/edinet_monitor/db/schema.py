@@ -148,6 +148,105 @@ def _create_industry_aggregate_metrics_table(cur: sqlite3.Cursor) -> None:
     )
     """)
 
+
+def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_statement_raw (
+        disclosure_number TEXT PRIMARY KEY,
+        disclosed_date TEXT,
+        disclosed_time TEXT,
+        local_code TEXT,
+        security_code TEXT,
+        type_of_document TEXT,
+        type_of_current_period TEXT,
+        current_period_start_date TEXT,
+        current_period_end_date TEXT,
+        current_fiscal_year_start_date TEXT,
+        current_fiscal_year_end_date TEXT,
+        fiscal_year INTEGER,
+        raw_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_financial_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        disclosure_number TEXT NOT NULL,
+        local_code TEXT NOT NULL,
+        security_code TEXT,
+        edinet_code TEXT,
+        metric_kind TEXT NOT NULL,
+        period_scope TEXT NOT NULL,
+        period_key TEXT NOT NULL,
+        quarter_type TEXT,
+        forecast_target TEXT,
+        fiscal_year INTEGER,
+        period_start TEXT,
+        period_end TEXT,
+        disclosed_date TEXT,
+        disclosed_time TEXT,
+        metric_key TEXT NOT NULL,
+        metric_base TEXT NOT NULL,
+        metric_group TEXT NOT NULL,
+        value_num REAL,
+        value_unit TEXT NOT NULL,
+        calc_status TEXT NOT NULL,
+        source_field TEXT NOT NULL,
+        source_detail_json TEXT,
+        rule_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_daily_quotes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        local_code TEXT NOT NULL,
+        security_code TEXT,
+        trade_date TEXT NOT NULL,
+        open REAL,
+        high REAL,
+        low REAL,
+        close REAL,
+        volume REAL,
+        turnover_value REAL,
+        adjustment_factor REAL,
+        adjustment_open REAL,
+        adjustment_high REAL,
+        adjustment_low REAL,
+        adjustment_close REAL,
+        adjustment_close_rounded REAL,
+        adjustment_volume REAL,
+        raw_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_ingest_runs (
+        run_id TEXT PRIMARY KEY,
+        run_type TEXT NOT NULL,
+        date_from TEXT,
+        date_to TEXT,
+        codes_json TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        status TEXT NOT NULL,
+        fetched_total INTEGER NOT NULL DEFAULT 0,
+        saved_total INTEGER NOT NULL DEFAULT 0,
+        skipped_total INTEGER NOT NULL DEFAULT 0,
+        error_total INTEGER NOT NULL DEFAULT 0,
+        summary_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+
 def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
         """
@@ -572,6 +671,7 @@ def create_tables() -> None:
     """)
 
     _create_industry_aggregate_metrics_table(cur)
+    _create_jquants_tables(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS screening_runs (
@@ -769,6 +869,46 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_industry_aggregate_metrics_industry_year
     ON industry_aggregate_metrics(industry_33, period_scope, fiscal_year)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_statement_raw_date
+    ON jquants_statement_raw(disclosed_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_statement_raw_code
+    ON jquants_statement_raw(local_code, type_of_current_period)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_jquants_financial_metrics_scope
+    ON jquants_financial_metrics(disclosure_number, period_key, metric_key)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_financial_metrics_code_base_period
+    ON jquants_financial_metrics(local_code, metric_base, period_scope, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_financial_metrics_kind_forecast
+    ON jquants_financial_metrics(metric_kind, forecast_target, disclosed_date)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_jquants_daily_quotes_code_date
+    ON jquants_daily_quotes(local_code, trade_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_daily_quotes_date
+    ON jquants_daily_quotes(trade_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_daily_quotes_security_date
+    ON jquants_daily_quotes(security_code, trade_date)
     """)
 
     cur.execute("""

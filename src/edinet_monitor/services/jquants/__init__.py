@@ -1,0 +1,2 @@
+"""J-Quants ingestion helpers."""
+

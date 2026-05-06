@@ -139,6 +139,35 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
         CREATE UNIQUE INDEX uq_industry_aggregate_metrics_scope
         ON industry_aggregate_metrics(industry_33, period_scope, fiscal_year, metric_key);
+
+        CREATE TABLE jquants_financial_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            disclosure_number TEXT NOT NULL,
+            local_code TEXT NOT NULL,
+            security_code TEXT,
+            edinet_code TEXT,
+            metric_kind TEXT NOT NULL,
+            period_scope TEXT NOT NULL,
+            period_key TEXT NOT NULL,
+            quarter_type TEXT,
+            forecast_target TEXT,
+            fiscal_year INTEGER,
+            period_start TEXT,
+            period_end TEXT,
+            disclosed_date TEXT,
+            disclosed_time TEXT,
+            metric_key TEXT NOT NULL,
+            metric_base TEXT NOT NULL,
+            metric_group TEXT NOT NULL,
+            value_num REAL,
+            value_unit TEXT NOT NULL,
+            calc_status TEXT NOT NULL,
+            source_field TEXT NOT NULL,
+            source_detail_json TEXT,
+            rule_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
 
@@ -431,7 +460,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(condition.period_offsets, [2, 1, 0])
         self.assertEqual(condition.trend_period_offsets, [1, 0])
         self.assertEqual(condition.percent_filter_period_offsets, [5, 4, 3, 2, 1, 0])
-        self.assertEqual(condition.period_scopes, ["annual", "half"])
+        self.assertEqual(condition.period_scopes, ["annual", "half", "quarter", "forecast"])
 
     def test_read_metric_excel_condition_accepts_securities_industry_alias(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1252,6 +1281,64 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(formats_by_label["理論PBR"], "#,##0.0")
         self.assertEqual(formats_by_label["1株資産"], "#,##0")
         self.assertEqual(formats_by_label["理論株価"], "#,##0")
+
+    def test_jquants_quarter_rows_use_forecast_progress_ratio(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, '11110', '1111', 'E00001', ?, ?, ?, ?, ?, 2026,
+                      '2025-04-01', '2026-03-31', ?, '15:00', 'NetSalesCurrent',
+                      'NetSales', 'sales', ?, 'yen', 'ok', 'field', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """,
+            [
+                ("forecast1", "forecast", "forecast", "forecast:FY", None, "FY", "2026-05-01", 400_000_000.0),
+                ("actual1", "actual", "quarter", "actual:1Q", "1Q", None, "2026-05-02", 100_000_000.0),
+            ],
+        )
+        self.conn.commit()
+        path = self.tmp_path / "condition.xlsx"
+        output_path = self.tmp_path / "jquants.xlsx"
+        _create_condition_workbook(
+            path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
+                ("\u6307\u6a19", "NetSales"),
+                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "\u56db\u534a\u671f"),
+            ],
+        )
+        condition = read_metric_excel_condition(path)
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        quarter_row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
+        self.assertEqual(quarter_row.metric_label, "1Q \u58f2\u4e0a\u9ad8")
+        self.assertEqual(quarter_row.values_by_offset[0], 100.0)
+        self.assertEqual(quarter_row.units_by_offset[0], "\u767e\u4e07\u5186")
+        self.assertAlmostEqual(quarter_row.ratios_by_offset[0], 0.25)
+        self.assertEqual(quarter_row.ratio_kinds_by_offset[0], "forecast_progress")
+        self.assertIn("quarter_ratio_cells_show_latest_forecast_progress", warnings)
+
+        result = export_metric_excel(
+            self.conn,
+            condition_xlsx=path,
+            output_path=output_path,
+            db_path=":memory:",
+        )
+        self.assertEqual(result.errors, [])
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        self.assertEqual(ws["K2"].value, 0.25)
+        self.assertIsNotNone(ws["K2"].comment)
+        self.assertEqual(ws["K2"].fill.fgColor.rgb, "00FFF2CC")
 
 
 if __name__ == "__main__":

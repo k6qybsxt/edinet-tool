@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import argparse
+
+from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.jquants.client import JQuantsClient
+from edinet_monitor.services.jquants.ingestion_service import save_jquants_statements
+
+
+def _split_csv(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text or text.lower() == "all":
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Save J-Quants V2 1Q/3Q summaries and forecasts to DB.")
+    parser.add_argument("--date-from", required=True)
+    parser.add_argument("--date-to", required=True)
+    parser.add_argument("--periods", default="1Q,3Q")
+    parser.add_argument("--include-forecasts", action="store_true")
+    parser.add_argument("--codes", default="all")
+    parser.add_argument("--output-dir", default=r"D:\作業用")
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    create_tables()
+    conn = get_connection()
+    try:
+        result = save_jquants_statements(
+            conn,
+            client=JQuantsClient(),
+            date_from=args.date_from,
+            date_to=args.date_to,
+            periods=set(_split_csv(args.periods) or ["1Q", "3Q"]),
+            include_forecasts=args.include_forecasts,
+            codes=_split_csv(args.codes),
+            output_dir=args.output_dir,
+        )
+    finally:
+        conn.close()
+
+    print(f"run_id={result.run_id}")
+    print(f"fetched_total={result.fetched_total}")
+    print(f"saved_total={result.saved_total}")
+    print(f"skipped_total={result.skipped_total}")
+    print(f"error_total={result.error_total}")
+    print(f"output_path={result.output_path}")
+
+
+if __name__ == "__main__":
+    main()

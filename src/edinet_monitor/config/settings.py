@@ -80,6 +80,13 @@ TARGET_FORM_CODES = [
 ]
 
 EDINET_API_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2"
+JQUANTS_API_BASE_URL = os.getenv(
+    "JQUANTS_API_BASE_URL",
+    "https://api.jquants.com/v2",
+).rstrip("/")
+JQUANTS_API_KEY_ENV = "JQUANTS_API_KEY"
+JQUANTS_CONNECT_TIMEOUT_SEC = _int_from_env("JQUANTS_CONNECT_TIMEOUT_SEC", 10)
+JQUANTS_READ_TIMEOUT_SEC = _int_from_env("JQUANTS_READ_TIMEOUT_SEC", 60)
 
 DOCUMENT_TYPE_ZIP = 1
 RAW_SAVE_YEARS = 10

@@ -8,6 +8,7 @@ import sqlite3
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -89,6 +90,36 @@ PERIOD_SCOPE_LABEL_BY_FORM_TYPE = {
     "030000": "\u901a\u671f",
     "043A00": "\u534a\u671f",
 }
+ALL_PERIOD_SCOPES = ["annual", "half", "quarter", "forecast"]
+QUARTER_SUPPORTED_BASES = {
+    "NetSales",
+    "OperatingIncome",
+    "OrdinaryIncome",
+    "ProfitLoss",
+    "EPS",
+    "TotalAssets",
+    "NetAssets",
+    "BPS",
+    "OperatingCash",
+    "InvestmentCash",
+    "FinancingCash",
+    "CashAndCashEquivalents",
+    "IssuedShares",
+    "TreasuryShares",
+    "OutstandingShares",
+    "EquityRatio",
+}
+FORECAST_SUPPORTED_BASES = {
+    "NetSales",
+    "OperatingIncome",
+    "OrdinaryIncome",
+    "ProfitLoss",
+    "EPS",
+}
+FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss", "EPS"}
+JQUANTS_QUARTER_TYPES = ("1Q", "3Q")
+JQUANTS_FORECAST_TARGETS = ("FY", "2Q")
+FORECAST_PROGRESS_RATIO_KIND = "forecast_progress"
 HALF_ONLY_BASES = {
     "HalfNetSalesProgressRate",
     "HalfOrdinaryIncomeProgressRate",
@@ -120,6 +151,7 @@ SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES)
 PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
+FORECAST_PROGRESS_FILL_COLOR = "FFF2CC"
 
 MONETARY_BASES = {
     "NetSales",
@@ -551,7 +583,7 @@ class MetricExcelCondition:
     security_codes: list[str] = field(default_factory=list)
     company_names: list[str] = field(default_factory=list)
     metric_labels: list[str] = field(default_factory=list)
-    period_scopes: list[str] = field(default_factory=lambda: ["annual", "half"])
+    period_scopes: list[str] = field(default_factory=lambda: list(ALL_PERIOD_SCOPES))
     period_offsets: list[int] = field(default_factory=lambda: list(range(9, -1, -1)))
     trend: str = "none"
     trend_metric_labels: list[str] = field(default_factory=list)
@@ -582,6 +614,7 @@ class MetricExcelRow:
     row_kind: str = ROW_KIND_DETAIL
     raw_values_by_offset: dict[int, float | None] = field(default_factory=dict)
     ranks_by_offset: dict[int, str] = field(default_factory=dict)
+    ratio_kinds_by_offset: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -730,9 +763,9 @@ def _parse_percent_threshold(value: str | None) -> float | None:
 def _parse_period_scopes(value: str | None) -> list[str]:
     text = str(value or "").strip()
     if not text:
-        return ["annual", "half"]
+        return list(ALL_PERIOD_SCOPES)
     if text.upper() == "ALL":
-        return ["annual", "half"]
+        return list(ALL_PERIOD_SCOPES)
     mapping = {
         "\u901a\u671f": "annual",
         "annual": "annual",
@@ -741,6 +774,12 @@ def _parse_period_scopes(value: str | None) -> list[str]:
         "half": "half",
         "043000": "half",
         "043a00": "half",
+        "\u56db\u534a\u671f": "quarter",
+        "quarter": "quarter",
+        "1q": "quarter",
+        "3q": "quarter",
+        "\u4e88\u60f3": "forecast",
+        "forecast": "forecast",
     }
     scopes: list[str] = []
     seen: set[str] = set()
@@ -862,6 +901,13 @@ def _metric_label_for_excel(
     period_scope: str = "annual",
 ) -> str:
     label = _base_metric_label_for_excel(metric_base, industry_33)
+    if period_scope.startswith("quarter:"):
+        quarter = period_scope.split(":", 1)[1]
+        return f"{quarter} {label}"
+    if period_scope.startswith("forecast:"):
+        target = period_scope.split(":", 1)[1]
+        target_label = "\u901a\u671f" if target == "FY" else "2Q"
+        return f"{target_label} {label}(\u4e88\u60f3)"
     if period_scope != "half":
         return label
     if metric_base in HALF_ONLY_BASES or label.startswith(HALF_PREFIX):
@@ -885,6 +931,13 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
         _add_half_label_aliases(mapping, metric_base_to_display_name(base), base)
         _add_half_label_aliases(mapping, metric_base_to_display_name(base, sheet_name), base)
         _add_half_label_aliases(mapping, _base_metric_label_for_excel(base, sheet_name), base)
+        for quarter in JQUANTS_QUARTER_TYPES:
+            mapping[_normalize_text(f"{quarter} {metric_base_to_display_name(base)}")] = base
+            mapping[_normalize_text(f"{quarter} {_base_metric_label_for_excel(base, sheet_name)}")] = base
+        for forecast_target in JQUANTS_FORECAST_TARGETS:
+            target_label = "\u901a\u671f" if forecast_target == "FY" else "2Q"
+            mapping[_normalize_text(f"{target_label} {metric_base_to_display_name(base)}(\u4e88\u60f3)")] = base
+            mapping[_normalize_text(f"{target_label} {_base_metric_label_for_excel(base, sheet_name)}(\u4e88\u60f3)")] = base
         for industry in SHEET_ORDER:
             mapping[_normalize_text(metric_base_to_display_name(base, industry))] = base
             mapping[_normalize_text(_metric_label_for_excel(base, industry))] = base
@@ -950,7 +1003,7 @@ def _fetch_ranked_filings(
     for scope in condition.period_scopes:
         form_types.extend(FORM_TYPES_BY_PERIOD_SCOPE.get(scope, ()))
     if not form_types:
-        form_types = ["030000"]
+        return []
     form_type_placeholders = ",".join("?" for _ in form_types)
     where = [
         f"f.form_type IN ({form_type_placeholders})",
@@ -1199,7 +1252,13 @@ def _period_display_for_filing(filing: sqlite3.Row | dict[str, Any] | None) -> s
 
 
 def _period_scope_label(period_scope: str) -> str:
-    return "\u534a\u671f" if period_scope == "half" else "\u901a\u671f"
+    if period_scope == "half":
+        return "\u534a\u671f"
+    if period_scope.startswith("quarter"):
+        return "\u56db\u534a\u671f"
+    if period_scope.startswith("forecast"):
+        return "\u4e88\u60f3"
+    return "\u901a\u671f"
 
 
 def _calendar_year_bucket(period_bucket_end: str | None) -> int | None:
@@ -1500,7 +1559,14 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str]:
     sheet_order = SHEET_ORDER.index(row.sheet_name)
     sheet_metric_order = ROW_BASE_ORDER_INDEX_BY_SHEET.get(row.sheet_name, ROW_BASE_ORDER_INDEX)
     metric_order = sheet_metric_order.get(row.metric_base, len(sheet_metric_order))
-    scope_order = 0 if row.period_scope == "annual" else 1
+    scope_order = {
+        "annual": 0,
+        "half": 1,
+        "quarter:1Q": 2,
+        "quarter:3Q": 3,
+        "forecast:2Q": 4,
+        "forecast:FY": 5,
+    }.get(row.period_scope, 9)
     row_kind_order = {
         ROW_KIND_DETAIL: 0,
         ROW_KIND_AVERAGE: 1,
@@ -1662,6 +1728,369 @@ def _build_industry_only_metric_excel_rows(
     rows.sort(key=_row_sort_key)
     preview_rows = _build_preview_rows(rows, condition.period_offsets, preview_limit)
     return rows, errors, warnings, preview_rows, len(industries)
+
+
+def _jquants_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _fetch_jquants_companies(
+    conn: sqlite3.Connection,
+    condition: MetricExcelCondition,
+) -> list[sqlite3.Row]:
+    where = [
+        "coalesce(im.is_listed, 0) = 1",
+        "coalesce(im.exchange, '') = 'TSE'",
+    ]
+    params: list[Any] = []
+    if condition.industries:
+        placeholders = ",".join("?" for _ in condition.industries)
+        where.append(f"im.industry_33 IN ({placeholders})")
+        params.extend(condition.industries)
+    if condition.company_names:
+        placeholders = ",".join("?" for _ in condition.company_names)
+        where.append(f"im.company_name IN ({placeholders})")
+        params.extend(condition.company_names)
+    if condition.security_codes:
+        codes = [_normalize_security_code(code) for code in condition.security_codes]
+        placeholders = ",".join("?" for _ in codes)
+        where.append(
+            f"(substr(coalesce(im.security_code, ''), 1, 4) IN ({placeholders}) "
+            f"OR coalesce(im.security_code, '') IN ({placeholders}))"
+        )
+        params.extend([*codes, *codes])
+    return conn.execute(
+        f"""
+        SELECT
+          im.edinet_code,
+          im.security_code,
+          im.company_name,
+          im.industry_33
+        FROM issuer_master im
+        WHERE {" AND ".join(where)}
+        ORDER BY im.security_code, im.edinet_code
+        """,
+        params,
+    ).fetchall()
+
+
+def _security_code_for_jquants(row: sqlite3.Row) -> str:
+    return _normalize_security_code(str(row["security_code"] or ""))
+
+
+def _latest_jquants_metric_rows(
+    rows: list[sqlite3.Row],
+) -> dict[tuple[str, str, str, int, str], sqlite3.Row]:
+    latest: dict[tuple[str, str, str, int, str], sqlite3.Row] = {}
+    for row in rows:
+        fiscal_year = row["fiscal_year"]
+        if fiscal_year is None:
+            continue
+        key = (
+            _normalize_security_code(row["security_code"] or row["local_code"] or ""),
+            str(row["period_scope"] or ""),
+            str(row["metric_base"] or ""),
+            int(fiscal_year),
+            str(row["period_key"] or ""),
+        )
+        existing = latest.get(key)
+        if existing is None:
+            latest[key] = row
+            continue
+        existing_order = (str(existing["disclosed_date"] or ""), str(existing["disclosed_time"] or ""))
+        row_order = (str(row["disclosed_date"] or ""), str(row["disclosed_time"] or ""))
+        if row_order >= existing_order:
+            latest[key] = row
+    return latest
+
+
+def _fetch_jquants_metric_rows(
+    conn: sqlite3.Connection,
+    *,
+    security_codes: list[str],
+    metric_bases: list[str],
+    min_fiscal_year: int | None = None,
+) -> list[sqlite3.Row]:
+    if not security_codes or not metric_bases:
+        return []
+    code_placeholders = ",".join("?" for _ in security_codes)
+    base_placeholders = ",".join("?" for _ in metric_bases)
+    where = [
+        f"(security_code IN ({code_placeholders}) OR local_code IN ({code_placeholders}))",
+        f"metric_base IN ({base_placeholders})",
+    ]
+    params: list[Any] = [*security_codes, *security_codes, *metric_bases]
+    if min_fiscal_year is not None:
+        where.append("fiscal_year >= ?")
+        params.append(min_fiscal_year)
+    return conn.execute(
+        f"""
+        SELECT
+          disclosure_number,
+          local_code,
+          security_code,
+          metric_kind,
+          period_scope,
+          period_key,
+          quarter_type,
+          forecast_target,
+          fiscal_year,
+          period_start,
+          period_end,
+          disclosed_date,
+          disclosed_time,
+          metric_key,
+          metric_base,
+          metric_group,
+          value_num,
+          value_unit,
+          calc_status,
+          source_field
+        FROM jquants_financial_metrics
+        WHERE {" AND ".join(where)}
+        ORDER BY security_code, fiscal_year, period_key, metric_base, disclosed_date, disclosed_time
+        """,
+        params,
+    ).fetchall()
+
+
+def _max_jquants_fiscal_year(rows: list[sqlite3.Row], security_code: str, period_key: str) -> int | None:
+    years = [
+        int(row["fiscal_year"])
+        for row in rows
+        if _normalize_security_code(row["security_code"] or row["local_code"] or "") == security_code
+        and str(row["period_key"] or "") == period_key
+        and row["fiscal_year"] is not None
+    ]
+    return max(years) if years else None
+
+
+def _jquants_period_display(row: sqlite3.Row | None, period_scope: str) -> str:
+    if row is None:
+        return ""
+    period_end = str(row["period_end"] or "")
+    period_month = period_end[:7] if len(period_end) >= 7 else period_end
+    if period_scope.startswith("quarter:"):
+        quarter = period_scope.split(":", 1)[1]
+        return f"{quarter} {period_month}" if period_month else quarter
+    if period_scope.startswith("forecast:"):
+        target = period_scope.split(":", 1)[1]
+        target_label = "\u901a\u671f\u4e88\u60f3" if target == "FY" else "2Q\u4e88\u60f3"
+        return f"{target_label} {period_month}" if period_month else target_label
+    return period_month
+
+
+def _scale_jquants_value(metric_base: str, value: float | None) -> tuple[float | None, str]:
+    if value is None:
+        return None, ""
+    if metric_base in MONETARY_BASES:
+        return value / 1_000_000, "\u767e\u4e07\u5186"
+    if metric_base == "OutstandingShares" or metric_base in {"IssuedShares", "TreasuryShares"}:
+        return value, "\u682a"
+    if metric_base in GROWTH_RATIO_BASES or metric_base in PERCENT_VALUE_BASES:
+        return value, "%"
+    if metric_base in RATIO_VALUE_BASES:
+        return value, "\u500d"
+    if metric_base in PER_SHARE_BASES or metric_base in ONE_DECIMAL_VALUE_BASES:
+        return value, "\u5186"
+    return value, ""
+
+
+def _append_jquants_rows(
+    conn: sqlite3.Connection,
+    condition: MetricExcelCondition,
+    rows: list[MetricExcelRow],
+    selected_row_bases_by_sheet: dict[str, list[str]],
+    warnings: list[str],
+) -> None:
+    needs_quarter = "quarter" in condition.period_scopes
+    needs_forecast = "forecast" in condition.period_scopes
+    if not needs_quarter and not needs_forecast:
+        return
+    if not _jquants_table_exists(conn, "jquants_financial_metrics"):
+        warnings.append("jquants_financial_metrics_not_ready")
+        return
+
+    companies = _fetch_jquants_companies(conn, condition)
+    if not companies:
+        return
+    security_codes = sorted({_security_code_for_jquants(company) for company in companies if _security_code_for_jquants(company)})
+    requested_bases = sorted(
+        {
+            base
+            for sheet, bases in selected_row_bases_by_sheet.items()
+            for base in bases
+            if base in (QUARTER_SUPPORTED_BASES | FORECAST_SUPPORTED_BASES)
+        }
+    )
+    if not requested_bases:
+        return
+    max_offset = max(condition.period_offsets or [0])
+    all_metric_rows = _fetch_jquants_metric_rows(
+        conn,
+        security_codes=security_codes,
+        metric_bases=sorted(set(requested_bases) | FORECAST_PROGRESS_BASES),
+        min_fiscal_year=None,
+    )
+    if not all_metric_rows:
+        warnings.append("jquants_metrics_not_found")
+        return
+    latest = _latest_jquants_metric_rows(all_metric_rows)
+
+    for company in companies:
+        security_code = _security_code_for_jquants(company)
+        if not security_code:
+            continue
+        sheet_name = _sheet_name_for_industry(company["industry_33"])
+        base_candidates = selected_row_bases_by_sheet[sheet_name]
+        if needs_quarter:
+            for quarter in JQUANTS_QUARTER_TYPES:
+                _append_jquants_period_rows(
+                    rows,
+                    company=company,
+                    security_code=security_code,
+                    base_candidates=[base for base in base_candidates if base in QUARTER_SUPPORTED_BASES],
+                    period_scope=f"quarter:{quarter}",
+                    period_key=f"actual:{quarter}",
+                    latest=latest,
+                    all_rows=all_metric_rows,
+                    period_offsets=condition.period_offsets,
+                    max_offset=max_offset,
+                    with_progress_ratio=True,
+                )
+        if needs_forecast:
+            for forecast_target in JQUANTS_FORECAST_TARGETS:
+                _append_jquants_period_rows(
+                    rows,
+                    company=company,
+                    security_code=security_code,
+                    base_candidates=[base for base in base_candidates if base in FORECAST_SUPPORTED_BASES],
+                    period_scope=f"forecast:{forecast_target}",
+                    period_key=f"forecast:{forecast_target}",
+                    latest=latest,
+                    all_rows=all_metric_rows,
+                    period_offsets=condition.period_offsets,
+                    max_offset=max_offset,
+                    with_progress_ratio=False,
+                )
+
+
+def _append_jquants_period_rows(
+    rows: list[MetricExcelRow],
+    *,
+    company: sqlite3.Row,
+    security_code: str,
+    base_candidates: list[str],
+    period_scope: str,
+    period_key: str,
+    latest: dict[tuple[str, str, str, int, str], sqlite3.Row],
+    all_rows: list[sqlite3.Row],
+    period_offsets: list[int],
+    max_offset: int,
+    with_progress_ratio: bool,
+) -> None:
+    if not base_candidates:
+        return
+    max_fiscal_year = _max_jquants_fiscal_year(all_rows, security_code, period_key)
+    if max_fiscal_year is None:
+        return
+    min_year = max_fiscal_year - max_offset
+    for base in base_candidates:
+        periods_by_offset: dict[int, str] = {}
+        values_by_offset: dict[int, float | None] = {}
+        units_by_offset: dict[int, str] = {}
+        ratios_by_offset: dict[int, float | None] = {}
+        raw_values_by_offset: dict[int, float | None] = {}
+        ratio_kinds_by_offset: dict[int, str] = {}
+        for offset in period_offsets:
+            fiscal_year = max_fiscal_year - offset
+            if fiscal_year < min_year:
+                continue
+            row = latest.get((security_code, "quarter" if period_scope.startswith("quarter") else "forecast", base, fiscal_year, period_key))
+            raw_value = (
+                float(row["value_num"])
+                if row is not None
+                and str(row["calc_status"] or "") == "ok"
+                and row["value_num"] is not None
+                else None
+            )
+            display_value, display_unit = _scale_jquants_value(base, raw_value)
+            periods_by_offset[offset] = _jquants_period_display(row, period_scope)
+            values_by_offset[offset] = display_value
+            units_by_offset[offset] = display_unit if raw_value is not None else ""
+            raw_values_by_offset[offset] = raw_value
+            ratios_by_offset[offset] = None
+            if with_progress_ratio and base in FORECAST_PROGRESS_BASES and row is not None:
+                forecast_value = _latest_forecast_value_as_of(
+                    all_rows,
+                    security_code=security_code,
+                    fiscal_year=fiscal_year,
+                    metric_base=base,
+                    disclosed_date=str(row["disclosed_date"] or ""),
+                )
+                if forecast_value is not None and forecast_value > 0 and raw_value is not None:
+                    ratios_by_offset[offset] = raw_value / forecast_value
+                    ratio_kinds_by_offset[offset] = FORECAST_PROGRESS_RATIO_KIND
+        if not any(value is not None for value in raw_values_by_offset.values()):
+            continue
+        rows.append(
+            MetricExcelRow(
+                sheet_name=_sheet_name_for_industry(company["industry_33"]),
+                security_code=security_code,
+                company_name=str(company["company_name"] or ""),
+                industry_33=str(company["industry_33"] or ""),
+                period_scope=period_scope,
+                row_kind=ROW_KIND_DETAIL,
+                current_period_end=periods_by_offset.get(0, ""),
+                metric_base=base,
+                metric_label=_metric_label_for_excel(
+                    base,
+                    company["industry_33"],
+                    period_scope=period_scope,
+                ),
+                periods_by_offset=periods_by_offset,
+                values_by_offset=values_by_offset,
+                units_by_offset=units_by_offset,
+                ratios_by_offset=ratios_by_offset,
+                raw_values_by_offset=raw_values_by_offset,
+                ratio_kinds_by_offset=ratio_kinds_by_offset,
+            )
+        )
+
+
+def _latest_forecast_value_as_of(
+    rows: list[sqlite3.Row],
+    *,
+    security_code: str,
+    fiscal_year: int,
+    metric_base: str,
+    disclosed_date: str,
+) -> float | None:
+    candidates = [
+        row
+        for row in rows
+        if _normalize_security_code(row["security_code"] or row["local_code"] or "") == security_code
+        and str(row["period_scope"] or "") == "forecast"
+        and str(row["metric_base"] or "") == metric_base
+        and row["fiscal_year"] is not None
+        and int(row["fiscal_year"]) == fiscal_year
+        and str(row["period_key"] or "") == "forecast:FY"
+        and str(row["calc_status"] or "") == "ok"
+        and row["value_num"] is not None
+        and str(row["disclosed_date"] or "") <= disclosed_date
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (str(row["disclosed_date"] or ""), str(row["disclosed_time"] or "")))
+    return float(candidates[-1]["value_num"])
 
 
 def build_metric_excel_rows(
@@ -1857,6 +2286,13 @@ def build_metric_excel_rows(
                 )
             )
 
+    _append_jquants_rows(conn, condition, rows, selected_row_bases_by_sheet, warnings)
+    if any(
+        FORECAST_PROGRESS_RATIO_KIND in row.ratio_kinds_by_offset.values()
+        for row in rows
+        if row.row_kind == ROW_KIND_DETAIL
+    ):
+        warnings.append("quarter_ratio_cells_show_latest_forecast_progress")
     target_companies = len({row.security_code for row in rows if row.row_kind == ROW_KIND_DETAIL})
     _assign_ranks(rows, condition.period_offsets)
     rows = _append_stat_rows(rows, condition.period_offsets, industry_only=False)
@@ -2053,6 +2489,7 @@ def _write_metric_sheet(
         cell.font = Font(bold=True)
         cell.fill = header_fill
 
+    forecast_progress_cells: list[Any] = []
     for row in rows:
         values: list[Any] = [
             row.security_code,
@@ -2079,7 +2516,10 @@ def _write_metric_sheet(
             value_col = 9 + idx * 5
             ratio_col = value_col + 2
             _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
-            ws.cell(current_row, ratio_col).number_format = "0.0%"
+            ratio_cell = ws.cell(current_row, ratio_col)
+            ratio_cell.number_format = "0.0%"
+            if row.ratio_kinds_by_offset.get(offset) == FORECAST_PROGRESS_RATIO_KIND:
+                forecast_progress_cells.append(ratio_cell)
 
     _apply_period_block_styles(
         ws,
@@ -2087,6 +2527,13 @@ def _write_metric_sheet(
         start_col=8,
         block_width=5,
     )
+    progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
+    for cell in forecast_progress_cells:
+        cell.fill = progress_fill
+        cell.comment = Comment(
+            "\u3053\u306e\u6bd4\u7387\u306f\u3001\u56db\u534a\u671f\u5b9f\u7e3e \u00f7 \u540c\u4e00\u5e74\u5ea6\u306e\u6700\u65b0\u901a\u671f\u4e88\u60f3\u3067\u8a08\u7b97\u3057\u305f\u6700\u65b0\u4e88\u60f3\u9032\u6357\u7387\u3067\u3059\u3002",
+            "EDINET_MONITOR",
+        )
     ws.freeze_panes = "H2"
     ws.auto_filter.ref = ws.dimensions
     widths = {
