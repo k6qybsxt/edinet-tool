@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import shutil
 import sqlite3
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import requests
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -16,6 +20,11 @@ from edinet_monitor.services.jquants.mapper import (  # noqa: E402
     quote_from_row,
     statement_metrics_from_row,
 )
+from edinet_monitor.services.jquants.oldest_date_service import discover_oldest_fins_summary_date  # noqa: E402
+from edinet_monitor.services.jquants.raw_json_store import (  # noqa: E402
+    fins_summary_raw_path,
+    write_fins_summary_raw_jsonl,
+)
 from edinet_monitor.services.jquants.repository import (  # noqa: E402
     upsert_financial_metrics,
     upsert_quote,
@@ -23,10 +32,14 @@ from edinet_monitor.services.jquants.repository import (  # noqa: E402
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200, headers=None):
         self.payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Client Error")
         return None
 
     def json(self):
@@ -40,6 +53,26 @@ class _FakeSession:
     def get(self, url, params=None, headers=None, timeout=None):
         self.gets.append((url, params, headers, timeout))
         return _FakeResponse({"fin_summary": [], "pagination_key": None})
+
+
+class _SequenceSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.gets = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.gets.append((url, params, headers, timeout))
+        return self.responses.pop(0)
+
+
+class _FakeJQuantsClient:
+    def __init__(self, rows_by_date):
+        self.rows_by_date = rows_by_date
+        self.requested_dates = []
+
+    def get_fin_summary_page(self, *, date=None, code=None, pagination_key=None):
+        self.requested_dates.append(date)
+        return type("Page", (), {"items": list(self.rows_by_date.get(date, [])), "pagination_key": None})()
 
 
 def _statement_row(period: str = "1Q") -> dict:
@@ -83,6 +116,12 @@ def _statement_row(period: str = "1Q") -> dict:
 
 
 class JQuantsServicesTest(unittest.TestCase):
+    def _tmp_dir(self, name: str) -> Path:
+        path = ROOT_DIR / "tests" / "_tmp_jquants_services" / name
+        shutil.rmtree(path, ignore_errors=True)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def test_client_uses_api_key_without_logging_it(self) -> None:
         session = _FakeSession()
         client = JQuantsClient(api_key="SECRET_API_KEY", session=session)
@@ -92,6 +131,28 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(session.gets[0][0], "https://api.jquants.com/v2/fins/summary")
         self.assertEqual(session.gets[0][1]["date"], "20260502")
         self.assertEqual(session.gets[0][2]["x-api-key"], "SECRET_API_KEY")
+
+    def test_client_waits_and_retries_once_on_rate_limit(self) -> None:
+        session = _SequenceSession(
+            [
+                _FakeResponse({"message": "rate limited"}, status_code=429),
+                _FakeResponse({"fin_summary": [{"DiscNo": "D-1Q"}], "pagination_key": None}),
+            ]
+        )
+        client = JQuantsClient(
+            api_key="SECRET_API_KEY",
+            session=session,
+            request_interval_sec=0,
+            rate_limit_cooldown_sec=1,
+            max_retries=1,
+        )
+
+        with patch("edinet_monitor.services.jquants.client.time.sleep") as sleep_mock:
+            rows = list(client.iter_fin_summary(date="2026-05-02"))
+
+        self.assertEqual(rows[0]["DiscNo"], "D-1Q")
+        self.assertEqual(len(session.gets), 2)
+        sleep_mock.assert_called_once_with(1.0)
 
     def test_statement_mapper_keeps_1q_actual_and_forecasts(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("1Q"), include_forecasts=True)
@@ -120,6 +181,34 @@ class JQuantsServicesTest(unittest.TestCase):
 
         self.assertEqual(quote.security_code, "1111")
         self.assertEqual(quote.adjustment_close_rounded, 123.46)
+
+    def test_raw_json_store_is_idempotent_by_disclosure_number(self) -> None:
+        tmp_dir = self._tmp_dir("raw_json_idempotent")
+        row = _statement_row("1Q")
+        write_fins_summary_raw_jsonl([row], storage_root=tmp_dir)
+        write_fins_summary_raw_jsonl([row], storage_root=tmp_dir)
+
+        path = fins_summary_raw_path("2026-05-02", storage_root=tmp_dir)
+        lines = path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["DiscNo"], "D-1Q")
+
+    def test_discover_oldest_fins_summary_date_writes_report_and_manifest(self) -> None:
+        tmp_dir = self._tmp_dir("oldest_date")
+        client = _FakeJQuantsClient({"2020-01-03": [_statement_row("1Q")]})
+        result = discover_oldest_fins_summary_date(
+            client=client,
+            date_from="2020-01-01",
+            date_to="2020-01-05",
+            output_dir=tmp_dir,
+            storage_root=tmp_dir,
+        )
+
+        self.assertEqual(result.oldest_date, "2020-01-03")
+        self.assertEqual(result.checked_days, 3)
+        self.assertTrue(result.output_path and result.output_path.exists())
+        self.assertTrue(result.manifest_path and result.manifest_path.exists())
 
     def test_repository_upserts_metrics_and_quotes_idempotently(self) -> None:
         conn = sqlite3.connect(":memory:")

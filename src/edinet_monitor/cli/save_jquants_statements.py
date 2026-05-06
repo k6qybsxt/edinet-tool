@@ -21,7 +21,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--periods", default="1Q,3Q")
     parser.add_argument("--include-forecasts", action="store_true")
     parser.add_argument("--codes", default="all")
-    parser.add_argument("--output-dir", default=r"D:\作業用")
+    parser.add_argument("--save-raw-json", action="store_true")
+    parser.add_argument("--raw-json-root", default=None)
+    parser.add_argument("--request-interval-sec", type=float, default=None)
+    parser.add_argument("--rate-limit-cooldown-sec", type=float, default=None)
+    parser.add_argument("--max-retries", type=int, default=None)
+    parser.add_argument("--output-dir", default="D:\\\u4f5c\u696d\u7528")
     return parser
 
 
@@ -32,13 +37,19 @@ def main() -> None:
     try:
         result = save_jquants_statements(
             conn,
-            client=JQuantsClient(),
+            client=JQuantsClient(
+                request_interval_sec=args.request_interval_sec,
+                rate_limit_cooldown_sec=args.rate_limit_cooldown_sec,
+                max_retries=args.max_retries,
+            ),
             date_from=args.date_from,
             date_to=args.date_to,
             periods=set(_split_csv(args.periods) or ["1Q", "3Q"]),
             include_forecasts=args.include_forecasts,
             codes=_split_csv(args.codes),
             output_dir=args.output_dir,
+            save_raw_json=args.save_raw_json,
+            raw_json_storage_root=args.raw_json_root,
         )
     finally:
         conn.close()

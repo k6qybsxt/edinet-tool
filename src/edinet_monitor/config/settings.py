@@ -34,6 +34,16 @@ def _int_from_env(env_name: str, default: int) -> int:
     except ValueError:
         return default
 
+
+def _float_from_env(env_name: str, default: float) -> float:
+    value = os.getenv(env_name, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
 # =========================================================
 # edinet_monitor 保存先
 #   - DB は C ドライブ側に置く
@@ -87,6 +97,15 @@ JQUANTS_API_BASE_URL = os.getenv(
 JQUANTS_API_KEY_ENV = "JQUANTS_API_KEY"
 JQUANTS_CONNECT_TIMEOUT_SEC = _int_from_env("JQUANTS_CONNECT_TIMEOUT_SEC", 10)
 JQUANTS_READ_TIMEOUT_SEC = _int_from_env("JQUANTS_READ_TIMEOUT_SEC", 60)
+JQUANTS_REQUEST_INTERVAL_SEC = _float_from_env("JQUANTS_REQUEST_INTERVAL_SEC", 1.0)
+JQUANTS_MAX_RETRIES = _int_from_env("JQUANTS_MAX_RETRIES", 2)
+JQUANTS_RATE_LIMIT_COOLDOWN_SEC = _float_from_env("JQUANTS_RATE_LIMIT_COOLDOWN_SEC", 120.0)
+JQUANTS_STORAGE_ROOT = Path(
+    os.getenv(
+        "JQUANTS_STORAGE_ROOT",
+        r"E:\EDINET_Data\edinet_monitor\jquants",
+    )
+)
 
 DOCUMENT_TYPE_ZIP = 1
 RAW_SAVE_YEARS = 10

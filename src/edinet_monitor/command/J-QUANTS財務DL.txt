@@ -1,5 +1,5 @@
 $env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
-$env:JQUANTS_API_KEY = "あなたのJ-Quants APIキー"
+$env:JQUANTS_API_KEY = "YOUR_JQUANTS_API_KEY"
 
 $DATE_FROM = "2024-04-01"
 $DATE_TO   = "2026-05-06"
@@ -10,6 +10,10 @@ $OUT_DIR   = "D:\作業用"
   --date-to $DATE_TO `
   --periods 1Q,3Q `
   --include-forecasts `
+  --save-raw-json `
+  --request-interval-sec 1.0 `
+  --rate-limit-cooldown-sec 120 `
+  --max-retries 2 `
   --output-dir $OUT_DIR
 
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.check_jquants_coverage `

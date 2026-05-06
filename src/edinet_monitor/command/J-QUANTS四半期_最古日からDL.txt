@@ -1,14 +1,17 @@
 $env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
 $env:JQUANTS_API_KEY = "YOUR_JQUANTS_API_KEY"
 
-$DATE_FROM = "2016-04-01"
-$DATE_TO   = "2026-04-01"
+# 先に J-QUANTS最古日探索.txt で oldest_date を確認してから設定してください。
+$DATE_FROM = "YYYY-MM-DD"
+$DATE_TO   = "2026-05-06"
 $OUT_DIR   = "D:\作業用"
 
-.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_jquants_daily_quotes `
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_jquants_backfill `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
   --codes all `
+  --skip-quotes `
+  --save-raw-json `
   --request-interval-sec 1.0 `
   --rate-limit-cooldown-sec 120 `
   --max-retries 2 `
@@ -17,5 +20,5 @@ $OUT_DIR   = "D:\作業用"
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.check_jquants_coverage `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
-  --target quotes `
+  --target statements `
   --output-dir $OUT_DIR

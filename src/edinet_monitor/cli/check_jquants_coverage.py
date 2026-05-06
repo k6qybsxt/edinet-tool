@@ -19,7 +19,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date-to", required=True)
     parser.add_argument("--target", choices=["all", "statements", "quotes"], default="all")
     parser.add_argument("--codes", default="all")
-    parser.add_argument("--output-dir", default=r"D:\作業用")
+    parser.add_argument("--output-dir", default="D:\\\u4f5c\u696d\u7528")
     return parser
 
 

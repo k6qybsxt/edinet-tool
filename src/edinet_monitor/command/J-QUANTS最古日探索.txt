@@ -1,15 +1,17 @@
 $env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
 $env:JQUANTS_API_KEY = "YOUR_JQUANTS_API_KEY"
 
-$DATE_FROM = "2024-04-01"
+$DATE_FROM = "2016-01-01"
 $DATE_TO   = "2026-05-06"
 $OUT_DIR   = "D:\作業用"
 
-.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_jquants_backfill `
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.discover_jquants_oldest_date `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
-  --codes all `
-  --save-raw-json `
+  --target fins_summary `
+  --step month `
+  --seed-codes 7203 `
+  --lookback-months 3 `
   --request-interval-sec 1.0 `
   --rate-limit-cooldown-sec 120 `
   --max-retries 2 `

@@ -25,7 +25,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codes", default="all")
     parser.add_argument("--skip-statements", action="store_true")
     parser.add_argument("--skip-quotes", action="store_true")
-    parser.add_argument("--output-dir", default=r"D:\作業用")
+    parser.add_argument("--save-raw-json", action="store_true")
+    parser.add_argument("--raw-json-root", default=None)
+    parser.add_argument("--request-interval-sec", type=float, default=None)
+    parser.add_argument("--rate-limit-cooldown-sec", type=float, default=None)
+    parser.add_argument("--max-retries", type=int, default=None)
+    parser.add_argument("--output-dir", default="D:\\\u4f5c\u696d\u7528")
     return parser
 
 
@@ -35,7 +40,11 @@ def main() -> None:
     create_tables()
     conn = get_connection()
     try:
-        client = JQuantsClient()
+        client = JQuantsClient(
+            request_interval_sec=args.request_interval_sec,
+            rate_limit_cooldown_sec=args.rate_limit_cooldown_sec,
+            max_retries=args.max_retries,
+        )
         if not args.skip_statements:
             statement_result = save_jquants_statements(
                 conn,
@@ -46,6 +55,8 @@ def main() -> None:
                 include_forecasts=True,
                 codes=codes,
                 output_dir=args.output_dir,
+                save_raw_json=args.save_raw_json,
+                raw_json_storage_root=args.raw_json_root,
             )
             print(f"statements_saved={statement_result.saved_total}")
         if not args.skip_quotes:

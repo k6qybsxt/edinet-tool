@@ -13,6 +13,7 @@ from edinet_monitor.services.jquants.mapper import (
     quote_from_row,
     statement_metrics_from_row,
 )
+from edinet_monitor.services.jquants.raw_json_store import write_fins_summary_raw_jsonl
 from edinet_monitor.services.jquants.repository import (
     record_ingest_run,
     upsert_financial_metrics,
@@ -43,7 +44,8 @@ def _iter_dates(date_from: str, date_to: str):
     current = _parse_date(date_from)
     end = _parse_date(date_to)
     while current <= end:
-        yield current
+        if current.weekday() < 5:
+            yield current
         current += timedelta(days=1)
 
 
@@ -65,6 +67,8 @@ def save_jquants_statements(
     include_forecasts: bool = True,
     codes: list[str] | None = None,
     output_dir: str | Path | None = None,
+    save_raw_json: bool = False,
+    raw_json_storage_root: str | Path | None = None,
 ) -> JQuantsIngestResult:
     run_id = f"jquants_statements_{uuid.uuid4().hex[:12]}"
     started_at = datetime.now().isoformat(timespec="seconds")
@@ -74,10 +78,12 @@ def save_jquants_statements(
     saved_total = 0
     skipped_total = 0
     error_total = 0
+    raw_json_dates: set[str] = set()
     messages: list[str] = []
 
     try:
         if requested_codes:
+            pending_raw_rows: list[dict] = []
             for code in requested_codes:
                 for item in client.iter_fin_summary(code=code):
                     raw, metrics = _convert_statement_item(
@@ -87,14 +93,23 @@ def save_jquants_statements(
                     )
                     fetched_total += 1
                     if _statement_in_range(raw.disclosed_date, date_from, date_to):
+                        pending_raw_rows.append(item)
                         upsert_statement_raw(conn, raw)
                         saved_total += upsert_financial_metrics(conn, metrics)
                     else:
                         skipped_total += 1
+            if save_raw_json:
+                raw_written = write_fins_summary_raw_jsonl(
+                    pending_raw_rows,
+                    storage_root=raw_json_storage_root if raw_json_storage_root is not None else None,
+                )
+                raw_json_dates.update(raw_written)
+                messages.append(f"raw_json_dates={len(raw_written)}")
         else:
             for current in _iter_dates(date_from, date_to):
                 api_date = current.isoformat()
                 day_fetched = 0
+                day_rows: list[dict] = []
                 for item in client.iter_fin_summary(date=api_date):
                     raw, metrics = _convert_statement_item(
                         item,
@@ -103,8 +118,15 @@ def save_jquants_statements(
                     )
                     fetched_total += 1
                     day_fetched += 1
+                    day_rows.append(item)
                     upsert_statement_raw(conn, raw)
                     saved_total += upsert_financial_metrics(conn, metrics)
+                if save_raw_json:
+                    raw_written = write_fins_summary_raw_jsonl(
+                        day_rows,
+                        storage_root=raw_json_storage_root if raw_json_storage_root is not None else None,
+                    )
+                    raw_json_dates.update(raw_written)
                 messages.append(f"{api_date}: fetched={day_fetched}")
         status = "ok"
     except Exception as exc:  # pragma: no cover - CLI safety path
@@ -128,7 +150,13 @@ def save_jquants_statements(
             saved_total=saved_total,
             skipped_total=skipped_total,
             error_total=error_total,
-            summary={"api_version": "v2", "periods": sorted(allowed_periods), "include_forecasts": include_forecasts},
+            summary={
+                "api_version": "v2",
+                "periods": sorted(allowed_periods),
+                "include_forecasts": include_forecasts,
+                "save_raw_json": save_raw_json,
+                "raw_json_dates": sorted(raw_json_dates),
+            },
         )
         conn.commit()
 
@@ -143,6 +171,8 @@ def save_jquants_statements(
                 f"date_to: {date_to}",
                 f"periods: {','.join(sorted(allowed_periods))}",
                 f"include_forecasts: {include_forecasts}",
+                f"save_raw_json: {save_raw_json}",
+                f"raw_json_dates: {len(raw_json_dates)}",
                 f"fetched_total: {fetched_total}",
                 f"saved_metrics_total: {saved_total}",
                 f"skipped_total: {skipped_total}",

@@ -19,7 +19,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date-from", required=True)
     parser.add_argument("--date-to", required=True)
     parser.add_argument("--codes", default="all")
-    parser.add_argument("--output-dir", default=r"D:\作業用")
+    parser.add_argument("--request-interval-sec", type=float, default=None)
+    parser.add_argument("--rate-limit-cooldown-sec", type=float, default=None)
+    parser.add_argument("--max-retries", type=int, default=None)
+    parser.add_argument("--output-dir", default="D:\\\u4f5c\u696d\u7528")
     return parser
 
 
@@ -30,7 +33,11 @@ def main() -> None:
     try:
         result = save_jquants_daily_quotes(
             conn,
-            client=JQuantsClient(),
+            client=JQuantsClient(
+                request_interval_sec=args.request_interval_sec,
+                rate_limit_cooldown_sec=args.rate_limit_cooldown_sec,
+                max_retries=args.max_retries,
+            ),
             date_from=args.date_from,
             date_to=args.date_to,
             codes=_split_csv(args.codes),
