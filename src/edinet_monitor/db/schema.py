@@ -246,6 +246,25 @@ def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_ingest_progress (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        run_type TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        target_value TEXT NOT NULL,
+        status TEXT NOT NULL,
+        fetched_count INTEGER NOT NULL DEFAULT 0,
+        saved_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
 
 def _rebuild_issuer_master_if_needed(cur: sqlite3.Cursor) -> None:
     table_exists = cur.execute(
@@ -909,6 +928,16 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_jquants_daily_quotes_security_date
     ON jquants_daily_quotes(security_code, trade_date)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_jquants_ingest_progress_target
+    ON jquants_ingest_progress(run_id, run_type, target_kind, target_value)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_ingest_progress_status
+    ON jquants_ingest_progress(target_value, status, run_type)
     """)
 
     cur.execute("""

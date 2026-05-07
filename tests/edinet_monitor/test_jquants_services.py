@@ -26,6 +26,7 @@ from edinet_monitor.services.jquants.raw_json_store import (  # noqa: E402
     write_fins_summary_raw_jsonl,
 )
 from edinet_monitor.services.jquants.repository import (  # noqa: E402
+    record_ingest_progress,
     upsert_financial_metrics,
     upsert_quote,
 )
@@ -209,6 +210,60 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(result.checked_days, 3)
         self.assertTrue(result.output_path and result.output_path.exists())
         self.assertTrue(result.manifest_path and result.manifest_path.exists())
+
+    def test_repository_records_ingest_progress_idempotently(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE jquants_ingest_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                run_type TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                target_value TEXT NOT NULL,
+                status TEXT NOT NULL,
+                fetched_count INTEGER NOT NULL DEFAULT 0,
+                saved_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX uq_jquants_ingest_progress_target
+            ON jquants_ingest_progress(run_id, run_type, target_kind, target_value);
+            """
+        )
+
+        record_ingest_progress(
+            conn,
+            run_id="run-1",
+            run_type="jquants_daily_quotes",
+            target_kind="date",
+            target_value="2026-05-01",
+            status="running",
+            started_at="2026-05-07T09:00:00",
+        )
+        record_ingest_progress(
+            conn,
+            run_id="run-1",
+            run_type="jquants_daily_quotes",
+            target_kind="date",
+            target_value="2026-05-01",
+            status="completed",
+            fetched_count=10,
+            saved_count=10,
+            started_at="2026-05-07T09:00:00",
+            finished_at="2026-05-07T09:01:00",
+        )
+
+        row = conn.execute("SELECT * FROM jquants_ingest_progress").fetchone()
+        self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["fetched_count"], 10)
+        self.assertEqual(row["saved_count"], 10)
+        self.assertEqual(row["started_at"], "2026-05-07T09:00:00")
 
     def test_repository_upserts_metrics_and_quotes_idempotently(self) -> None:
         conn = sqlite3.connect(":memory:")

@@ -1,0 +1,12 @@
+$env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
+
+$DATE_FROM = "2026-04-01"
+$DATE_TO   = "2026-04-30"
+$OUT_DIR   = "D:\作業用"
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.check_edinet_download_progress `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --manifest-granularity day `
+  --form-codes 030000 `
+  --output-dir $OUT_DIR

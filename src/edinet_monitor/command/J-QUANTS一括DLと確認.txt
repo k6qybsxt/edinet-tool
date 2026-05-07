@@ -5,6 +5,8 @@ $DATE_FROM = "2024-04-01"
 $DATE_TO   = "2026-05-06"
 $OUT_DIR   = "D:\作業用"
 
+# run_jquants_backfill は最後に coverage を1つ出力します。
+# 同じ直後に check_jquants_coverage を追加実行すると coverage が2つ作成されます。
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.run_jquants_backfill `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
@@ -13,4 +15,12 @@ $OUT_DIR   = "D:\作業用"
   --request-interval-sec 1.0 `
   --rate-limit-cooldown-sec 120 `
   --max-retries 2 `
+  --output-dir $OUT_DIR
+
+# PC電源断などで中断が疑わしい場合はこちらを実行します。
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.check_jquants_ingest_progress `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --status all `
+  --target-kind date `
   --output-dir $OUT_DIR

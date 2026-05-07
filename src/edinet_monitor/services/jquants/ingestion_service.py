@@ -15,6 +15,7 @@ from edinet_monitor.services.jquants.mapper import (
 )
 from edinet_monitor.services.jquants.raw_json_store import write_fins_summary_raw_jsonl
 from edinet_monitor.services.jquants.repository import (
+    record_ingest_progress,
     record_ingest_run,
     upsert_financial_metrics,
     upsert_quote,
@@ -85,6 +86,20 @@ def save_jquants_statements(
         if requested_codes:
             pending_raw_rows: list[dict] = []
             for code in requested_codes:
+                target_started_at = datetime.now().isoformat(timespec="seconds")
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_statements",
+                    target_kind="code",
+                    target_value=code,
+                    status="running",
+                    started_at=target_started_at,
+                )
+                conn.commit()
+                code_fetched = 0
+                code_saved = 0
+                code_skipped = 0
                 for item in client.iter_fin_summary(code=code):
                     raw, metrics = _convert_statement_item(
                         item,
@@ -92,12 +107,30 @@ def save_jquants_statements(
                         include_forecasts=include_forecasts,
                     )
                     fetched_total += 1
+                    code_fetched += 1
                     if _statement_in_range(raw.disclosed_date, date_from, date_to):
                         pending_raw_rows.append(item)
                         upsert_statement_raw(conn, raw)
-                        saved_total += upsert_financial_metrics(conn, metrics)
+                        saved_count = upsert_financial_metrics(conn, metrics)
+                        saved_total += saved_count
+                        code_saved += saved_count
                     else:
                         skipped_total += 1
+                        code_skipped += 1
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_statements",
+                    target_kind="code",
+                    target_value=code,
+                    status="completed",
+                    fetched_count=code_fetched,
+                    saved_count=code_saved,
+                    skipped_count=code_skipped,
+                    started_at=target_started_at,
+                    finished_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                conn.commit()
             if save_raw_json:
                 raw_written = write_fins_summary_raw_jsonl(
                     pending_raw_rows,
@@ -108,7 +141,19 @@ def save_jquants_statements(
         else:
             for current in _iter_dates(date_from, date_to):
                 api_date = current.isoformat()
+                target_started_at = datetime.now().isoformat(timespec="seconds")
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_statements",
+                    target_kind="date",
+                    target_value=api_date,
+                    status="running",
+                    started_at=target_started_at,
+                )
+                conn.commit()
                 day_fetched = 0
+                day_saved = 0
                 day_rows: list[dict] = []
                 for item in client.iter_fin_summary(date=api_date):
                     raw, metrics = _convert_statement_item(
@@ -120,13 +165,28 @@ def save_jquants_statements(
                     day_fetched += 1
                     day_rows.append(item)
                     upsert_statement_raw(conn, raw)
-                    saved_total += upsert_financial_metrics(conn, metrics)
+                    saved_count = upsert_financial_metrics(conn, metrics)
+                    saved_total += saved_count
+                    day_saved += saved_count
                 if save_raw_json:
                     raw_written = write_fins_summary_raw_jsonl(
                         day_rows,
                         storage_root=raw_json_storage_root if raw_json_storage_root is not None else None,
                     )
                     raw_json_dates.update(raw_written)
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_statements",
+                    target_kind="date",
+                    target_value=api_date,
+                    status="completed",
+                    fetched_count=day_fetched,
+                    saved_count=day_saved,
+                    started_at=target_started_at,
+                    finished_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                conn.commit()
                 messages.append(f"{api_date}: fetched={day_fetched}")
         status = "ok"
     except Exception as exc:  # pragma: no cover - CLI safety path
@@ -232,6 +292,17 @@ def save_jquants_daily_quotes(
     try:
         if requested_codes:
             for code in requested_codes:
+                target_started_at = datetime.now().isoformat(timespec="seconds")
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_daily_quotes",
+                    target_kind="code",
+                    target_value=code,
+                    status="running",
+                    started_at=target_started_at,
+                )
+                conn.commit()
                 count = 0
                 for item in client.iter_eq_bars_daily(code=code, date_from=date_from, date_to=date_to):
                     quote = quote_from_row(item)
@@ -239,10 +310,34 @@ def save_jquants_daily_quotes(
                     count += 1
                     upsert_quote(conn, quote)
                     saved_total += 1
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_daily_quotes",
+                    target_kind="code",
+                    target_value=code,
+                    status="completed",
+                    fetched_count=count,
+                    saved_count=count,
+                    started_at=target_started_at,
+                    finished_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                conn.commit()
                 messages.append(f"{code}: fetched={count}")
         else:
             for current in _iter_dates(date_from, date_to):
                 api_date = current.isoformat()
+                target_started_at = datetime.now().isoformat(timespec="seconds")
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_daily_quotes",
+                    target_kind="date",
+                    target_value=api_date,
+                    status="running",
+                    started_at=target_started_at,
+                )
+                conn.commit()
                 count = 0
                 for item in client.iter_eq_bars_daily(date=api_date):
                     quote = quote_from_row(item)
@@ -250,6 +345,19 @@ def save_jquants_daily_quotes(
                     count += 1
                     upsert_quote(conn, quote)
                     saved_total += 1
+                record_ingest_progress(
+                    conn,
+                    run_id=run_id,
+                    run_type="jquants_daily_quotes",
+                    target_kind="date",
+                    target_value=api_date,
+                    status="completed",
+                    fetched_count=count,
+                    saved_count=count,
+                    started_at=target_started_at,
+                    finished_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                conn.commit()
                 messages.append(f"{api_date}: fetched={count}")
         status = "ok"
     except Exception as exc:  # pragma: no cover - CLI safety path

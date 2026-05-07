@@ -1,0 +1,13 @@
+$env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
+
+$DATE_FROM = "2016-10-01"
+$DATE_TO   = "2017-03-31"
+$OUT_DIR   = "D:\作業用"
+
+# DL中断や異常終了が疑わしい場合は running / error を確認してください。
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.check_jquants_ingest_progress `
+  --date-from $DATE_FROM `
+  --date-to $DATE_TO `
+  --status all `
+  --target-kind date `
+  --output-dir $OUT_DIR

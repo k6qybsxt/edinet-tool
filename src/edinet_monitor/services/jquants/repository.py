@@ -272,3 +272,54 @@ def record_ingest_run(
         ),
     )
 
+
+def record_ingest_progress(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    run_type: str,
+    target_kind: str,
+    target_value: str,
+    status: str,
+    fetched_count: int = 0,
+    saved_count: int = 0,
+    skipped_count: int = 0,
+    error_message: str = "",
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> None:
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO jquants_ingest_progress (
+            run_id, run_type, target_kind, target_value, status,
+            fetched_count, saved_count, skipped_count, error_message,
+            started_at, finished_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, run_type, target_kind, target_value) DO UPDATE SET
+            status = excluded.status,
+            fetched_count = excluded.fetched_count,
+            saved_count = excluded.saved_count,
+            skipped_count = excluded.skipped_count,
+            error_message = excluded.error_message,
+            started_at = COALESCE(jquants_ingest_progress.started_at, excluded.started_at),
+            finished_at = excluded.finished_at,
+            updated_at = excluded.updated_at
+        """,
+        (
+            run_id,
+            run_type,
+            target_kind,
+            target_value,
+            status,
+            fetched_count,
+            saved_count,
+            skipped_count,
+            error_message,
+            started_at or now,
+            finished_at,
+            now,
+            now,
+        ),
+    )
+
