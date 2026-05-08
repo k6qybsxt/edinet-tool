@@ -199,6 +199,11 @@ TAG_ALIAS = {
     "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRS": "NetAssets",
     "EquityIFRS": "NetAssets",
+    "EquityToAssetRatioSummaryOfBusinessResults": "EquityRatio",
+    "EquityToAssetRatioIFRSSummaryOfBusinessResults": "EquityRatio",
+    "EquityToAssetRatioUSGAAPSummaryOfBusinessResults": "EquityRatio",
+    "RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults": "EquityRatio",
+    "RatioOfOwnersEquityToGrossAssetsIFRS": "EquityRatio",
 
     # 期末残
     "CashAndCashEquivalents": "CashAndCashEquivalents",

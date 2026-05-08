@@ -157,13 +157,14 @@ class JQuantsServicesTest(unittest.TestCase):
 
     def test_statement_mapper_keeps_1q_actual_and_forecasts(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("1Q"), include_forecasts=True)
-        by_key = {(metric.period_key, metric.metric_base): metric for metric in metrics}
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
 
-        self.assertEqual(by_key[("actual:1Q", "NetSales")].value_num, 100000000.0)
-        self.assertEqual(by_key[("actual:1Q", "OrdinaryIncome")].calc_status, "missing")
-        self.assertEqual(by_key[("actual:1Q", "OutstandingShares")].value_num, 1000000.0)
-        self.assertEqual(by_key[("forecast:FY", "NetSales")].value_num, 400000000.0)
-        self.assertEqual(by_key[("forecast:2Q", "EPS")].value_num, 25.0)
+        self.assertEqual(by_key[("actual:1Q", None, "NetSales")].value_num, 100000000.0)
+        self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].calc_status, "missing")
+        self.assertEqual(by_key[("actual:1Q", None, "OutstandingShares")].value_num, 1000000.0)
+        self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].value_num, 400000000.0)
+        self.assertNotIn(("forecast:FY", "1Q", "EPS"), by_key)
+        self.assertNotIn(("forecast:2Q", "1Q", "NetSales"), by_key)
 
     def test_statement_mapper_excludes_2q_actuals(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("2Q"), include_forecasts=False)

@@ -214,6 +214,18 @@ METRICS = {
         "unit": "millions",
     },
 
+    "EquityRatio": {
+        "tags": [
+            "jpcrp_cor:EquityToAssetRatioSummaryOfBusinessResults",
+            "jpcrp_cor:EquityToAssetRatioIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:EquityToAssetRatioUSGAAPSummaryOfBusinessResults",
+            "jpcrp_cor:RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults",
+            "jpigp_cor:RatioOfOwnersEquityToGrossAssetsIFRS",
+        ],
+        "kind": "instant_num",
+        "unit": "ratio",
+    },
+
     "CashAndCashEquivalents": {
         "tags": [
             "jppfs_cor:CashAndCashEquivalents",

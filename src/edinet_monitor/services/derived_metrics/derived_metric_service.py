@@ -133,12 +133,16 @@ SAFE_SELLING_EXPENSES_TOTAL_SOURCE_TAGS = {
 
 
 def infer_period_scope(form_type: str) -> str | None:
+    return infer_period_info(form_type)[0]
+
+
+def infer_period_info(form_type: str) -> tuple[str | None, str | None, str | None]:
     text = str(form_type or "").strip()
     if text in ANNUAL_FORM_TYPES:
-        return "annual"
+        return "annual", "annual:FY", None
     if is_half_form_type(text):
-        return "half"
-    return None
+        return "quarter", "actual:2Q", "2Q"
+    return None, None, None
 
 
 def scale_value_for_display(
@@ -247,6 +251,8 @@ def _build_derived_row(
         "fiscal_year": sample_row.get("fiscal_year"),
         "period_end": sample_row.get("period_end"),
         "period_scope": str(sample_row.get("period_scope") or ""),
+        "period_key": sample_row.get("period_key"),
+        "quarter_type": sample_row.get("quarter_type"),
         "period_offset": SUFFIX_TO_PERIOD_OFFSET[suffix],
         "consolidation": sample_row.get("consolidation"),
         "accounting_standard": accounting_standard,
@@ -1082,7 +1088,7 @@ def _append_fixed_period_growth_rows(
     document_display_unit: str,
     rule_version: str,
 ) -> None:
-    if str(sample_row.get("period_scope") or "") == "half":
+    if str(sample_row.get("period_scope") or "") != "annual":
         return
 
     current_input = current_input_builder(metric_rows, "Current")
@@ -1619,12 +1625,14 @@ def calculate_derived_metrics(
     if not normalized_rows:
         return []
 
-    period_scope = infer_period_scope(form_type)
+    period_scope, period_key, quarter_type = infer_period_info(form_type)
     if period_scope is None:
         raise ValueError(f"Unsupported form_type for derived metrics: {form_type}")
 
     sample_row = dict(normalized_rows[0])
     sample_row["period_scope"] = period_scope
+    sample_row["period_key"] = period_key
+    sample_row["quarter_type"] = quarter_type
     metric_rows = _metric_map(normalized_rows)
     half_progress_annual_values = half_progress_annual_values or {}
     out_rows: list[dict[str, Any]] = []
@@ -1690,6 +1698,18 @@ def calculate_derived_metrics(
         }
 
     def _equity_ratio_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
+        direct_inputs = _single_metric("EquityRatio", suffix)
+        if direct_inputs["value_num"] is not None:
+            return {
+                "value_num": direct_inputs["value_num"],
+                "calc_status": "ok",
+                "detail_inputs": direct_inputs["detail_inputs"],
+                "reference_keys": direct_inputs["reference_keys"],
+                "display_formula": "equity_ratio_tag * 100",
+                "stored_formula": "equity_ratio_tag",
+                "detail_extra": {"source_preference": "normalized_equity_ratio_tag"},
+            }
+
         net_assets_inputs = _single_metric("NetAssets", suffix)
         total_assets_inputs = _single_metric("TotalAssets", suffix)
         value_num, calc_status = _ratio_status(
@@ -1708,6 +1728,9 @@ def calculate_derived_metrics(
                 *net_assets_inputs["reference_keys"],
                 *total_assets_inputs["reference_keys"],
             ],
+            "display_formula": "net_assets / total_assets * 100",
+            "stored_formula": "net_assets / total_assets",
+            "detail_extra": {"source_preference": "fallback_net_assets_total_assets"},
         }
 
     def _discount_evaluation_rate_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
@@ -2230,7 +2253,7 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
-    if period_scope == "half":
+    if quarter_type == "2Q":
         for derived_base, half_base, annual_base in [
             ("HalfNetSalesProgressRate", "NetSales", "NetSales"),
             ("HalfOrdinaryIncomeProgressRate", "OrdinaryIncome", "OrdinaryIncome"),
@@ -2615,16 +2638,15 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
-    _append_ratio_rows(
+    _append_rows_from_inputs(
         out_rows,
         metric_rows=metric_rows,
         sample_row=sample_row,
         derived_metric_base="EquityRatio",
         metric_group="return",
         formula_name="equity_ratio",
-        display_formula="net_assets / total_assets * 100",
-        numerator_builder=lambda metric_rows, suffix: _single_metric("NetAssets", suffix),
-        denominator_builder=lambda metric_rows, suffix: _single_metric("TotalAssets", suffix),
+        value_unit="ratio",
+        input_builder=_equity_ratio_input,
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

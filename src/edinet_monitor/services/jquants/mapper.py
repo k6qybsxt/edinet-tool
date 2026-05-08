@@ -8,7 +8,13 @@ from typing import Any
 
 JQUANTS_RULE_VERSION = "jquants-2026-05-06-v2"
 ACTUAL_PERIODS = {"1Q", "3Q"}
-FORECAST_TARGETS = {"FY", "2Q"}
+FORECAST_TARGETS = {"FY"}
+FORECAST_STAGE_BY_PERIOD = {
+    "FY": "initial",
+    "1Q": "1Q",
+    "2Q": "2Q",
+    "3Q": "3Q",
+}
 
 
 @dataclass(frozen=True)
@@ -21,6 +27,7 @@ class JQuantsStatementMetric:
     period_key: str
     quarter_type: str | None
     forecast_target: str | None
+    forecast_stage: str | None
     fiscal_year: int | None
     period_start: str
     period_end: str
@@ -96,17 +103,8 @@ ACTUAL_FIELD_MAP = [
 FORECAST_FIELD_MAP = {
     "FY": [
         ("FSales", "NetSales", "sales", "yen"),
-        ("FOP", "OperatingIncome", "profit", "yen"),
         ("FOdP", "OrdinaryIncome", "profit", "yen"),
         ("FNP", "ProfitLoss", "profit", "yen"),
-        ("FEPS", "EPS", "per_share", "yen_per_share"),
-    ],
-    "2Q": [
-        ("FSales2Q", "NetSales", "sales", "yen"),
-        ("FOP2Q", "OperatingIncome", "profit", "yen"),
-        ("FOdP2Q", "OrdinaryIncome", "profit", "yen"),
-        ("FNP2Q", "ProfitLoss", "profit", "yen"),
-        ("FEPS2Q", "EPS", "per_share", "yen_per_share"),
     ],
 }
 
@@ -202,6 +200,7 @@ def _metric_from_field(
     period_key: str,
     quarter_type: str | None,
     forecast_target: str | None,
+    forecast_stage: str | None,
 ) -> JQuantsStatementMetric:
     raw = build_statement_raw(row)
     decimal_value = _parse_decimal(row.get(field_name))
@@ -215,6 +214,7 @@ def _metric_from_field(
         period_key=period_key,
         quarter_type=quarter_type,
         forecast_target=forecast_target,
+        forecast_stage=forecast_stage,
         fiscal_year=raw.fiscal_year,
         period_start=(
             raw.current_fiscal_year_start_date
@@ -235,7 +235,14 @@ def _metric_from_field(
         value_unit=value_unit,
         calc_status=calc_status,
         source_field=field_name,
-        source_detail_json=_json_dumps({"source": "jquants", "api_version": "v2", "field": field_name}),
+        source_detail_json=_json_dumps(
+            {
+                "source": "jquants",
+                "api_version": "v2",
+                "field": field_name,
+                "forecast_stage": forecast_stage,
+            }
+        ),
     )
 
 
@@ -263,11 +270,13 @@ def statement_metrics_from_row(
                     period_key=f"actual:{period}",
                     quarter_type=period,
                     forecast_target=None,
+                    forecast_stage=None,
                 )
             )
         metrics.append(_outstanding_shares_metric(row, period))
 
     if include_forecasts:
+        forecast_stage = FORECAST_STAGE_BY_PERIOD.get(period)
         for forecast_target, fields in FORECAST_FIELD_MAP.items():
             for field_name, metric_base, metric_group, value_unit in fields:
                 metrics.append(
@@ -282,6 +291,7 @@ def statement_metrics_from_row(
                         period_key=f"forecast:{forecast_target}",
                         quarter_type=None,
                         forecast_target=forecast_target,
+                        forecast_stage=forecast_stage,
                     )
                 )
 
@@ -313,6 +323,7 @@ def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsState
         period_key=f"actual:{period}",
         quarter_type=period,
         forecast_target=None,
+        forecast_stage=None,
         fiscal_year=raw.fiscal_year,
         period_start=raw.current_period_start_date,
         period_end=raw.current_period_end_date or raw.current_fiscal_year_end_date,

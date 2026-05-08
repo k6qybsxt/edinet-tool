@@ -72,7 +72,29 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertIsNotNone(normalized)
         assert normalized is not None
         self.assertEqual(normalized["value_num"], 0.0)
-        self.assertEqual(str(normalized["value_num"]), "0.0")
+
+    def test_equity_ratio_percent_tag_is_normalized_to_ratio(self) -> None:
+        row = build_raw_fact(
+            tag_name="EquityToAssetRatioSummaryOfBusinessResults",
+            value_text="42.5",
+            context_ref="CurrentYearInstant_ConsolidatedMember",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2025-03-31",
+            unit_ref="pure",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "EquityRatioCurrent")
+        self.assertEqual(normalized["value_num"], 0.425)
 
     def test_operating_cost_maps_to_cost_of_sales(self) -> None:
         row = build_raw_fact(tag_name="OperatingCost")

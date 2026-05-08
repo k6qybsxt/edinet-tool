@@ -46,6 +46,15 @@ def _edinet_code_by_security(conn: sqlite3.Connection, security_codes: set[str])
     return result
 
 
+def _ensure_forecast_stage_column(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(jquants_financial_metrics)").fetchall()
+    }
+    if columns and "forecast_stage" not in columns:
+        conn.execute("ALTER TABLE jquants_financial_metrics ADD COLUMN forecast_stage TEXT")
+
+
 def upsert_statement_raw(conn: sqlite3.Connection, raw: JQuantsStatementRaw) -> None:
     now = _now()
     conn.execute(
@@ -97,6 +106,7 @@ def upsert_financial_metrics(
 ) -> int:
     if not metrics:
         return 0
+    _ensure_forecast_stage_column(conn)
     edinet_by_security = _edinet_code_by_security(conn, {metric.security_code for metric in metrics})
     now = _now()
     rows = [
@@ -110,6 +120,7 @@ def upsert_financial_metrics(
             metric.period_key,
             metric.quarter_type,
             metric.forecast_target,
+            metric.forecast_stage,
             metric.fiscal_year,
             metric.period_start,
             metric.period_end,
@@ -133,11 +144,11 @@ def upsert_financial_metrics(
         """
         INSERT INTO jquants_financial_metrics (
             disclosure_number, local_code, security_code, edinet_code, metric_kind,
-            period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+            period_scope, period_key, quarter_type, forecast_target, forecast_stage, fiscal_year,
             period_start, period_end, disclosed_date, disclosed_time, metric_key,
             metric_base, metric_group, value_num, value_unit, calc_status,
             source_field, source_detail_json, rule_version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(disclosure_number, period_key, metric_key) DO UPDATE SET
             local_code = excluded.local_code,
             security_code = excluded.security_code,
@@ -146,6 +157,7 @@ def upsert_financial_metrics(
             period_scope = excluded.period_scope,
             quarter_type = excluded.quarter_type,
             forecast_target = excluded.forecast_target,
+            forecast_stage = excluded.forecast_stage,
             fiscal_year = excluded.fiscal_year,
             period_start = excluded.period_start,
             period_end = excluded.period_end,

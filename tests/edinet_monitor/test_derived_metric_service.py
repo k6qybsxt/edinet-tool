@@ -289,10 +289,31 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["value_num"], 0.5)
         self.assertEqual(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["value_num"], 0.8)
         self.assertEqual(by_key["HalfProfitProgressRateCurrent"]["value_num"], 0.5)
-        self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["period_scope"], "half")
+        self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["period_scope"], "quarter")
+        self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["period_key"], "actual:2Q")
+        self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["quarter_type"], "2Q")
         self.assertEqual(
             by_key["HalfNetSalesProgressRateCurrent"]["source_detail_json"]["annual_doc_id"],
             "ANNUAL1",
+        )
+
+    def test_equity_ratio_prefers_direct_normalized_tag(self) -> None:
+        rows = calculate_derived_metrics(
+            [
+                build_normalized_row("NetAssetsCurrent", 500_000),
+                build_normalized_row("TotalAssetsCurrent", 1_000_000),
+                build_normalized_row("EquityRatioCurrent", 0.42, source_tag="EquityToAssetRatioSummaryOfBusinessResults"),
+            ],
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="千円",
+        )
+
+        by_key = {row["metric_key"]: row for row in rows}
+        self.assertEqual(by_key["EquityRatioCurrent"]["value_num"], 0.42)
+        self.assertEqual(
+            by_key["EquityRatioCurrent"]["source_detail_json"]["source_preference"],
+            "normalized_equity_ratio_tag",
         )
 
     def test_long_term_growth_rates_use_historical_growth_values(self) -> None:

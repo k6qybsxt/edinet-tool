@@ -102,6 +102,37 @@ def _ensure_raw_facts_columns(cur: sqlite3.Cursor) -> None:
     _ensure_table_column(cur, "raw_facts", "xbrl_member_name TEXT")
 
 
+def _ensure_derived_metrics_columns(cur: sqlite3.Cursor) -> None:
+    table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'derived_metrics'
+        """
+    ).fetchone()
+
+    if not table_exists:
+        return
+
+    _ensure_table_column(cur, "derived_metrics", "period_key TEXT")
+    _ensure_table_column(cur, "derived_metrics", "quarter_type TEXT")
+
+
+def _ensure_jquants_financial_metrics_columns(cur: sqlite3.Cursor) -> None:
+    table_exists = cur.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'jquants_financial_metrics'
+        """
+    ).fetchone()
+
+    if not table_exists:
+        return
+
+    _ensure_table_column(cur, "jquants_financial_metrics", "forecast_stage TEXT")
+
+
 def _ensure_pipeline_log_columns(cur: sqlite3.Cursor) -> None:
     run_table_exists = cur.execute(
         """
@@ -149,6 +180,34 @@ def _create_industry_aggregate_metrics_table(cur: sqlite3.Cursor) -> None:
     """)
 
 
+def _create_market_derived_metrics_table(cur: sqlite3.Cursor) -> None:
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS market_derived_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        edinet_code TEXT,
+        security_code TEXT NOT NULL,
+        period_scope TEXT NOT NULL,
+        period_key TEXT NOT NULL,
+        quarter_type TEXT,
+        fiscal_year INTEGER,
+        period_end TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        metric_base TEXT NOT NULL,
+        metric_group TEXT NOT NULL,
+        value_num REAL,
+        value_unit TEXT NOT NULL,
+        calc_status TEXT NOT NULL,
+        formula_name TEXT NOT NULL,
+        source_detail_json TEXT,
+        rule_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+
 def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
     cur.execute("""
     CREATE TABLE IF NOT EXISTS jquants_statement_raw (
@@ -182,6 +241,7 @@ def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
         period_key TEXT NOT NULL,
         quarter_type TEXT,
         forecast_target TEXT,
+        forecast_stage TEXT,
         fiscal_year INTEGER,
         period_start TEXT,
         period_end TEXT,
@@ -674,6 +734,8 @@ def create_tables() -> None:
         fiscal_year INTEGER,
         period_end TEXT,
         period_scope TEXT NOT NULL,
+        period_key TEXT,
+        quarter_type TEXT,
         period_offset INTEGER NOT NULL DEFAULT 0,
         consolidation TEXT,
         accounting_standard TEXT,
@@ -688,9 +750,12 @@ def create_tables() -> None:
         updated_at TEXT NOT NULL
     )
     """)
+    _ensure_derived_metrics_columns(cur)
 
     _create_industry_aggregate_metrics_table(cur)
+    _create_market_derived_metrics_table(cur)
     _create_jquants_tables(cur)
+    _ensure_jquants_financial_metrics_columns(cur)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS screening_runs (
@@ -891,6 +956,21 @@ def create_tables() -> None:
     """)
 
     cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_market_derived_metrics_scope
+    ON market_derived_metrics(source_type, source_id, period_key, metric_key)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_market_derived_metrics_code_base_period
+    ON market_derived_metrics(security_code, metric_base, period_scope, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_market_derived_metrics_source
+    ON market_derived_metrics(source_type, source_id)
+    """)
+
+    cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_jquants_statement_raw_date
     ON jquants_statement_raw(disclosed_date)
     """)
@@ -913,6 +993,11 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_jquants_financial_metrics_kind_forecast
     ON jquants_financial_metrics(metric_kind, forecast_target, disclosed_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_financial_metrics_forecast_stage
+    ON jquants_financial_metrics(metric_kind, forecast_target, forecast_stage, disclosed_date)
     """)
 
     cur.execute("""
