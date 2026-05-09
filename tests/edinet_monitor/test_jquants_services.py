@@ -163,6 +163,7 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].calc_status, "missing")
         self.assertEqual(by_key[("actual:1Q", None, "OutstandingShares")].value_num, 1000000.0)
         self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].value_num, 400000000.0)
+        self.assertEqual(by_key[("forecast:FY", "1Q", "OperatingIncome")].value_num, 50000000.0)
         self.assertNotIn(("forecast:FY", "1Q", "EPS"), by_key)
         self.assertNotIn(("forecast:2Q", "1Q", "NetSales"), by_key)
 
@@ -170,6 +171,17 @@ class JQuantsServicesTest(unittest.TestCase):
         metrics = statement_metrics_from_row(_statement_row("2Q"), include_forecasts=False)
 
         self.assertEqual(metrics, [])
+
+    def test_statement_mapper_keeps_2q_full_year_forecasts(self) -> None:
+        metrics = statement_metrics_from_row(_statement_row("2Q"), include_forecasts=True)
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
+
+        self.assertEqual(by_key[("forecast:FY", "2Q", "NetSales")].value_num, 400000000.0)
+        self.assertEqual(by_key[("forecast:FY", "2Q", "OperatingIncome")].value_num, 50000000.0)
+        self.assertEqual(by_key[("forecast:FY", "2Q", "OrdinaryIncome")].value_num, 48000000.0)
+        self.assertEqual(by_key[("forecast:FY", "2Q", "ProfitLoss")].value_num, 30000000.0)
+        self.assertNotIn(("forecast:FY", "2Q", "EPS"), by_key)
+        self.assertNotIn(("forecast:2Q", "2Q", "NetSales"), by_key)
 
     def test_quote_mapper_rounds_adjustment_close(self) -> None:
         quote = quote_from_row(

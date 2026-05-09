@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import unittest
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+SRC_DIR = ROOT_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from edinet_monitor.cli.audit_normalization_change_scope import (
     metric_bases_from_preview_rows,

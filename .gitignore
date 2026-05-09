@@ -39,6 +39,7 @@ dist/
 .coverage
 htmlcov/
 tests/_tmp_edinet_monitor/
+tests/_tmp_*/
 
 # ===============================
 # IDE
@@ -72,6 +73,7 @@ folder_tree.txt
 /managed_metrics*.txt
 /tmp_metric_list_test.txt
 /tmp_import_status*/
+/tmp*/
 
 *.xbrl
 *.zip

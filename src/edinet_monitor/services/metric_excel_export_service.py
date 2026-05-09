@@ -92,7 +92,7 @@ FORM_TYPES_BY_PERIOD_SCOPE = {
 }
 PERIOD_SCOPE_LABEL_BY_FORM_TYPE = {
     "030000": "\u901a\u671f",
-    "043A00": "\u56db\u534a\u671f",
+    "043A00": "2Q",
 }
 ALL_PERIOD_SCOPES = ["annual", "quarter", "forecast"]
 QUARTER_SUPPORTED_BASES = {
@@ -123,14 +123,15 @@ QUARTER_SUPPORTED_BASES = {
 }
 FORECAST_SUPPORTED_BASES = {
     "NetSales",
+    "OperatingIncome",
     "OrdinaryIncome",
     "ProfitLoss",
 }
-FORECAST_PROGRESS_BASES = {"NetSales", "OrdinaryIncome", "ProfitLoss"}
+FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
 JQUANTS_QUARTER_TYPES = ("1Q", "3Q")
 JQUANTS_FORECAST_STAGES = ("initial", "1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGE_LABELS = {
-    "initial": "\u5f53\u521d",
+    "initial": "\u5f53\u671f",
     "1Q": "1Q",
     "2Q": "2Q",
     "3Q": "3Q",
@@ -639,7 +640,7 @@ class MetricExcelCondition:
     company_names: list[str] = field(default_factory=list)
     metric_labels: list[str] = field(default_factory=list)
     period_scopes: list[str] = field(default_factory=lambda: list(ALL_PERIOD_SCOPES))
-    period_offsets: list[int] = field(default_factory=lambda: list(range(9, -1, -1)))
+    period_offsets: list[int] = field(default_factory=lambda: list(range(10, -1, -1)))
     trend: str = "none"
     trend_metric_labels: list[str] = field(default_factory=list)
     trend_period_offsets: list[int] = field(default_factory=list)
@@ -658,6 +659,7 @@ class MetricExcelRow:
     security_code: str
     company_name: str
     industry_33: str
+    market: str
     period_scope: str
     current_period_end: str
     metric_base: str
@@ -746,7 +748,7 @@ def _parse_period_token(token: str) -> int:
 def _parse_periods(value: str | None) -> list[int]:
     text = str(value or "").strip()
     if not text or text.upper() == "ALL":
-        return list(range(9, -1, -1))
+        return list(range(10, -1, -1))
 
     normalized = text.replace("～", "-").replace("－", "-").replace("〜", "-")
     if "-" in normalized and "," not in normalized and "、" not in normalized:
@@ -759,7 +761,7 @@ def _parse_periods(value: str | None) -> list[int]:
 
     offsets = sorted({_parse_period_token(part) for part in _split_multi(normalized)}, reverse=True)
     if not offsets:
-        return list(range(9, -1, -1))
+        return list(range(10, -1, -1))
     return offsets
 
 
@@ -999,6 +1001,11 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
             mapping[_normalize_text(f"{stage_label} {_base_metric_label_for_excel(base, sheet_name)} \u4e88\u60f3")] = base
             mapping[_normalize_text(f"{stage_label} {metric_base_to_display_name(base)}(\u4e88\u60f3)")] = base
             mapping[_normalize_text(f"{stage_label} {_base_metric_label_for_excel(base, sheet_name)}(\u4e88\u60f3)")] = base
+            if forecast_stage == "initial":
+                mapping[_normalize_text(f"\u5f53\u521d {metric_base_to_display_name(base)} \u4e88\u60f3")] = base
+                mapping[_normalize_text(f"\u5f53\u521d {_base_metric_label_for_excel(base, sheet_name)} \u4e88\u60f3")] = base
+                mapping[_normalize_text(f"\u5f53\u521d {metric_base_to_display_name(base)}(\u4e88\u60f3)")] = base
+                mapping[_normalize_text(f"\u5f53\u521d {_base_metric_label_for_excel(base, sheet_name)}(\u4e88\u60f3)")] = base
         for industry in SHEET_ORDER:
             mapping[_normalize_text(metric_base_to_display_name(base, industry))] = base
             mapping[_normalize_text(_metric_label_for_excel(base, industry))] = base
@@ -1096,7 +1103,12 @@ def _fetch_ranked_filings(
         f.document_display_unit,
         im.company_name,
         im.industry_33,
+        im.market,
         im.security_code AS issuer_security_code,
+        CASE
+          WHEN f.form_type = '043A00' THEN 'quarter:2Q'
+          ELSE 'annual'
+        END AS period_scope_key,
         CASE
           WHEN f.form_type = '043A00'
             THEN COALESCE(date(f.period_end, 'start of month', '+6 months', '+1 month', '-1 day'), f.period_end)
@@ -1112,7 +1124,7 @@ def _fetch_ranked_filings(
         *,
         -- Half filings are bucketed with their corresponding annual fiscal year.
         DENSE_RANK() OVER (
-          PARTITION BY f.edinet_code
+          PARTITION BY f.edinet_code, f.period_scope_key
           ORDER BY period_bucket_end DESC
         ) - 1 AS period_offset
       FROM base f
@@ -1274,51 +1286,6 @@ def _fetch_industry_aggregate_rows(
         """,
         params,
     ).fetchall()
-    if market_derived_table_exists(conn):
-        market_metric_bases = [base for base in metric_bases if base in MARKET_METRIC_BASES]
-        if market_metric_bases:
-            market_base_placeholders = ",".join("?" for _ in market_metric_bases)
-            market_where = [
-                "source_type = 'jquants'",
-                f"(security_code IN ({code_placeholders}))",
-                f"metric_base IN ({market_base_placeholders})",
-            ]
-            market_params: list[Any] = [*security_codes, *market_metric_bases]
-            if min_fiscal_year is not None:
-                market_where.append("fiscal_year >= ?")
-                market_params.append(min_fiscal_year)
-            rows.extend(
-                conn.execute(
-                    f"""
-                    SELECT
-                      source_id AS disclosure_number,
-                      '' AS local_code,
-                      security_code,
-                      'market_derived' AS metric_kind,
-                      period_scope,
-                      period_key,
-                      quarter_type,
-                      NULL AS forecast_target,
-                      NULL AS forecast_stage,
-                      fiscal_year,
-                      NULL AS period_start,
-                      period_end,
-                      period_end AS disclosed_date,
-                      '' AS disclosed_time,
-                      metric_key,
-                      metric_base,
-                      metric_group,
-                      value_num,
-                      value_unit,
-                      calc_status,
-                      formula_name AS source_field
-                    FROM market_derived_metrics
-                    WHERE {" AND ".join(market_where)}
-                    ORDER BY security_code, fiscal_year, period_key, metric_base
-                    """,
-                    market_params,
-                ).fetchall()
-            )
     return rows
 
 
@@ -1407,6 +1374,14 @@ def _period_scope_label(period_scope: str) -> str:
     if period_scope.startswith("forecast"):
         return "\u4e88\u60f3"
     return "\u901a\u671f"
+
+
+def _source_offset_for_display(period_scope: str, display_offset: int) -> int | None:
+    if period_scope == "annual":
+        if display_offset == 0:
+            return None
+        return display_offset - 1
+    return display_offset
 
 
 def _calendar_year_bucket(period_bucket_end: str | None) -> int | None:
@@ -1612,6 +1587,7 @@ def _append_stat_rows(
                     security_code="",
                     company_name="",
                     industry_33="",
+                    market="",
                     period_scope=first.period_scope,
                     row_kind=row_kind,
                     current_period_end=first.current_period_end,
@@ -1662,6 +1638,7 @@ def _passes_percent_filters(
     *,
     filter_bases: list[str],
     filter_offsets: list[int],
+    period_scope: str,
     by_offset: dict[int, sqlite3.Row],
     metric_values: dict[tuple[str, str], float | None],
     min_value: float | None,
@@ -1672,7 +1649,10 @@ def _passes_percent_filters(
     offsets = filter_offsets or [0]
     for base in filter_bases:
         for offset in offsets:
-            filing = by_offset.get(offset)
+            source_offset = _source_offset_for_display(period_scope, offset)
+            if source_offset is None:
+                return False
+            filing = by_offset.get(source_offset)
             if filing is None:
                 return False
             doc_id = str(filing["doc_id"])
@@ -1694,6 +1674,7 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
             "security_code": row.security_code,
             "company_name": row.company_name,
             "industry_33": row.industry_33,
+            "market": row.market,
             "period_scope": _period_scope_label(row.period_scope),
             "metric": row.metric_label,
         }
@@ -1796,7 +1777,13 @@ def _build_industry_only_metric_excel_rows(
     if max_fiscal_year is None:
         warnings.append("industry_aggregate_metrics_empty")
         return [], errors, warnings, [], 0
-    fiscal_years = sorted({max_fiscal_year - offset for offset in condition.period_offsets})
+    fiscal_years = sorted(
+        {
+            max_fiscal_year - source_offset
+            for offset in condition.period_offsets
+            if (source_offset := _source_offset_for_display("annual", offset)) is not None
+        }
+    )
     aggregate_rows = _fetch_industry_aggregate_rows(
         conn,
         industries=condition.industries,
@@ -1817,8 +1804,13 @@ def _build_industry_only_metric_excel_rows(
             ratios_by_offset: dict[int, float | None] = {}
             raw_values_by_offset: dict[int, float | None] = {}
             for offset in condition.period_offsets:
-                fiscal_year = max_fiscal_year - offset
-                row = aggregate_by_key.get((industry, fiscal_year, base))
+                source_offset = _source_offset_for_display("annual", offset)
+                fiscal_year = max_fiscal_year - source_offset if source_offset is not None else None
+                row = (
+                    aggregate_by_key.get((industry, fiscal_year, base))
+                    if fiscal_year is not None
+                    else None
+                )
                 raw_value = (
                     float(row["value_num"])
                     if row is not None
@@ -1854,6 +1846,7 @@ def _build_industry_only_metric_excel_rows(
                     security_code="",
                     company_name="",
                     industry_33=industry,
+                    market="",
                     period_scope=INDUSTRY_AGGREGATE_PERIOD_SCOPE,
                     row_kind=ROW_KIND_DETAIL,
                     current_period_end=_aggregate_period_display(
@@ -1924,7 +1917,8 @@ def _fetch_jquants_companies(
           im.edinet_code,
           im.security_code,
           im.company_name,
-          im.industry_33
+          im.industry_33,
+          im.market
         FROM issuer_master im
         WHERE {" AND ".join(where)}
         ORDER BY im.security_code, im.edinet_code
@@ -2277,6 +2271,7 @@ def _append_jquants_period_rows(
                 security_code=security_code,
                 company_name=str(company["company_name"] or ""),
                 industry_33=str(company["industry_33"] or ""),
+                market=str(company["market"] or ""),
                 period_scope=period_scope,
                 row_kind=ROW_KIND_DETAIL,
                 current_period_end=periods_by_offset.get(0, ""),
@@ -2410,6 +2405,7 @@ def build_metric_excel_rows(
         if not _passes_percent_filters(
             filter_bases=percent_filter_bases_by_sheet.get(sheet_name, []),
             filter_offsets=condition.percent_filter_period_offsets,
+            period_scope=current_period_scope,
             by_offset=by_offset,
             metric_values=metric_values,
             min_value=condition.percent_filter_min,
@@ -2428,7 +2424,8 @@ def build_metric_excel_rows(
             for trend_base in trend_bases:
                 trend_values = []
                 for offset in sorted(condition.trend_period_offsets, reverse=True):
-                    filing = by_offset.get(offset)
+                    source_offset = _source_offset_for_display(current_period_scope, offset)
+                    filing = by_offset.get(source_offset) if source_offset is not None else None
                     value = None
                     if filing is not None:
                         value = metric_values.get((str(filing["doc_id"]), _metric_key(trend_base)))
@@ -2464,7 +2461,8 @@ def build_metric_excel_rows(
                     raw_values_by_offset[offset] = None
                     continue
 
-                filing = by_offset.get(offset)
+                source_offset = _source_offset_for_display(current_period_scope, offset)
+                filing = by_offset.get(source_offset) if source_offset is not None else None
                 if filing is None:
                     periods_by_offset[offset] = ""
                     values_by_offset[offset] = None
@@ -2505,6 +2503,7 @@ def build_metric_excel_rows(
                     security_code=security_code,
                     company_name=str(current["company_name"] or ""),
                     industry_33=str(current["industry_33"] or ""),
+                    market=str(current["market"] or ""),
                     period_scope=current_period_scope,
                     row_kind=ROW_KIND_DETAIL,
                     current_period_end=str(current["period_end"] or ""),
@@ -2702,6 +2701,7 @@ def _write_metric_sheet(
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
         "\u696d\u7a2e",
+        "\u5e02\u5834\u533a\u5206",
         "\u6c7a\u7b97\u7a2e\u5225",
         "\u884c\u7a2e\u5225",
         "\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f",
@@ -2731,6 +2731,7 @@ def _write_metric_sheet(
             row.security_code,
             row.company_name,
             row.industry_33,
+            row.market,
             _period_scope_label(row.period_scope),
             row.row_kind,
             row.current_period_end,
@@ -2749,7 +2750,7 @@ def _write_metric_sheet(
         ws.append(values)
         current_row = ws.max_row
         for idx, offset in enumerate(period_offsets):
-            value_col = 9 + idx * 5
+            value_col = 10 + idx * 5
             ratio_col = value_col + 2
             _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
             ratio_cell = ws.cell(current_row, ratio_col)
@@ -2760,7 +2761,7 @@ def _write_metric_sheet(
     _apply_period_block_styles(
         ws,
         period_offsets=period_offsets,
-        start_col=8,
+        start_col=9,
         block_width=5,
     )
     progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
@@ -2770,7 +2771,7 @@ def _write_metric_sheet(
             "\u3053\u306e\u6bd4\u7387\u306f\u3001\u56db\u534a\u671f\u5b9f\u7e3e \u00f7 \u540c\u4e00\u5e74\u5ea6\u306e\u6700\u65b0\u901a\u671f\u4e88\u60f3\u3067\u8a08\u7b97\u3057\u305f\u6700\u65b0\u4e88\u60f3\u9032\u6357\u7387\u3067\u3059\u3002",
             "EDINET_MONITOR",
         )
-    ws.freeze_panes = "H2"
+    ws.freeze_panes = "I2"
     ws.auto_filter.ref = ws.dimensions
     widths = {
         "A": 12,
@@ -2779,11 +2780,12 @@ def _write_metric_sheet(
         "D": 12,
         "E": 12,
         "F": 16,
-        "G": 24,
+        "G": 16,
+        "H": 24,
     }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
-    for col_idx in range(8, ws.max_column + 1):
+    for col_idx in range(9, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 14
 
 
@@ -2807,6 +2809,7 @@ def _write_vertical_data_sheet(
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
         "\u696d\u7a2e",
+        "\u5e02\u5834\u533a\u5206",
         "\u6c7a\u7b97\u7a2e\u5225",
         "\u884c\u7a2e\u5225",
         "\u671f\u9593",
@@ -2833,6 +2836,7 @@ def _write_vertical_data_sheet(
                     row.security_code,
                     row.company_name,
                     row.industry_33,
+                    row.market,
                     _period_scope_label(row.period_scope),
                     row.row_kind,
                     period_text,

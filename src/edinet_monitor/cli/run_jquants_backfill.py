@@ -23,6 +23,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date-from", required=True)
     parser.add_argument("--date-to", required=True)
     parser.add_argument("--codes", default="all")
+    parser.add_argument("--statement-periods", default="1Q,3Q")
     parser.add_argument("--skip-statements", action="store_true")
     parser.add_argument("--skip-quotes", action="store_true")
     parser.add_argument("--save-raw-json", action="store_true")
@@ -51,7 +52,7 @@ def main() -> None:
                 client=client,
                 date_from=args.date_from,
                 date_to=args.date_to,
-                periods={"1Q", "3Q"},
+                periods=set(_split_csv(args.statement_periods) or ["1Q", "3Q"]),
                 include_forecasts=True,
                 codes=codes,
                 output_dir=args.output_dir,

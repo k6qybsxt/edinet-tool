@@ -363,7 +363,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 ("業種", ""),
                 ("証券コード", "1111,2222"),
                 ("指標", "売上高,売上原価率"),
-                ("期間", "2年前-当期"),
+                ("期間", "3年前-前期"),
                 ("増減判定", "increase"),
                 ("増減判定指標", "売上高"),
             ],
@@ -374,7 +374,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(condition.industries, [])
         self.assertEqual(condition.security_codes, ["1111", "2222"])
         self.assertEqual(condition.metric_labels, ["売上高", "売上原価率"])
-        self.assertEqual(condition.period_offsets, [2, 1, 0])
+        self.assertEqual(condition.period_offsets, [3, 2, 1])
         self.assertEqual(condition.trend, "increase")
 
     def test_read_metric_excel_condition_defaults_to_nine_years(self) -> None:
@@ -383,7 +383,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         condition = read_metric_excel_condition(path)
 
-        self.assertEqual(condition.period_offsets, [9, 8, 7, 6, 5, 4, 3, 2, 1, 0])
+        self.assertEqual(condition.period_offsets, [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0])
 
     def test_read_metric_excel_condition_parses_percent_filter(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -424,7 +424,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("増減判定", "none"),
                 ("増減判定指標", "売上高増収率"),
-                ("増減判定期間", "2年前-当期"),
+                ("増減判定期間", "3年前-前期"),
                 ("増減判定下限", "115%"),
                 ("増減判定上限", "200%"),
             ],
@@ -433,7 +433,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         condition = read_metric_excel_condition(path)
 
         self.assertEqual(condition.trend_metric_labels, ["売上高増収率"])
-        self.assertEqual(condition.trend_period_offsets, [2, 1, 0])
+        self.assertEqual(condition.trend_period_offsets, [3, 2, 1])
         self.assertEqual(condition.trend_min, 1.15)
         self.assertEqual(condition.trend_max, 2.0)
 
@@ -522,7 +522,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "売上高,売上原価率,自己資本比率"),
-                ("期間", "2年前-当期"),
+                ("期間", "3年前-前期"),
             ],
         )
         condition = read_metric_excel_condition(path)
@@ -536,10 +536,10 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(target_companies, 1)
         by_metric = {row.metric_base: row for row in _detail_rows(rows)}
         self.assertEqual(set(by_metric), {"NetSales", "CostOfSales", "NetAssets"})
-        self.assertEqual(by_metric["NetSales"].values_by_offset[0], 100.0)
-        self.assertEqual(by_metric["NetSales"].ratios_by_offset[0], 1.0)
-        self.assertEqual(by_metric["CostOfSales"].ratios_by_offset[0], 0.6)
-        self.assertEqual(by_metric["NetAssets"].ratios_by_offset[0], 0.5)
+        self.assertEqual(by_metric["NetSales"].values_by_offset[1], 100.0)
+        self.assertEqual(by_metric["NetSales"].ratios_by_offset[1], 1.0)
+        self.assertEqual(by_metric["CostOfSales"].ratios_by_offset[1], 0.6)
+        self.assertEqual(by_metric["NetAssets"].ratios_by_offset[1], 0.5)
 
     def test_trend_filter_keeps_only_continuous_increase_companies(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -551,7 +551,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 ("期間", "2年前-当期"),
                 ("増減判定", "increase"),
                 ("増減判定指標", "売上高"),
-                ("増減判定期間", "2年前-当期"),
+                ("増減判定期間", "3年前-前期"),
             ],
         )
         condition = read_metric_excel_condition(path)
@@ -594,10 +594,10 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("業種", "化学"),
                 ("指標", "売上高"),
-                ("期間", "当期"),
+                ("期間", "前期"),
                 ("増減判定", "none"),
                 ("増減判定指標", "売上高増収率"),
-                ("増減判定期間", "2年前-当期"),
+                ("増減判定期間", "3年前-前期"),
                 ("増減判定下限", "115%"),
             ],
         )
@@ -619,7 +619,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "純資産,売上原価率,売上高,EPS,発行株数"),
-                ("期間", "当期"),
+                ("期間", "前期"),
             ],
         )
         condition = read_metric_excel_condition(path)
@@ -689,7 +689,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             [row.periods_by_offset[0] for row in detail_rows],
-            ["", "\u56db\u534a\u671f 2026-09"],
+            ["", "2Q 2026-09"],
         )
         self.assertEqual(
             [row.periods_by_offset[1] for row in detail_rows],
@@ -753,14 +753,14 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual([row.period_scope for row in detail_rows], ["annual", "quarter:2Q"])
         self.assertEqual(
             [row.periods_by_offset[0] for row in detail_rows],
-            ["\u901a\u671f 2026-03", "\u56db\u534a\u671f 2025-09"],
+            ["", "2Q 2025-09"],
         )
         self.assertEqual(
             [row.periods_by_offset[1] for row in detail_rows],
-            ["\u901a\u671f 2025-03", "\u56db\u534a\u671f 2024-09"],
+            ["\u901a\u671f 2026-03", "2Q 2024-09"],
         )
-        self.assertEqual([row.values_by_offset[0] for row in detail_rows], [100.0, 55.0])
-        self.assertEqual([row.values_by_offset[1] for row in detail_rows], [80.0, 44.0])
+        self.assertEqual([row.values_by_offset[0] for row in detail_rows], [None, 55.0])
+        self.assertEqual([row.values_by_offset[1] for row in detail_rows], [100.0, 44.0])
 
     def test_build_rows_uses_industry_specific_labels_and_order(self) -> None:
         cases = [
@@ -813,7 +813,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "期末残"),
-                ("期間", "当期"),
+                ("期間", "前期"),
+                ("％条件期間", "前期"),
             ],
         )
         condition = read_metric_excel_condition(path)
@@ -835,7 +836,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
                 ("\u6307\u6a19", "\u671f\u9996\u6b8b\u9ad8"),
-                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u671f\u9593", "\u524d\u671f"),
             ],
         )
         condition = read_metric_excel_condition(path)
@@ -857,7 +858,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "EPS増加率"),
-                ("期間", "当期"),
+                ("期間", "前期"),
             ],
         )
         condition = read_metric_excel_condition(path)
@@ -880,7 +881,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "売上原価率"),
-                ("期間", "当期"),
+                ("期間", "前期"),
             ],
         )
 
@@ -894,14 +895,15 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["D2"].value, "通期")
-        self.assertEqual(ws["E2"].value, "明細")
-        self.assertEqual(ws["G2"].value, "├売上原価")
-        self.assertEqual(ws["H2"].value, "通期 2026-03")
-        self.assertEqual(ws["I2"].value, 60.0)
-        self.assertEqual(ws["J2"].value, "百万円")
-        self.assertEqual(ws["K2"].value, 0.6)
-        self.assertEqual(ws["K2"].number_format, "0.0%")
+        self.assertEqual(ws["D2"].value, "Prime")
+        self.assertEqual(ws["E2"].value, "通期")
+        self.assertEqual(ws["F2"].value, "明細")
+        self.assertEqual(ws["H2"].value, "├売上原価")
+        self.assertEqual(ws["I2"].value, "通期 2026-03")
+        self.assertEqual(ws["J2"].value, 60.0)
+        self.assertEqual(ws["K2"].value, "百万円")
+        self.assertEqual(ws["L2"].value, 0.6)
+        self.assertEqual(ws["L2"].number_format, "0.0%")
 
     def test_export_metric_excel_formats_growth_rates_as_percent(self) -> None:
         self.conn.execute(
@@ -927,7 +929,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "売上高増収率"),
-                ("期間", "当期"),
+                ("期間", "前期"),
             ],
         )
 
@@ -941,11 +943,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["G2"].value, "売上高増収率")
-        self.assertEqual(ws["H2"].value, "通期 2026-03")
-        self.assertEqual(ws["I2"].value, 1.25)
-        self.assertEqual(ws["J2"].value, "%")
-        self.assertEqual(ws["I2"].number_format, "0.0%")
+        self.assertEqual(ws["H2"].value, "売上高増収率")
+        self.assertEqual(ws["I2"].value, "通期 2026-03")
+        self.assertEqual(ws["J2"].value, 1.25)
+        self.assertEqual(ws["K2"].value, "%")
+        self.assertEqual(ws["J2"].number_format, "0.0%")
 
     def test_percent_filter_keeps_matching_companies(self) -> None:
         self.conn.executemany(
@@ -972,8 +974,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("業種", "化学"),
                 ("指標", "売上高"),
-                ("期間", "当期"),
+                ("期間", "前期"),
                 ("％条件指標", "売上高増収率(５年)"),
+                ("％条件期間", "前期"),
                 ("％下限", "75%"),
             ],
         )
@@ -1015,9 +1018,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("業種", "化学"),
                 ("指標", "売上高"),
-                ("期間", "前期-当期"),
+                ("期間", "2年前-前期"),
                 ("比率条件", "売上高増収率"),
-                ("比率条件期間", "前期-当期"),
+                ("比率条件期間", "2年前-前期"),
                 ("比率条件下限", "100%"),
             ],
         )
@@ -1061,7 +1064,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("\u696d\u7a2e", "\u696d\u7a2e\u306e\u307f"),
                 ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8,\u58f2\u4e0a\u539f\u4fa1"),
-                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u671f\u9593", "\u524d\u671f"),
                 ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
             ],
         )
@@ -1079,7 +1082,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         net_sales_row = next(
             row
             for row in detail_rows
-            if row.metric_base == "NetSales" and row.values_by_offset[0] == 1.7
+            if row.metric_base == "NetSales" and row.values_by_offset[1] == 1.7
         )
         by_base = {
             row.metric_base: row
@@ -1089,10 +1092,10 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(set(by_base), {"NetSales", "CostOfSales"})
         self.assertEqual(by_base["NetSales"].security_code, "")
         self.assertEqual(by_base["NetSales"].company_name, "")
-        self.assertAlmostEqual(by_base["NetSales"].values_by_offset[0], 1.7)
-        self.assertEqual(by_base["NetSales"].units_by_offset[0], "\u5104\u5186")
-        self.assertAlmostEqual(by_base["CostOfSales"].values_by_offset[0], 1.2)
-        self.assertAlmostEqual(by_base["CostOfSales"].ratios_by_offset[0], 120_000_000 / 170_000_000)
+        self.assertAlmostEqual(by_base["NetSales"].values_by_offset[1], 1.7)
+        self.assertEqual(by_base["NetSales"].units_by_offset[1], "\u5104\u5186")
+        self.assertAlmostEqual(by_base["CostOfSales"].values_by_offset[1], 1.2)
+        self.assertAlmostEqual(by_base["CostOfSales"].ratios_by_offset[1], 120_000_000 / 170_000_000)
 
     def test_build_rows_adds_average_median_and_rank_rows(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1101,7 +1104,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111,2222"),
                 ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
-                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u671f\u9593", "\u524d\u671f"),
                 ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
             ],
         )
@@ -1115,14 +1118,14 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 2)
         self.assertEqual([row.row_kind for row in rows], [ROW_KIND_DETAIL, ROW_KIND_DETAIL, ROW_KIND_AVERAGE, ROW_KIND_MEDIAN])
-        self.assertEqual([row.ranks_by_offset.get(0) for row in rows[:2]], ["1/2", "2/2"])
+        self.assertEqual([row.ranks_by_offset.get(1) for row in rows[:2]], ["1/2", "2/2"])
         average_row = next(row for row in rows if row.row_kind == ROW_KIND_AVERAGE)
         median_row = next(row for row in rows if row.row_kind == ROW_KIND_MEDIAN)
         self.assertEqual(average_row.metric_label, ROW_KIND_AVERAGE)
         self.assertEqual(median_row.metric_label, ROW_KIND_MEDIAN)
-        self.assertAlmostEqual(average_row.values_by_offset[0], 85.0)
-        self.assertAlmostEqual(median_row.values_by_offset[0], 85.0)
-        self.assertEqual(average_row.units_by_offset[0], "\u767e\u4e07\u5186")
+        self.assertAlmostEqual(average_row.values_by_offset[1], 85.0)
+        self.assertAlmostEqual(median_row.values_by_offset[1], 85.0)
+        self.assertEqual(average_row.units_by_offset[1], "\u767e\u4e07\u5186")
 
     def test_export_metric_excel_writes_row_kind_rank_and_vertical_data(self) -> None:
         condition_path = self.tmp_path / "condition.xlsx"
@@ -1132,7 +1135,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111,2222"),
                 ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
-                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u671f\u9593", "\u524d\u671f"),
                 ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
             ],
         )
@@ -1147,17 +1150,17 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["E1"].value, "\u884c\u7a2e\u5225")
-        self.assertEqual(ws["L1"].value, "\u5f53\u671f_\u9806\u4f4d")
-        self.assertEqual(ws["E2"].value, ROW_KIND_DETAIL)
-        self.assertEqual(ws["L2"].value, "1/2")
-        self.assertEqual(ws["H1"].fill.fgColor.rgb, "00D9EAF7")
-        self.assertEqual(ws["H2"].border.left.style, "thin")
+        self.assertEqual(ws["F1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(ws["M1"].value, "\u524d\u671f_\u9806\u4f4d")
+        self.assertEqual(ws["F2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(ws["M2"].value, "1/2")
+        self.assertEqual(ws["I1"].fill.fgColor.rgb, "00EAF4FF")
+        self.assertEqual(ws["I2"].border.left.style, "thin")
         vertical = workbook[VERTICAL_DATA_SHEET]
-        self.assertEqual(vertical["E1"].value, "\u884c\u7a2e\u5225")
-        self.assertEqual(vertical["K1"].value, "\u9806\u4f4d")
-        self.assertEqual(vertical["E2"].value, ROW_KIND_DETAIL)
-        self.assertEqual(vertical["K2"].value, "1/2")
+        self.assertEqual(vertical["F1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(vertical["L1"].value, "\u9806\u4f4d")
+        self.assertEqual(vertical["F2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(vertical["L2"].value, "1/2")
 
     def test_half_progress_metrics_are_suppressed_in_excel_rows(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1166,7 +1169,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
                 ("\u6307\u6a19", "HalfNetSalesProgressRate"),
-                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u671f\u9593", "\u524d\u671f"),
                 ("\u6c7a\u7b97\u7a2e\u5225", "ALL"),
             ],
         )
@@ -1222,7 +1225,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("\u696d\u7a2e", "\u696d\u7a2e\u306e\u307f"),
                 ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
-                ("\u671f\u9593", "\u5f53\u671f"),
+                ("\u671f\u9593", "\u524d\u671f"),
                 ("\u6c7a\u7b97\u7a2e\u5225", "ALL"),
             ],
         )
@@ -1236,9 +1239,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         detail_rows = _detail_rows(rows)
         self.assertEqual(errors, [])
         self.assertTrue(all(row.period_scope == "annual" for row in detail_rows))
-        self.assertTrue(all(row.periods_by_offset[0].startswith("\u901a\u671f 2026") for row in detail_rows))
+        self.assertTrue(all(row.periods_by_offset[1].startswith("\u901a\u671f 2026") for row in detail_rows))
         self.assertTrue(any(warning == "industry_only_mode_forced_to_annual" for warning in warnings))
-        self.assertTrue(any(row.ranks_by_offset.get(0, "").endswith(f"/{len(detail_rows)}") for row in detail_rows))
+        self.assertTrue(any(row.ranks_by_offset.get(1) for row in detail_rows))
 
         result = export_metric_excel(
             self.conn,
@@ -1283,7 +1286,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             [
                 ("証券コード", "1111"),
                 ("指標", "EPS,BPS,理論PBR,1株資産,理論株価"),
-                ("期間", "当期"),
+                ("期間", "前期"),
             ],
         )
 
@@ -1298,7 +1301,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         formats_by_label = {
-            ws.cell(row=row_index, column=7).value: ws.cell(row=row_index, column=9).number_format
+            ws.cell(row=row_index, column=8).value: ws.cell(row=row_index, column=10).number_format
             for row_index in range(2, ws.max_row + 1)
         }
         self.assertEqual(formats_by_label["EPS"], "#,##0.0")
@@ -1333,7 +1336,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             security_codes=["1111"],
             metric_labels=["StockPrice", "PBR", "PCFR"],
             period_scopes=["annual"],
-            period_offsets=[0],
+            period_offsets=[1],
         )
 
         rows, errors, warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
@@ -1341,11 +1344,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertNotIn("market_derived_metrics_not_ready", warnings)
         by_base = {row.metric_base: row for row in _detail_rows(rows)}
-        self.assertEqual(by_base["StockPrice"].values_by_offset[0], 1200.25)
-        self.assertEqual(by_base["StockPrice"].units_by_offset[0], "\u5186")
-        self.assertEqual(by_base["PBR"].values_by_offset[0], 1.2)
-        self.assertEqual(by_base["PCFR"].values_by_offset[0], 6.0)
-        self.assertEqual(by_base["StockPrice"].periods_by_offset[0], "\u901a\u671f 2026-03-31\u6642\u70b9")
+        self.assertEqual(by_base["StockPrice"].values_by_offset[1], 1200.25)
+        self.assertEqual(by_base["StockPrice"].units_by_offset[1], "\u5186")
+        self.assertEqual(by_base["PBR"].values_by_offset[1], 1.2)
+        self.assertEqual(by_base["PCFR"].values_by_offset[1], 6.0)
+        self.assertEqual(by_base["StockPrice"].periods_by_offset[1], "\u901a\u671f 2026-03-31\u6642\u70b9")
 
     def test_jquants_market_derived_metrics_are_loaded_for_quarter(self) -> None:
         self.conn.execute(
@@ -1435,9 +1438,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["K2"].value, 0.25)
-        self.assertIsNotNone(ws["K2"].comment)
-        self.assertEqual(ws["K2"].fill.fgColor.rgb, "00FFF2CC")
+        self.assertEqual(ws["L2"].value, 0.25)
+        self.assertIsNotNone(ws["L2"].comment)
+        self.assertEqual(ws["L2"].fill.fgColor.rgb, "00FFF2CC")
 
 
 if __name__ == "__main__":

@@ -103,6 +103,7 @@ ACTUAL_FIELD_MAP = [
 FORECAST_FIELD_MAP = {
     "FY": [
         ("FSales", "NetSales", "sales", "yen"),
+        ("FOP", "OperatingIncome", "profit", "yen"),
         ("FOdP", "OrdinaryIncome", "profit", "yen"),
         ("FNP", "ProfitLoss", "profit", "yen"),
     ],

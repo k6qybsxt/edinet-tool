@@ -15,7 +15,7 @@ def _split_csv(value: str) -> list[str]:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Save J-Quants V2 1Q/3Q summaries and forecasts to DB.")
+    parser = argparse.ArgumentParser(description="Save J-Quants V2 statement summaries and forecasts to DB.")
     parser.add_argument("--date-from", required=True)
     parser.add_argument("--date-to", required=True)
     parser.add_argument("--periods", default="1Q,3Q")
