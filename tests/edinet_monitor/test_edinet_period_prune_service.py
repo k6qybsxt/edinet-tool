@@ -5,6 +5,7 @@ import shutil
 import sys
 import unittest
 import uuid
+import json
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -123,6 +124,64 @@ class EdinetPeriodPruneServiceTest(unittest.TestCase):
         self.assertEqual(candidates[0].doc_id, "DOC11")
         self.assertEqual(candidates[0].rank, 12)
 
+    def test_fetch_candidates_can_prune_annual_and_2q_independently(self) -> None:
+        for index in range(12):
+            year = 2026 - index
+            doc_id = f"HALF{index:02d}"
+            self.conn.execute(
+                """
+                INSERT INTO filings (
+                    doc_id, edinet_code, security_code, form_type, period_end,
+                    submit_date, zip_path, xbrl_path
+                ) VALUES (?, 'E00001', '1111', '043A00', ?, ?, '', '')
+                """,
+                (doc_id, f"{year}-09-30", f"{year}-11-14"),
+            )
+            for table in ("raw_facts", "normalized_metrics", "derived_metrics"):
+                self.conn.execute(f"INSERT INTO {table} (doc_id) VALUES (?)", (doc_id,))
+        self.conn.commit()
+
+        candidates = fetch_old_edinet_period_candidates(
+            self.conn,
+            keep_latest=11,
+            form_types=("030000", "043A00"),
+        )
+
+        self.assertEqual({candidate.doc_id for candidate in candidates}, {"DOC11", "HALF11"})
+        self.assertEqual({candidate.form_type for candidate in candidates}, {"030000", "043A00"})
+
+    def test_tenbagger_learning_security_is_excluded_from_prune_by_default(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO issuer_master (
+                edinet_code, security_code, company_name, is_listed, exchange
+            ) VALUES ('E06920', '69200', 'レーザーテック', 1, 'TSE')
+            """
+        )
+        for index in range(12):
+            year = 2026 - index
+            doc_id = f"TEN{index:02d}"
+            self.conn.execute(
+                """
+                INSERT INTO filings (
+                    doc_id, edinet_code, security_code, form_type, period_end,
+                    submit_date, zip_path, xbrl_path
+                ) VALUES (?, 'E06920', '69200', '030000', ?, ?, '', '')
+                """,
+                (doc_id, f"{year}-03-31", f"{year}-06-30"),
+            )
+        self.conn.commit()
+
+        candidates = fetch_old_edinet_period_candidates(self.conn, keep_latest=11)
+        included = fetch_old_edinet_period_candidates(
+            self.conn,
+            keep_latest=11,
+            exclude_security_codes=frozenset(),
+        )
+
+        self.assertNotIn("TEN11", {candidate.doc_id for candidate in candidates})
+        self.assertIn("TEN11", {candidate.doc_id for candidate in included})
+
     def test_dry_run_reports_counts_without_deleting(self) -> None:
         result = prune_old_edinet_period_data(
             self.conn,
@@ -178,6 +237,40 @@ class EdinetPeriodPruneServiceTest(unittest.TestCase):
         )
         self.assertTrue((self.tmp_path / "old.zip").exists())
         self.assertTrue((self.tmp_path / "old.xbrl").exists())
+
+    def test_apply_with_delete_files_removes_zip_xbrl_and_manifest_rows(self) -> None:
+        manifest_dir = self.tmp_path / "manifests"
+        manifest_dir.mkdir()
+        manifest_path = manifest_dir / "document_manifest_2015-06-30.jsonl"
+        manifest_path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"doc_id": "DOC11", "download_status": "downloaded"}),
+                    json.dumps({"doc_id": "DOC00", "download_status": "downloaded"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = prune_old_edinet_period_data(
+            self.conn,
+            keep_latest=11,
+            delete_files=True,
+            apply=True,
+            output_dir=self.tmp_path,
+            zip_root=self.tmp_path,
+            xbrl_root=self.tmp_path,
+            manifest_root=manifest_dir,
+        )
+
+        self.assertEqual(result.file_counts["zip_files"], 1)
+        self.assertEqual(result.file_counts["xbrl_files"], 1)
+        self.assertEqual(result.file_counts["manifest_rows"], 1)
+        self.assertFalse((self.tmp_path / "old.zip").exists())
+        self.assertFalse((self.tmp_path / "old.xbrl").exists())
+        self.assertIn("DOC00", manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn("DOC11", manifest_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

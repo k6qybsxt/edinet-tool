@@ -19,6 +19,7 @@ from edinet_pipeline.domain.metric_labels import (
     SECURITIES_INDUSTRY_LABEL,
     metric_base_to_display_name,
 )
+from edinet_monitor.domain.issuer_flags import tenbagger_learning_mark
 from edinet_monitor.services.industry_aggregate_metric_service import (
     INDUSTRY_AGGREGATE_PERIOD_SCOPE,
     INDUSTRY_AGGREGATE_ROW_BASES,
@@ -2700,6 +2701,7 @@ def _write_metric_sheet(
     headers = [
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
+        "\u30c6\u30f3\u30d0\u30ac\u30fc",
         "\u696d\u7a2e",
         "\u5e02\u5834\u533a\u5206",
         "\u6c7a\u7b97\u7a2e\u5225",
@@ -2730,6 +2732,7 @@ def _write_metric_sheet(
         values: list[Any] = [
             row.security_code,
             row.company_name,
+            tenbagger_learning_mark(row.security_code),
             row.industry_33,
             row.market,
             _period_scope_label(row.period_scope),
@@ -2750,7 +2753,7 @@ def _write_metric_sheet(
         ws.append(values)
         current_row = ws.max_row
         for idx, offset in enumerate(period_offsets):
-            value_col = 10 + idx * 5
+            value_col = 11 + idx * 5
             ratio_col = value_col + 2
             _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
             ratio_cell = ws.cell(current_row, ratio_col)
@@ -2761,7 +2764,7 @@ def _write_metric_sheet(
     _apply_period_block_styles(
         ws,
         period_offsets=period_offsets,
-        start_col=9,
+        start_col=10,
         block_width=5,
     )
     progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
@@ -2771,21 +2774,22 @@ def _write_metric_sheet(
             "\u3053\u306e\u6bd4\u7387\u306f\u3001\u56db\u534a\u671f\u5b9f\u7e3e \u00f7 \u540c\u4e00\u5e74\u5ea6\u306e\u6700\u65b0\u901a\u671f\u4e88\u60f3\u3067\u8a08\u7b97\u3057\u305f\u6700\u65b0\u4e88\u60f3\u9032\u6357\u7387\u3067\u3059\u3002",
             "EDINET_MONITOR",
         )
-    ws.freeze_panes = "I2"
+    ws.freeze_panes = "J2"
     ws.auto_filter.ref = ws.dimensions
     widths = {
         "A": 12,
         "B": 28,
-        "C": 18,
-        "D": 12,
+        "C": 12,
+        "D": 18,
         "E": 12,
-        "F": 16,
+        "F": 12,
         "G": 16,
-        "H": 24,
+        "H": 16,
+        "I": 24,
     }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
-    for col_idx in range(9, ws.max_column + 1):
+    for col_idx in range(10, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 14
 
 
@@ -2808,6 +2812,7 @@ def _write_vertical_data_sheet(
     headers = [
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
+        "\u30c6\u30f3\u30d0\u30ac\u30fc",
         "\u696d\u7a2e",
         "\u5e02\u5834\u533a\u5206",
         "\u6c7a\u7b97\u7a2e\u5225",
@@ -2835,6 +2840,7 @@ def _write_vertical_data_sheet(
                 [
                     row.security_code,
                     row.company_name,
+                    tenbagger_learning_mark(row.security_code),
                     row.industry_33,
                     row.market,
                     _period_scope_label(row.period_scope),
@@ -2848,23 +2854,24 @@ def _write_vertical_data_sheet(
                 ]
             )
             current_row = ws.max_row
-            _format_value_cell(ws.cell(current_row, 8), row.metric_base)
-            ws.cell(current_row, 10).number_format = "0.0%"
+            _format_value_cell(ws.cell(current_row, 10), row.metric_base)
+            ws.cell(current_row, 12).number_format = "0.0%"
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
     widths = {
         "A": 12,
         "B": 28,
-        "C": 18,
-        "D": 12,
+        "C": 12,
+        "D": 18,
         "E": 12,
-        "F": 14,
-        "G": 28,
-        "H": 16,
-        "I": 10,
-        "J": 12,
+        "F": 12,
+        "G": 14,
+        "H": 28,
+        "I": 16,
+        "J": 10,
         "K": 12,
+        "L": 12,
     }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width

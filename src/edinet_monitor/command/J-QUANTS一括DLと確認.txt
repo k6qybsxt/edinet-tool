@@ -1,9 +1,14 @@
 $env:PYTHONPATH = "C:\Users\silve\EDINET_Pipeline\src"
-$env:JQUANTS_API_KEY = "YOUR_JQUANTS_API_KEY"
+$env:JQUANTS_API_KEY = [Environment]::GetEnvironmentVariable("JQUANTS_API_KEY","User")
 
 $DATE_FROM = "2024-04-01"
 $DATE_TO   = "2026-05-06"
 $OUT_DIR   = "D:\作業用"
+$LOG_DIR   = "D:\作業用\log"
+
+# 11期保持削除を実行する場合は $true に変更します。
+# 初回は $false のdry-runで削除候補を確認するのがおすすめです。
+$APPLY_PRUNE = $false
 
 # run_jquants_backfill は最後に coverage を1つ出力します。
 # 同じ直後に check_jquants_coverage を追加実行すると coverage が2つ作成されます。
@@ -11,11 +16,29 @@ $OUT_DIR   = "D:\作業用"
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
   --codes all `
+  --statement-periods FY,1Q,2Q,3Q `
   --save-raw-json `
   --request-interval-sec 1.0 `
   --rate-limit-cooldown-sec 120 `
   --max-retries 2 `
-  --output-dir $OUT_DIR
+  --output-dir $LOG_DIR
+
+# J-Quants四半期決算データの11期保持削除。
+# 対象: jquants_statement_raw / jquants_financial_metrics / J-Quants由来market_derived_metrics
+# --delete-files を付けると、DB削除対象に紐づくfins_summary raw JSONLレコードも削除します。
+# 対象外: jquants_daily_quotes
+# テンバガー学習対象銘柄は削除対象外です。
+$pruneArgs = @(
+  "-m", "edinet_monitor.cli.prune_old_jquants_quarter_data",
+  "--quarter-types", "1Q,2Q,3Q",
+  "--keep-latest", "11",
+  "--delete-files",
+  "--output-dir", $LOG_DIR
+)
+if ($APPLY_PRUNE) {
+  $pruneArgs += "--apply"
+}
+.\.venv\Scripts\python.exe @pruneArgs
 
 # PC電源断などで中断が疑わしい場合はこちらを実行します。
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.check_jquants_ingest_progress `
@@ -23,4 +46,4 @@ $OUT_DIR   = "D:\作業用"
   --date-to $DATE_TO `
   --status all `
   --target-kind date `
-  --output-dir $OUT_DIR
+  --output-dir $LOG_DIR

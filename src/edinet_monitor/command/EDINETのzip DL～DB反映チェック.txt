@@ -2,9 +2,15 @@ PowerShellコマンド
 $env:PYTHONPATH   = "C:\Users\silve\EDINET_Pipeline\src"
 $env:EDINET_API_KEY = "あなたのEDINET_APIキー"
 
-$DATE_FROM = "2026-04-01"
-$DATE_TO   = "2026-04-09"
-$OUT_DIR   = "D:\作業用"
+$DATE_FROM  = "2026-04-01"
+$DATE_TO    = "2026-04-09"
+$FORM_CODES = "030000,043A00"  # 通期 + 2Q
+$OUT_DIR    = "D:\作業用"
+$LOG_DIR    = "D:\作業用\log"
+
+# 11期保持削除を実行する場合は $true に変更します。
+# 初回は $false のdry-runで削除候補を確認するのがおすすめです。
+$APPLY_PRUNE = $false
 
 # 0. issuer_master を最新化
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.import_tse_listing_master
@@ -13,6 +19,7 @@ $OUT_DIR   = "D:\作業用"
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.check_download_coverage `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
+  --form-codes $FORM_CODES `
   --output-dir $OUT_DIR `
   --validate-zip
 
@@ -20,6 +27,7 @@ $OUT_DIR   = "D:\作業用"
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.run_zip_backfill `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
+  --form-codes $FORM_CODES `
   --manifest-granularity day `
   --download-profile auto `
   --download-auto-peak-threshold 100 `
@@ -39,22 +47,26 @@ for ($d = $start; $d -le $end; $d = $d.AddDays(1)) {
 
 # 4. XBRL抽出
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.extract_xbrl_from_zips `
+  --form-codes $FORM_CODES `
   --batch-size 100 `
   --run-all
 
 # 5. raw_facts 保存
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.save_raw_facts `
+  --form-codes $FORM_CODES `
   --batch-size 100 `
   --run-all
 
 # 6. normalized_metrics 保存
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.save_normalized_metrics `
+  --form-codes $FORM_CODES `
   --batch-size 500 `
   --enable-period-fallback `
   --enforce-candidate-validation
 
 # 7. derived_metrics 保存
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.save_derived_metrics `
+  --form-codes $FORM_CODES `
   --batch-size 100 `
   --run-all
 
@@ -62,13 +74,15 @@ for ($d = $start; $d -le $end; $d = $d.AddDays(1)) {
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.check_download_coverage `
   --date-from $DATE_FROM `
   --date-to $DATE_TO `
+  --form-codes $FORM_CODES `
   --output-dir $OUT_DIR `
   --validate-zip
 
-# 9. 提出日ベースで DB反映確認テキストを保存
-$env:CHECK_DATE_FROM = $DATE_FROM
-$env:CHECK_DATE_TO   = $DATE_TO
-$env:CHECK_OUT_DIR   = $OUT_DIR
+# 9. 提出日 + form_type ベースで DB反映確認テキストを保存
+$env:CHECK_DATE_FROM  = $DATE_FROM
+$env:CHECK_DATE_TO    = $DATE_TO
+$env:CHECK_FORM_CODES = $FORM_CODES
+$env:CHECK_OUT_DIR    = $OUT_DIR
 
 @'
 import os
@@ -80,6 +94,7 @@ from datetime import datetime
 DB_PATH = r"E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
 DATE_FROM = os.environ["CHECK_DATE_FROM"]
 DATE_TO = os.environ["CHECK_DATE_TO"]
+FORM_CODES = [x.strip() for x in os.environ["CHECK_FORM_CODES"].split(",") if x.strip()]
 OUT_DIR = Path(os.environ["CHECK_OUT_DIR"])
 
 def display_width(text):
@@ -100,10 +115,12 @@ conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
+placeholders = ",".join("?" for _ in FORM_CODES)
 rows = cur.execute(
-    """
+    f"""
     select
       substr(f.submit_date, 1, 10) as submit_date,
+      f.form_type,
       count(*) as total,
       sum(case when coalesce(f.download_status, '') = 'downloaded' then 1 else 0 end) as downloaded,
       sum(case when coalesce(f.xbrl_path, '') <> '' then 1 else 0 end) as xbrl_ready,
@@ -114,14 +131,14 @@ rows = cur.execute(
     from filings f
     join issuer_master im
       on im.edinet_code = f.edinet_code
-    where f.form_type = '030000'
+    where f.form_type in ({placeholders})
       and im.is_listed = 1
       and im.exchange = 'TSE'
       and substr(coalesce(f.submit_date, ''), 1, 10) between ? and ?
-    group by substr(f.submit_date, 1, 10)
-    order by submit_date
+    group by substr(f.submit_date, 1, 10), f.form_type
+    order by submit_date, f.form_type
     """,
-    (DATE_FROM, DATE_TO),
+    (*FORM_CODES, DATE_FROM, DATE_TO),
 ).fetchall()
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -129,6 +146,7 @@ out_path = OUT_DIR / f"submit_date_db_reflection_check_{DATE_FROM}_to_{DATE_TO}_
 
 cols = [
     ("submit_date", "提出日", "left"),
+    ("form_type", "form", "left"),
     ("total", "総数", "right"),
     ("downloaded", "ZIP", "right"),
     ("xbrl_ready", "XBRL", "right"),
@@ -146,6 +164,7 @@ lines = []
 lines.append(f"generated_at: {datetime.now().isoformat(timespec='seconds')}")
 lines.append(f"submit_date_from: {DATE_FROM}")
 lines.append(f"submit_date_to: {DATE_TO}")
+lines.append(f"form_codes: {','.join(FORM_CODES)}")
 lines.append("")
 lines.append(" | ".join(
     pad_left(label, widths[key]) if align == "right" else pad_right(label, widths[key])
@@ -165,7 +184,22 @@ print(f"saved: {out_path}")
 conn.close()
 '@ | .\.venv\Scripts\python.exe -
 
-# 10. 参考: 年次ギャップ確認
+# 10. EDINETデータの11期保持削除
+# --delete-files を付けると、DB削除対象に紐づくZIP/XBRLとmanifest行も削除します。
+# テンバガー学習対象銘柄は削除対象外です。
+$pruneArgs = @(
+  "-m", "edinet_monitor.cli.prune_old_edinet_period_data",
+  "--form-codes", $FORM_CODES,
+  "--keep-latest", "11",
+  "--delete-files",
+  "--output-dir", $LOG_DIR
+)
+if ($APPLY_PRUNE) {
+  $pruneArgs += "--apply"
+}
+.\.venv\Scripts\python.exe @pruneArgs
+
+# 11. 参考: 年次ギャップ確認
 .\.venv\Scripts\python.exe -m edinet_monitor.cli.export_import_status_report `
   --period-mode all `
   --status-only FILING_MISSING `

@@ -895,15 +895,15 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["D2"].value, "Prime")
-        self.assertEqual(ws["E2"].value, "通期")
-        self.assertEqual(ws["F2"].value, "明細")
-        self.assertEqual(ws["H2"].value, "├売上原価")
-        self.assertEqual(ws["I2"].value, "通期 2026-03")
-        self.assertEqual(ws["J2"].value, 60.0)
-        self.assertEqual(ws["K2"].value, "百万円")
-        self.assertEqual(ws["L2"].value, 0.6)
-        self.assertEqual(ws["L2"].number_format, "0.0%")
+        self.assertEqual(ws["E2"].value, "Prime")
+        self.assertEqual(ws["F2"].value, "通期")
+        self.assertEqual(ws["G2"].value, "明細")
+        self.assertEqual(ws["I2"].value, "├売上原価")
+        self.assertEqual(ws["J2"].value, "通期 2026-03")
+        self.assertEqual(ws["K2"].value, 60.0)
+        self.assertEqual(ws["L2"].value, "百万円")
+        self.assertEqual(ws["M2"].value, 0.6)
+        self.assertEqual(ws["M2"].number_format, "0.0%")
 
     def test_export_metric_excel_formats_growth_rates_as_percent(self) -> None:
         self.conn.execute(
@@ -943,11 +943,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["H2"].value, "売上高増収率")
-        self.assertEqual(ws["I2"].value, "通期 2026-03")
-        self.assertEqual(ws["J2"].value, 1.25)
-        self.assertEqual(ws["K2"].value, "%")
-        self.assertEqual(ws["J2"].number_format, "0.0%")
+        self.assertEqual(ws["I2"].value, "売上高増収率")
+        self.assertEqual(ws["J2"].value, "通期 2026-03")
+        self.assertEqual(ws["K2"].value, 1.25)
+        self.assertEqual(ws["L2"].value, "%")
+        self.assertEqual(ws["K2"].number_format, "0.0%")
 
     def test_percent_filter_keeps_matching_companies(self) -> None:
         self.conn.executemany(
@@ -1150,17 +1150,54 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["F1"].value, "\u884c\u7a2e\u5225")
-        self.assertEqual(ws["M1"].value, "\u524d\u671f_\u9806\u4f4d")
-        self.assertEqual(ws["F2"].value, ROW_KIND_DETAIL)
-        self.assertEqual(ws["M2"].value, "1/2")
-        self.assertEqual(ws["I1"].fill.fgColor.rgb, "00EAF4FF")
-        self.assertEqual(ws["I2"].border.left.style, "thin")
+        self.assertEqual(ws["C1"].value, "\u30c6\u30f3\u30d0\u30ac\u30fc")
+        self.assertEqual(ws["G1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(ws["N1"].value, "\u524d\u671f_\u9806\u4f4d")
+        self.assertEqual(ws["G2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(ws["N2"].value, "1/2")
+        self.assertEqual(ws["J1"].fill.fgColor.rgb, "00EAF4FF")
+        self.assertEqual(ws["J2"].border.left.style, "thin")
         vertical = workbook[VERTICAL_DATA_SHEET]
-        self.assertEqual(vertical["F1"].value, "\u884c\u7a2e\u5225")
-        self.assertEqual(vertical["L1"].value, "\u9806\u4f4d")
-        self.assertEqual(vertical["F2"].value, ROW_KIND_DETAIL)
-        self.assertEqual(vertical["L2"].value, "1/2")
+        self.assertEqual(vertical["C1"].value, "\u30c6\u30f3\u30d0\u30ac\u30fc")
+        self.assertEqual(vertical["G1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(vertical["M1"].value, "\u9806\u4f4d")
+        self.assertEqual(vertical["G2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(vertical["M2"].value, "1/2")
+
+    def test_export_metric_excel_marks_tenbagger_learning_security(self) -> None:
+        _insert_company(
+            self.conn,
+            edinet_code="E06920",
+            security_code="6920",
+            company_name="\u30ec\u30fc\u30b6\u30fc\u30c6\u30c3\u30af",
+            industry_33="\u96fb\u6c17\u6a5f\u5668",
+            net_sales_values=[100_000_000.0, 90_000_000.0, 80_000_000.0],
+        )
+        self.conn.commit()
+        condition_path = self.tmp_path / "condition.xlsx"
+        output_path = self.tmp_path / "tenbagger.xlsx"
+        _create_condition_workbook(
+            condition_path,
+            [
+                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "6920"),
+                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
+                ("\u671f\u9593", "\u524d\u671f"),
+                ("\u6c7a\u7b97\u7a2e\u5225", "\u901a\u671f"),
+            ],
+        )
+
+        result = export_metric_excel(
+            self.conn,
+            condition_xlsx=condition_path,
+            output_path=output_path,
+            db_path=":memory:",
+        )
+
+        self.assertEqual(result.errors, [])
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        self.assertEqual(ws["A2"].value, "6920")
+        self.assertEqual(ws["C2"].value, "\u3007")
 
     def test_half_progress_metrics_are_suppressed_in_excel_rows(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1301,7 +1338,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         formats_by_label = {
-            ws.cell(row=row_index, column=8).value: ws.cell(row=row_index, column=10).number_format
+            ws.cell(row=row_index, column=9).value: ws.cell(row=row_index, column=11).number_format
             for row_index in range(2, ws.max_row + 1)
         }
         self.assertEqual(formats_by_label["EPS"], "#,##0.0")
@@ -1438,9 +1475,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["L2"].value, 0.25)
-        self.assertIsNotNone(ws["L2"].comment)
-        self.assertEqual(ws["L2"].fill.fgColor.rgb, "00FFF2CC")
+        self.assertEqual(ws["M2"].value, 0.25)
+        self.assertIsNotNone(ws["M2"].comment)
+        self.assertEqual(ws["M2"].fill.fgColor.rgb, "00FFF2CC")
 
 
 if __name__ == "__main__":
