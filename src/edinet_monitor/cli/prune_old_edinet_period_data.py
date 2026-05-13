@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.edinet_period_prune_service import prune_old_edinet_period_data
 
@@ -32,7 +33,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Do not protect tenbagger learning securities from pruning.",
     )
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--output-dir", default="D:\\作業用\\log")
+    parser.add_argument("--output-dir", default=str(OPERATION_LOG_ROOT))
     return parser
 
 

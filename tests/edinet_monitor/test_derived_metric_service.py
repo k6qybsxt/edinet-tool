@@ -1073,6 +1073,37 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["OutstandingSharesCurrent"]["value_num"], 10_000)
         self.assertEqual(by_key["OutstandingSharesCurrent"]["calc_status"], "ok")
 
+    def test_2q_outstanding_shares_uses_issued_minus_treasury(self) -> None:
+        normalized_rows = [
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("TreasurySharesCurrent", 50_000),
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 100_000),
+            build_normalized_row("CostOfSalesCurrent", 400_000),
+            build_normalized_row("SellingExpensesCurrent", 200_000),
+            build_normalized_row("OperatingIncomeCurrent", 150_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 100_000),
+            build_normalized_row("OperatingCashCurrent", 70_000),
+            build_normalized_row("InvestmentCashCurrent", -10_000),
+            build_normalized_row("TotalAssetsCurrent", 1_500_000),
+            build_normalized_row("NetAssetsCurrent", 700_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="043A00",
+            accounting_standard="jpgaap",
+            document_display_unit="蜊・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        row = by_key["OutstandingSharesCurrent"]
+        self.assertEqual(row["value_num"], 950_000)
+        self.assertEqual(row["calc_status"], "ok")
+        self.assertEqual(row["period_scope"], "quarter")
+        self.assertEqual(row["period_key"], "actual:2Q")
+        self.assertEqual(row["quarter_type"], "2Q")
+
     def test_growth_rate_uses_null_when_prior_is_zero_or_negative(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.jquants.coverage_service import export_jquants_coverage
 
@@ -19,7 +20,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date-to", required=True)
     parser.add_argument("--target", choices=["all", "statements", "quotes"], default="all")
     parser.add_argument("--codes", default="all")
-    parser.add_argument("--output-dir", default="D:\\\u4f5c\u696d\u7528")
+    parser.add_argument("--output-dir", default=str(OPERATION_LOG_ROOT))
     return parser
 
 

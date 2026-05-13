@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.market_derived_metric_service import save_market_derived_metrics
 
@@ -31,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--period-scopes", default="all", help="all / annual / quarter / annual,quarter")
     parser.add_argument("--max-lookback-days", type=int, default=10)
     parser.add_argument("--apply", action="store_true", help="Save rows to DB. Omit for dry-run.")
-    parser.add_argument("--output-dir", default=r"D:\作業用\log")
+    parser.add_argument("--output-dir", default=str(OPERATION_LOG_ROOT))
     return parser
 
 

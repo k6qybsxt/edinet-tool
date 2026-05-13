@@ -734,7 +734,7 @@ def _normalize_security_code(value: str) -> str:
 
 def _parse_period_token(token: str) -> int:
     text = _normalize_text(token)
-    if text == "当期":
+    if text in {"当期", "最新"}:
         return 0
     if text in {"前期", "1期前", "1年前"}:
         return 1

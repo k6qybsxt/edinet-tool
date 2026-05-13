@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.jquants.client import JQuantsClient
 from edinet_monitor.services.jquants.ingestion_service import save_jquants_daily_quotes
@@ -22,7 +23,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--request-interval-sec", type=float, default=None)
     parser.add_argument("--rate-limit-cooldown-sec", type=float, default=None)
     parser.add_argument("--max-retries", type=int, default=None)
-    parser.add_argument("--output-dir", default="D:\\\u4f5c\u696d\u7528")
+    parser.add_argument("--output-dir", default=str(OPERATION_LOG_ROOT))
     return parser
 
 

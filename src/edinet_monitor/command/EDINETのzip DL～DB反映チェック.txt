@@ -6,7 +6,7 @@ $DATE_FROM  = "2026-04-01"
 $DATE_TO    = "2026-04-09"
 $FORM_CODES = "030000,043A00"  # 通期 + 2Q
 $OUT_DIR    = "D:\作業用"
-$LOG_DIR    = "D:\作業用\log"
+$LOG_DIR    = "C:\Users\silve\EDINET_Pipeline\logs\operation"
 
 # 11期保持削除を実行する場合は $true に変更します。
 # 初回は $false のdry-runで削除候補を確認するのがおすすめです。
