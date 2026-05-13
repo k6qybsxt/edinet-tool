@@ -7,6 +7,7 @@ import sqlite3
 
 
 FORECAST_BASES_TO_KEEP = {"NetSales", "OrdinaryIncome", "ProfitLoss"}
+SUPPORTED_FORECAST_PERIODS = ("FY", "4Q", "1Q", "2Q", "3Q")
 
 
 @dataclass(frozen=True)
@@ -101,31 +102,36 @@ def migrate_quarter_forecast_metadata(
         )
 
     if _has_table(conn, "jquants_financial_metrics"):
+        period_placeholders = ",".join("?" for _ in SUPPORTED_FORECAST_PERIODS)
         forecast_stage_candidates = _scalar(
             conn,
-            """
+            f"""
             SELECT COUNT(*)
             FROM jquants_financial_metrics m
             JOIN jquants_statement_raw r
               ON r.disclosure_number = m.disclosure_number
             WHERE m.metric_kind = 'forecast'
               AND COALESCE(m.forecast_stage, '') = ''
-              AND COALESCE(r.type_of_current_period, '') IN ('FY', '1Q', '2Q', '3Q')
+              AND COALESCE(r.type_of_current_period, '') IN ({period_placeholders})
             """,
+            SUPPORTED_FORECAST_PERIODS,
         )
-        placeholders = ",".join("?" for _ in FORECAST_BASES_TO_KEEP)
+        keep_placeholders = ",".join("?" for _ in FORECAST_BASES_TO_KEEP)
         obsolete_forecast_candidates = _scalar(
             conn,
             f"""
             SELECT COUNT(*)
-            FROM jquants_financial_metrics
-            WHERE metric_kind = 'forecast'
+            FROM jquants_financial_metrics m
+            LEFT JOIN jquants_statement_raw r
+              ON r.disclosure_number = m.disclosure_number
+            WHERE m.metric_kind = 'forecast'
               AND (
-                COALESCE(forecast_target, '') <> 'FY'
-                OR metric_base NOT IN ({placeholders})
+                COALESCE(m.forecast_target, '') <> 'FY'
+                OR m.metric_base NOT IN ({keep_placeholders})
+                OR COALESCE(r.type_of_current_period, '') NOT IN ({period_placeholders})
               )
             """,
-            tuple(sorted(FORECAST_BASES_TO_KEEP)),
+            (*tuple(sorted(FORECAST_BASES_TO_KEEP)), *SUPPORTED_FORECAST_PERIODS),
         )
 
     annual_updated = 0
@@ -164,8 +170,9 @@ def migrate_quarter_forecast_metadata(
             q2_updated = int(q2_cursor.rowcount or 0)
 
         if _has_table(conn, "jquants_financial_metrics"):
+            period_placeholders = ",".join("?" for _ in SUPPORTED_FORECAST_PERIODS)
             forecast_cursor = conn.execute(
-                """
+                f"""
                 UPDATE jquants_financial_metrics
                 SET forecast_stage = CASE (
                     SELECT r.type_of_current_period
@@ -173,6 +180,7 @@ def migrate_quarter_forecast_metadata(
                     WHERE r.disclosure_number = jquants_financial_metrics.disclosure_number
                 )
                     WHEN 'FY' THEN 'initial'
+                    WHEN '4Q' THEN 'initial'
                     WHEN '1Q' THEN '1Q'
                     WHEN '2Q' THEN '2Q'
                     WHEN '3Q' THEN '3Q'
@@ -183,22 +191,30 @@ def migrate_quarter_forecast_metadata(
                   AND disclosure_number IN (
                     SELECT disclosure_number
                     FROM jquants_statement_raw
-                    WHERE COALESCE(type_of_current_period, '') IN ('FY', '1Q', '2Q', '3Q')
+                    WHERE COALESCE(type_of_current_period, '') IN ({period_placeholders})
                   )
-                """
+                """,
+                SUPPORTED_FORECAST_PERIODS,
             )
             forecast_stage_updated = int(forecast_cursor.rowcount or 0)
-            placeholders = ",".join("?" for _ in FORECAST_BASES_TO_KEEP)
+            keep_placeholders = ",".join("?" for _ in FORECAST_BASES_TO_KEEP)
             delete_cursor = conn.execute(
                 f"""
                 DELETE FROM jquants_financial_metrics
-                WHERE metric_kind = 'forecast'
+                WHERE rowid IN (
+                  SELECT m.rowid
+                  FROM jquants_financial_metrics m
+                  LEFT JOIN jquants_statement_raw r
+                    ON r.disclosure_number = m.disclosure_number
+                  WHERE m.metric_kind = 'forecast'
                   AND (
-                    COALESCE(forecast_target, '') <> 'FY'
-                    OR metric_base NOT IN ({placeholders})
+                    COALESCE(m.forecast_target, '') <> 'FY'
+                    OR m.metric_base NOT IN ({keep_placeholders})
+                    OR COALESCE(r.type_of_current_period, '') NOT IN ({period_placeholders})
                   )
+                )
                 """,
-                tuple(sorted(FORECAST_BASES_TO_KEEP)),
+                (*tuple(sorted(FORECAST_BASES_TO_KEEP)), *SUPPORTED_FORECAST_PERIODS),
             )
             obsolete_forecast_deleted = int(delete_cursor.rowcount or 0)
         conn.commit()

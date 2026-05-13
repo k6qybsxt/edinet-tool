@@ -349,27 +349,30 @@ def _fetch_edinet_metric_values(
         return {}
     result: dict[str, dict[str, float | None]] = {doc_id: {} for doc_id in doc_ids}
     metric_keys = [_metric_key(base) for base in EDINET_INPUT_BASES]
-    doc_placeholders = ",".join("?" for _ in doc_ids)
     key_placeholders = ",".join("?" for _ in metric_keys)
     for table_name in ("normalized_metrics", "derived_metrics"):
         status_expr = ", 'ok' AS calc_status" if table_name == "normalized_metrics" else ", calc_status"
-        rows = conn.execute(
-            f"""
-            SELECT doc_id, metric_key, value_num {status_expr}
-            FROM {table_name}
-            WHERE doc_id IN ({doc_placeholders})
-              AND metric_key IN ({key_placeholders})
-            """,
-            [*doc_ids, *metric_keys],
-        ).fetchall()
-        for row in rows:
-            if str(row["calc_status"] or "") == "missing_input":
-                value = None
-            else:
-                value = _to_float(row["value_num"])
-            metric_key = str(row["metric_key"] or "")
-            metric_base = metric_key.removesuffix("Current")
-            result.setdefault(str(row["doc_id"]), {})[metric_base] = value
+        # SQLite has a variable limit, so fetch doc_ids in chunks for large DB backfills.
+        for start in range(0, len(doc_ids), 500):
+            doc_chunk = doc_ids[start : start + 500]
+            doc_placeholders = ",".join("?" for _ in doc_chunk)
+            rows = conn.execute(
+                f"""
+                SELECT doc_id, metric_key, value_num {status_expr}
+                FROM {table_name}
+                WHERE doc_id IN ({doc_placeholders})
+                  AND metric_key IN ({key_placeholders})
+                """,
+                [*doc_chunk, *metric_keys],
+            ).fetchall()
+            for row in rows:
+                if str(row["calc_status"] or "") == "missing_input":
+                    value = None
+                else:
+                    value = _to_float(row["value_num"])
+                metric_key = str(row["metric_key"] or "")
+                metric_base = metric_key.removesuffix("Current")
+                result.setdefault(str(row["doc_id"]), {})[metric_base] = value
     return result
 
 

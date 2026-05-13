@@ -219,6 +219,7 @@ TAG_ALIAS = {
     "TotalNumberOfIssuedSharesSummaryOfBusinessResults": "IssuedShares",
     "TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
+    "NumberOfSharesIssuedSharesVotingRights": "IssuedShares",
 
     # 自己株式
     "TotalNumberOfSharesHeldTreasurySharesEtc": "TreasuryShares",

@@ -52,6 +52,8 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         self.conn.execute("INSERT INTO derived_metrics VALUES ('DOC_HALF', 'half', NULL, NULL)")
         self.conn.execute("INSERT INTO derived_metrics VALUES ('DOC_ANNUAL', 'annual', NULL, NULL)")
         self.conn.execute("INSERT INTO jquants_statement_raw VALUES ('DISC_1Q', '1Q')")
+        self.conn.execute("INSERT INTO jquants_statement_raw VALUES ('DISC_4Q', '4Q')")
+        self.conn.execute("INSERT INTO jquants_statement_raw VALUES ('DISC_5Q', '5Q')")
         self.conn.execute(
             """
             INSERT INTO jquants_financial_metrics
@@ -70,6 +72,18 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
             VALUES ('DISC_1Q', 'forecast', 'forecast:2Q', '2Q', NULL, 'NetSalesCurrent', 'NetSales')
             """
         )
+        self.conn.execute(
+            """
+            INSERT INTO jquants_financial_metrics
+            VALUES ('DISC_4Q', 'forecast', 'forecast:FY', 'FY', NULL, 'ProfitLossCurrent', 'ProfitLoss')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO jquants_financial_metrics
+            VALUES ('DISC_5Q', 'forecast', 'forecast:FY', 'FY', NULL, 'ProfitLossCurrent', 'ProfitLoss')
+            """
+        )
         self.conn.commit()
 
     def tearDown(self) -> None:
@@ -81,8 +95,8 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         self.assertFalse(result.apply)
         self.assertEqual(result.annual_derived_candidates, 1)
         self.assertEqual(result.q2_derived_candidates, 1)
-        self.assertEqual(result.forecast_stage_candidates, 3)
-        self.assertEqual(result.obsolete_forecast_candidates, 2)
+        self.assertEqual(result.forecast_stage_candidates, 4)
+        self.assertEqual(result.obsolete_forecast_candidates, 3)
         self.assertEqual(
             self.conn.execute("SELECT period_scope FROM derived_metrics WHERE doc_id = 'DOC_HALF'").fetchone()[0],
             "half",
@@ -94,8 +108,8 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         self.assertTrue(result.apply)
         self.assertEqual(result.annual_derived_updated, 1)
         self.assertEqual(result.q2_derived_updated, 1)
-        self.assertEqual(result.forecast_stage_updated, 3)
-        self.assertEqual(result.obsolete_forecast_deleted, 2)
+        self.assertEqual(result.forecast_stage_updated, 4)
+        self.assertEqual(result.obsolete_forecast_deleted, 3)
         half_row = self.conn.execute(
             "SELECT period_scope, period_key, quarter_type FROM derived_metrics WHERE doc_id = 'DOC_HALF'"
         ).fetchone()
@@ -103,8 +117,9 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         forecast_rows = self.conn.execute(
             "SELECT metric_base, period_key, forecast_stage FROM jquants_financial_metrics"
         ).fetchall()
-        self.assertEqual(len(forecast_rows), 1)
+        self.assertEqual(len(forecast_rows), 2)
         self.assertEqual(tuple(forecast_rows[0]), ("NetSales", "forecast:FY", "1Q"))
+        self.assertEqual(tuple(forecast_rows[1]), ("ProfitLoss", "forecast:FY", "initial"))
 
 
 if __name__ == "__main__":

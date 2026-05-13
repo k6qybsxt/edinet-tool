@@ -11,6 +11,7 @@ ACTUAL_PERIODS = {"1Q", "3Q"}
 FORECAST_TARGETS = {"FY"}
 FORECAST_STAGE_BY_PERIOD = {
     "FY": "initial",
+    "4Q": "initial",
     "1Q": "1Q",
     "2Q": "2Q",
     "3Q": "3Q",
@@ -278,23 +279,24 @@ def statement_metrics_from_row(
 
     if include_forecasts:
         forecast_stage = FORECAST_STAGE_BY_PERIOD.get(period)
-        for forecast_target, fields in FORECAST_FIELD_MAP.items():
-            for field_name, metric_base, metric_group, value_unit in fields:
-                metrics.append(
-                    _metric_from_field(
-                        row,
-                        field_name=field_name,
-                        metric_base=metric_base,
-                        metric_group=metric_group,
-                        value_unit=value_unit,
-                        metric_kind="forecast",
-                        period_scope="forecast",
-                        period_key=f"forecast:{forecast_target}",
-                        quarter_type=None,
-                        forecast_target=forecast_target,
-                        forecast_stage=forecast_stage,
+        if forecast_stage is not None:
+            for forecast_target, fields in FORECAST_FIELD_MAP.items():
+                for field_name, metric_base, metric_group, value_unit in fields:
+                    metrics.append(
+                        _metric_from_field(
+                            row,
+                            field_name=field_name,
+                            metric_base=metric_base,
+                            metric_group=metric_group,
+                            value_unit=value_unit,
+                            metric_kind="forecast",
+                            period_scope="forecast",
+                            period_key=f"forecast:{forecast_target}",
+                            quarter_type=None,
+                            forecast_target=forecast_target,
+                            forecast_stage=forecast_stage,
+                        )
                     )
-                )
 
     return metrics
 

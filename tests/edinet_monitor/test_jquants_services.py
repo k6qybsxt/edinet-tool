@@ -183,6 +183,19 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertNotIn(("forecast:FY", "2Q", "EPS"), by_key)
         self.assertNotIn(("forecast:2Q", "2Q", "NetSales"), by_key)
 
+    def test_statement_mapper_treats_4q_forecast_as_initial(self) -> None:
+        metrics = statement_metrics_from_row(_statement_row("4Q"), include_forecasts=True)
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
+
+        self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].value_num, 400000000.0)
+        self.assertEqual(by_key[("forecast:FY", "initial", "ProfitLoss")].value_num, 30000000.0)
+        self.assertNotIn(("actual:4Q", None, "NetSales"), by_key)
+
+    def test_statement_mapper_ignores_unsupported_period_forecasts(self) -> None:
+        metrics = statement_metrics_from_row(_statement_row("5Q"), include_forecasts=True)
+
+        self.assertEqual(metrics, [])
+
     def test_quote_mapper_rounds_adjustment_close(self) -> None:
         quote = quote_from_row(
             {
