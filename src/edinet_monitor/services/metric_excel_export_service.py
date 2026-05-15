@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from copy import copy
 from pathlib import Path
 import re
 import sqlite3
@@ -28,6 +29,12 @@ from edinet_monitor.services.industry_aggregate_metric_service import (
 from edinet_monitor.services.market_derived_metric_service import (
     MARKET_METRIC_BASES,
     market_derived_table_exists,
+)
+from edinet_monitor.services.quarter_standalone_metric_service import (
+    FLOW_BASES as QUARTER_STANDALONE_FLOW_BASES,
+    GROWTH_BASE_BY_FLOW_BASE as QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE,
+    QUARTER_STANDALONE_PERIOD_SCOPE,
+    quarter_standalone_table_exists,
 )
 
 
@@ -95,7 +102,7 @@ PERIOD_SCOPE_LABEL_BY_FORM_TYPE = {
     "030000": "\u901a\u671f",
     "043A00": "2Q",
 }
-ALL_PERIOD_SCOPES = ["annual", "quarter", "forecast"]
+ALL_PERIOD_SCOPES = ["annual", "quarter", "quarter_standalone", "forecast"]
 QUARTER_SUPPORTED_BASES = {
     "NetSales",
     "OperatingIncome",
@@ -128,15 +135,20 @@ FORECAST_SUPPORTED_BASES = {
     "OrdinaryIncome",
     "ProfitLoss",
 }
+QUARTER_STANDALONE_SUPPORTED_BASES = set(QUARTER_STANDALONE_FLOW_BASES) | set(
+    QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE.values()
+)
 FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
 JQUANTS_QUARTER_TYPES = ("1Q", "3Q")
 JQUANTS_FORECAST_STAGES = ("initial", "1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGE_LABELS = {
-    "initial": "\u5f53\u671f",
+    "initial": "0Q",
     "1Q": "1Q",
     "2Q": "2Q",
     "3Q": "3Q",
 }
+FORECAST_REVISION_UP_KIND = "forecast_revision_up"
+FORECAST_REVISION_DOWN_KIND = "forecast_revision_down"
 FORECAST_PROGRESS_RATIO_KIND = "forecast_progress"
 DATE_POINT_PERIOD_BASES = {
     "MarketCapitalization",
@@ -182,6 +194,8 @@ PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
 FORECAST_PROGRESS_FILL_COLOR = "FFF2CC"
+FORECAST_REVISION_UP_FONT_COLOR = "C00000"
+FORECAST_REVISION_DOWN_FONT_COLOR = "1F4E79"
 
 MONETARY_BASES = {
     "NetSales",
@@ -281,11 +295,18 @@ INTEGER_VALUE_BASES = {
 
 GROWTH_RATIO_BASES = {
     "NetSalesGrowthRate",
+    "OperatingIncomeGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
     "OrdinaryIncomeGrowthRate",
     "OrdinaryIncomeGrowthRate5Year",
     "OrdinaryIncomeGrowthRate10Year",
+    "ProfitLossGrowthRate",
+    "EstimatedNetIncomeGrowthRate",
+    "OperatingCashGrowthRate",
+    "InvestmentCashGrowthRate",
+    "FinancingCashGrowthRate",
+    "FCFGrowthRate",
     "CashBalanceGrowthRate",
     "CashBalanceGrowthRate5Year",
     "CashBalanceGrowthRate10Year",
@@ -368,11 +389,18 @@ FIXED_ROW_BASE_ORDER = [
     "HalfOrdinaryIncomeProgressRate",
     "HalfProfitProgressRate",
     "NetSalesGrowthRate",
+    "OperatingIncomeGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
     "OrdinaryIncomeGrowthRate",
     "OrdinaryIncomeGrowthRate5Year",
     "OrdinaryIncomeGrowthRate10Year",
+    "ProfitLossGrowthRate",
+    "EstimatedNetIncomeGrowthRate",
+    "OperatingCashGrowthRate",
+    "InvestmentCashGrowthRate",
+    "FinancingCashGrowthRate",
+    "FCFGrowthRate",
     "CashBalanceGrowthRate",
     "CashBalanceGrowthRate5Year",
     "CashBalanceGrowthRate10Year",
@@ -425,6 +453,14 @@ EXCEL_METRIC_LABEL_OVERRIDES = {
     "OperatingCash": "営業cf",
     "InvestmentCash": "投資cf",
     "FinancingCash": "財務cf",
+    "NetSalesGrowthRate": "売上高増収率(前期比)",
+    "OperatingIncomeGrowthRate": "営業利益増益率(前期比)",
+    "ProfitLossGrowthRate": "純利益増益率(前期比)",
+    "EstimatedNetIncomeGrowthRate": "推定純利益増益率(前期比)",
+    "OperatingCashGrowthRate": "営業CF増加率(前期比)",
+    "InvestmentCashGrowthRate": "投資CF増加率(前期比)",
+    "FinancingCashGrowthRate": "財務CF増加率(前期比)",
+    "FCFGrowthRate": "FCF増加率(前期比)",
     "EPSGrowthRate": "EPS増加率",
     "TheoreticalSharePriceGrowthRate": "理論株価上昇率",
     "TheoreticalSharePriceGrowthRate5Year": "理論株価上昇率(５年)",
@@ -673,6 +709,7 @@ class MetricExcelRow:
     raw_values_by_offset: dict[int, float | None] = field(default_factory=dict)
     ranks_by_offset: dict[int, str] = field(default_factory=dict)
     ratio_kinds_by_offset: dict[int, str] = field(default_factory=dict)
+    value_kinds_by_offset: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -837,6 +874,10 @@ def _parse_period_scopes(value: str | None) -> list[str]:
         "quarter": "quarter",
         "1q": "quarter",
         "3q": "quarter",
+        "\u56db\u534a\u671f\u5358\u72ec": "quarter_standalone",
+        "\u56db\u534a\u671f\u5358\u4f53": "quarter_standalone",
+        "quarter_standalone": "quarter_standalone",
+        "standalone": "quarter_standalone",
         "\u4e88\u60f3": "forecast",
         "forecast": "forecast",
     }
@@ -953,6 +994,25 @@ def _base_metric_label_for_excel(metric_base: str, industry_33: str | None = Non
     )
 
 
+def _quarter_standalone_label(metric_base: str, industry_33: str | None, quarter: str) -> str:
+    reverse_growth_map = {
+        growth_base: source_base
+        for source_base, growth_base in QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE.items()
+    }
+    if metric_base in reverse_growth_map:
+        source_base = reverse_growth_map[metric_base]
+        source_label = _base_metric_label_for_excel(source_base, industry_33)
+        if source_base in {"NetSales", "CashAndCashEquivalents"}:
+            growth_word = "\u5897\u53ce\u7387"
+        elif source_base in {"OperatingCash", "InvestmentCash", "FinancingCash", "FCF"}:
+            growth_word = "\u5897\u52a0\u7387"
+        else:
+            growth_word = "\u5897\u76ca\u7387"
+        return f"{quarter} {source_label}{growth_word} \u5358\u72ec(\u524d\u671f\u6bd4)"
+    label = _base_metric_label_for_excel(metric_base, industry_33)
+    return f"{quarter} {label} \u5358\u72ec"
+
+
 def _metric_label_for_excel(
     metric_base: str,
     industry_33: str | None = None,
@@ -960,9 +1020,14 @@ def _metric_label_for_excel(
     period_scope: str = "annual",
 ) -> str:
     label = _base_metric_label_for_excel(metric_base, industry_33)
+    if period_scope == "annual":
+        return f"4Q {label}"
     if period_scope.startswith("quarter:"):
         quarter = period_scope.split(":", 1)[1]
         return f"{quarter} {label}"
+    if period_scope.startswith("quarter_standalone:"):
+        quarter = period_scope.split(":", 1)[1]
+        return _quarter_standalone_label(metric_base, industry_33, quarter)
     if period_scope.startswith("forecast:"):
         stage = period_scope.split(":", 1)[1]
         stage_label = JQUANTS_FORECAST_STAGE_LABELS.get(stage, stage)
@@ -989,12 +1054,15 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
         mapping[_normalize_text(metric_base_to_display_name(base))] = base
         mapping[_normalize_text(metric_base_to_display_name(base, sheet_name))] = base
         mapping[_normalize_text(_metric_label_for_excel(base, sheet_name))] = base
+        if base == "NetSalesGrowthRate":
+            mapping[_normalize_text("\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387")] = base
         _add_half_label_aliases(mapping, metric_base_to_display_name(base), base)
         _add_half_label_aliases(mapping, metric_base_to_display_name(base, sheet_name), base)
         _add_half_label_aliases(mapping, _base_metric_label_for_excel(base, sheet_name), base)
-        for quarter in JQUANTS_QUARTER_TYPES:
+        for quarter in ("1Q", "2Q", "3Q", "4Q"):
             mapping[_normalize_text(f"{quarter} {metric_base_to_display_name(base)}")] = base
             mapping[_normalize_text(f"{quarter} {_base_metric_label_for_excel(base, sheet_name)}")] = base
+            mapping[_normalize_text(_quarter_standalone_label(base, sheet_name, quarter))] = base
         mapping[_normalize_text(f"2Q {metric_base_to_display_name(base)}")] = base
         mapping[_normalize_text(f"2Q {_base_metric_label_for_excel(base, sheet_name)}")] = base
         for forecast_stage, stage_label in JQUANTS_FORECAST_STAGE_LABELS.items():
@@ -1003,6 +1071,10 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
             mapping[_normalize_text(f"{stage_label} {metric_base_to_display_name(base)}(\u4e88\u60f3)")] = base
             mapping[_normalize_text(f"{stage_label} {_base_metric_label_for_excel(base, sheet_name)}(\u4e88\u60f3)")] = base
             if forecast_stage == "initial":
+                mapping[_normalize_text(f"\u5f53\u671f {metric_base_to_display_name(base)} \u4e88\u60f3")] = base
+                mapping[_normalize_text(f"\u5f53\u671f {_base_metric_label_for_excel(base, sheet_name)} \u4e88\u60f3")] = base
+                mapping[_normalize_text(f"\u5f53\u671f {metric_base_to_display_name(base)}(\u4e88\u60f3)")] = base
+                mapping[_normalize_text(f"\u5f53\u671f {_base_metric_label_for_excel(base, sheet_name)}(\u4e88\u60f3)")] = base
                 mapping[_normalize_text(f"\u5f53\u521d {metric_base_to_display_name(base)} \u4e88\u60f3")] = base
                 mapping[_normalize_text(f"\u5f53\u521d {_base_metric_label_for_excel(base, sheet_name)} \u4e88\u60f3")] = base
                 mapping[_normalize_text(f"\u5f53\u521d {metric_base_to_display_name(base)}(\u4e88\u60f3)")] = base
@@ -1370,6 +1442,8 @@ def _period_point_display_for_filing(
 def _period_scope_label(period_scope: str) -> str:
     if period_scope == "half":
         return "\u56db\u534a\u671f"
+    if period_scope.startswith("quarter_standalone"):
+        return "\u56db\u534a\u671f\u5358\u72ec"
     if period_scope.startswith("quarter"):
         return "\u56db\u534a\u671f"
     if period_scope.startswith("forecast"):
@@ -1690,16 +1764,20 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str]:
     sheet_metric_order = ROW_BASE_ORDER_INDEX_BY_SHEET.get(row.sheet_name, ROW_BASE_ORDER_INDEX)
     metric_order = sheet_metric_order.get(row.metric_base, len(sheet_metric_order))
     scope_order = {
-        "annual": 0,
-        "half": 2,
-        "quarter:1Q": 2,
-        "quarter:2Q": 3,
-        "quarter:3Q": 4,
-        "forecast:initial": 5,
-        "forecast:1Q": 6,
-        "forecast:2Q": 7,
-        "forecast:3Q": 8,
-    }.get(row.period_scope, 9)
+        "quarter:1Q": 0,
+        "quarter:2Q": 1,
+        "quarter:3Q": 2,
+        "annual": 3,
+        "half": 1,
+        "quarter_standalone:1Q": 4,
+        "quarter_standalone:2Q": 5,
+        "quarter_standalone:3Q": 6,
+        "quarter_standalone:4Q": 7,
+        "forecast:initial": 8,
+        "forecast:1Q": 9,
+        "forecast:2Q": 10,
+        "forecast:3Q": 11,
+    }.get(row.period_scope, 99)
     row_kind_order = {
         ROW_KIND_DETAIL: 0,
         ROW_KIND_AVERAGE: 1,
@@ -2062,6 +2140,66 @@ def _fetch_jquants_metric_rows(
     return rows
 
 
+def _fetch_quarter_standalone_metric_rows(
+    conn: sqlite3.Connection,
+    *,
+    security_codes: list[str],
+    metric_bases: list[str],
+) -> list[sqlite3.Row]:
+    if not security_codes or not metric_bases or not quarter_standalone_table_exists(conn):
+        return []
+    code_placeholders = ",".join("?" for _ in security_codes)
+    base_placeholders = ",".join("?" for _ in metric_bases)
+    return conn.execute(
+        f"""
+        SELECT
+          security_code,
+          edinet_code,
+          fiscal_year,
+          quarter_type,
+          period_end,
+          metric_key,
+          metric_base,
+          metric_group,
+          value_num,
+          value_unit,
+          calc_status
+        FROM quarter_standalone_metrics
+        WHERE security_code IN ({code_placeholders})
+          AND metric_base IN ({base_placeholders})
+        ORDER BY security_code, fiscal_year, quarter_type, metric_base
+        """,
+        [*security_codes, *metric_bases],
+    ).fetchall()
+
+
+def _latest_quarter_standalone_metric_rows(
+    rows: list[sqlite3.Row],
+) -> dict[tuple[str, str, str, int], sqlite3.Row]:
+    latest: dict[tuple[str, str, str, int], sqlite3.Row] = {}
+    for row in rows:
+        if row["fiscal_year"] is None:
+            continue
+        key = (
+            _normalize_security_code(row["security_code"]),
+            str(row["quarter_type"] or ""),
+            str(row["metric_base"] or ""),
+            int(row["fiscal_year"]),
+        )
+        latest[key] = row
+    return latest
+
+
+def _max_quarter_standalone_fiscal_year(rows: list[sqlite3.Row], security_code: str) -> int | None:
+    years = [
+        int(row["fiscal_year"])
+        for row in rows
+        if _normalize_security_code(row["security_code"]) == security_code
+        and row["fiscal_year"] is not None
+    ]
+    return max(years) if years else None
+
+
 def _max_jquants_fiscal_year(
     rows: list[sqlite3.Row],
     security_code: str,
@@ -2086,8 +2224,14 @@ def _jquants_period_display(row: sqlite3.Row | None, period_scope: str, metric_b
     if metric_base in DATE_POINT_PERIOD_BASES and period_scope.startswith("quarter:"):
         quarter = period_scope.split(":", 1)[1]
         return f"{quarter} {period_end}\u6642\u70b9" if period_end else quarter
+    if metric_base in DATE_POINT_PERIOD_BASES and period_scope.startswith("quarter_standalone:"):
+        quarter = period_scope.split(":", 1)[1]
+        return f"{quarter} {period_end}\u6642\u70b9" if period_end else quarter
     period_month = period_end[:7] if len(period_end) >= 7 else period_end
     if period_scope.startswith("quarter:"):
+        quarter = period_scope.split(":", 1)[1]
+        return f"{quarter} {period_month}" if period_month else quarter
+    if period_scope.startswith("quarter_standalone:"):
         quarter = period_scope.split(":", 1)[1]
         return f"{quarter} {period_month}" if period_month else quarter
     if period_scope.startswith("forecast:"):
@@ -2121,12 +2265,14 @@ def _append_jquants_rows(
     warnings: list[str],
 ) -> None:
     needs_quarter = "quarter" in condition.period_scopes
+    needs_quarter_standalone = "quarter_standalone" in condition.period_scopes
     needs_forecast = "forecast" in condition.period_scopes
-    if not needs_quarter and not needs_forecast:
+    if not needs_quarter and not needs_quarter_standalone and not needs_forecast:
         return
-    if not _jquants_table_exists(conn, "jquants_financial_metrics"):
+    if (needs_quarter or needs_forecast) and not _jquants_table_exists(conn, "jquants_financial_metrics"):
         warnings.append("jquants_financial_metrics_not_ready")
-        return
+        if not needs_quarter_standalone:
+            return
 
     companies = _fetch_jquants_companies(conn, condition)
     if not companies:
@@ -2138,21 +2284,35 @@ def _append_jquants_rows(
             for sheet, bases in selected_row_bases_by_sheet.items()
             for base in bases
             if base in (QUARTER_SUPPORTED_BASES | FORECAST_SUPPORTED_BASES)
+            or base in QUARTER_STANDALONE_SUPPORTED_BASES
         }
     )
     if not requested_bases:
         return
     max_offset = max(condition.period_offsets or [0])
-    all_metric_rows = _fetch_jquants_metric_rows(
+    all_metric_rows = (
+        _fetch_jquants_metric_rows(
+            conn,
+            security_codes=security_codes,
+            metric_bases=sorted(set(requested_bases) | FORECAST_PROGRESS_BASES),
+            min_fiscal_year=None,
+        )
+        if _jquants_table_exists(conn, "jquants_financial_metrics")
+        else []
+    )
+    if not all_metric_rows and (needs_quarter or needs_forecast):
+        warnings.append("jquants_metrics_not_found")
+        if not needs_quarter_standalone:
+            return
+    latest = _latest_jquants_metric_rows(all_metric_rows)
+    standalone_metric_rows = _fetch_quarter_standalone_metric_rows(
         conn,
         security_codes=security_codes,
-        metric_bases=sorted(set(requested_bases) | FORECAST_PROGRESS_BASES),
-        min_fiscal_year=None,
+        metric_bases=[base for base in requested_bases if base in QUARTER_STANDALONE_SUPPORTED_BASES],
     )
-    if not all_metric_rows:
-        warnings.append("jquants_metrics_not_found")
-        return
-    latest = _latest_jquants_metric_rows(all_metric_rows)
+    standalone_latest = _latest_quarter_standalone_metric_rows(standalone_metric_rows)
+    if needs_quarter_standalone and not standalone_metric_rows:
+        warnings.append("quarter_standalone_metrics_not_ready")
 
     for company in companies:
         security_code = _security_code_for_jquants(company)
@@ -2175,6 +2335,17 @@ def _append_jquants_rows(
                     max_offset=max_offset,
                     with_progress_ratio=True,
                 )
+        if needs_quarter_standalone:
+            _append_quarter_standalone_period_rows(
+                rows,
+                company=company,
+                security_code=security_code,
+                base_candidates=[base for base in base_candidates if base in QUARTER_STANDALONE_SUPPORTED_BASES],
+                latest=standalone_latest,
+                all_rows=standalone_metric_rows,
+                period_offsets=condition.period_offsets,
+                max_offset=max_offset,
+            )
         if needs_forecast:
             for forecast_stage in JQUANTS_FORECAST_STAGES:
                 _append_jquants_period_rows(
@@ -2191,6 +2362,78 @@ def _append_jquants_rows(
                     max_offset=max_offset,
                     with_progress_ratio=False,
                 )
+
+
+def _append_quarter_standalone_period_rows(
+    rows: list[MetricExcelRow],
+    *,
+    company: sqlite3.Row,
+    security_code: str,
+    base_candidates: list[str],
+    latest: dict[tuple[str, str, str, int], sqlite3.Row],
+    all_rows: list[sqlite3.Row],
+    period_offsets: list[int],
+    max_offset: int,
+) -> None:
+    if not base_candidates:
+        return
+    max_fiscal_year = _max_quarter_standalone_fiscal_year(all_rows, security_code)
+    if max_fiscal_year is None:
+        return
+    min_year = max_fiscal_year - max_offset
+    for quarter in ("1Q", "2Q", "3Q", "4Q"):
+        period_scope = f"{QUARTER_STANDALONE_PERIOD_SCOPE}:{quarter}"
+        for base in base_candidates:
+            periods_by_offset: dict[int, str] = {}
+            values_by_offset: dict[int, float | None] = {}
+            units_by_offset: dict[int, str] = {}
+            ratios_by_offset: dict[int, float | None] = {}
+            raw_values_by_offset: dict[int, float | None] = {}
+            for offset in period_offsets:
+                fiscal_year = max_fiscal_year - offset
+                if fiscal_year < min_year:
+                    continue
+                row = latest.get((security_code, quarter, base, fiscal_year))
+                raw_value = (
+                    float(row["value_num"])
+                    if row is not None
+                    and str(row["calc_status"] or "") == "ok"
+                    and row["value_num"] is not None
+                    else None
+                )
+                display_value, display_unit = _scale_jquants_value(base, raw_value)
+                periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
+                values_by_offset[offset] = display_value
+                units_by_offset[offset] = display_unit if raw_value is not None else ""
+                raw_values_by_offset[offset] = raw_value
+                ratios_by_offset[offset] = None
+            if not any(value is not None for value in raw_values_by_offset.values()) and not any(
+                periods_by_offset.values()
+            ):
+                continue
+            rows.append(
+                MetricExcelRow(
+                    sheet_name=_sheet_name_for_industry(company["industry_33"]),
+                    security_code=security_code,
+                    company_name=str(company["company_name"] or ""),
+                    industry_33=str(company["industry_33"] or ""),
+                    market=str(company["market"] or ""),
+                    period_scope=period_scope,
+                    row_kind=ROW_KIND_DETAIL,
+                    current_period_end=periods_by_offset.get(0, ""),
+                    metric_base=base,
+                    metric_label=_metric_label_for_excel(
+                        base,
+                        company["industry_33"],
+                        period_scope=period_scope,
+                    ),
+                    periods_by_offset=periods_by_offset,
+                    values_by_offset=values_by_offset,
+                    units_by_offset=units_by_offset,
+                    ratios_by_offset=ratios_by_offset,
+                    raw_values_by_offset=raw_values_by_offset,
+                )
+            )
 
 
 def _append_jquants_period_rows(
@@ -2226,6 +2469,7 @@ def _append_jquants_period_rows(
         ratios_by_offset: dict[int, float | None] = {}
         raw_values_by_offset: dict[int, float | None] = {}
         ratio_kinds_by_offset: dict[int, str] = {}
+        value_kinds_by_offset: dict[int, str] = {}
         for offset in period_offsets:
             fiscal_year = max_fiscal_year - offset
             if fiscal_year < min_year:
@@ -2253,6 +2497,19 @@ def _append_jquants_period_rows(
             units_by_offset[offset] = display_unit if raw_value is not None else ""
             raw_values_by_offset[offset] = raw_value
             ratios_by_offset[offset] = None
+            if forecast_stage is not None and raw_value is not None:
+                previous_forecast = _previous_forecast_value(
+                    all_rows,
+                    security_code=security_code,
+                    fiscal_year=fiscal_year,
+                    metric_base=base,
+                    forecast_stage=forecast_stage,
+                )
+                if previous_forecast is not None:
+                    if raw_value > previous_forecast:
+                        value_kinds_by_offset[offset] = FORECAST_REVISION_UP_KIND
+                    elif raw_value < previous_forecast:
+                        value_kinds_by_offset[offset] = FORECAST_REVISION_DOWN_KIND
             if with_progress_ratio and base in FORECAST_PROGRESS_BASES and row is not None:
                 forecast_value = _latest_forecast_value_as_of(
                     all_rows,
@@ -2288,6 +2545,7 @@ def _append_jquants_period_rows(
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
                 ratio_kinds_by_offset=ratio_kinds_by_offset,
+                value_kinds_by_offset=value_kinds_by_offset,
             )
         )
 
@@ -2312,6 +2570,40 @@ def _latest_forecast_value_as_of(
         and str(row["calc_status"] or "") == "ok"
         and row["value_num"] is not None
         and str(row["disclosed_date"] or "") <= disclosed_date
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (str(row["disclosed_date"] or ""), str(row["disclosed_time"] or "")))
+    return float(candidates[-1]["value_num"])
+
+
+def _previous_forecast_value(
+    rows: list[sqlite3.Row],
+    *,
+    security_code: str,
+    fiscal_year: int,
+    metric_base: str,
+    forecast_stage: str,
+) -> float | None:
+    stage_order = list(JQUANTS_FORECAST_STAGES)
+    if forecast_stage not in stage_order:
+        return None
+    stage_index = stage_order.index(forecast_stage)
+    if stage_index <= 0:
+        return None
+    previous_stage = stage_order[stage_index - 1]
+    candidates = [
+        row
+        for row in rows
+        if _normalize_security_code(row["security_code"] or row["local_code"] or "") == security_code
+        and str(row["period_scope"] or "") == "forecast"
+        and str(row["metric_base"] or "") == metric_base
+        and row["fiscal_year"] is not None
+        and int(row["fiscal_year"]) == fiscal_year
+        and str(row["period_key"] or "") == "forecast:FY"
+        and str(row["forecast_stage"] or "") == previous_stage
+        and str(row["calc_status"] or "") == "ok"
+        and row["value_num"] is not None
     ]
     if not candidates:
         return None
@@ -2728,6 +3020,7 @@ def _write_metric_sheet(
         cell.fill = header_fill
 
     forecast_progress_cells: list[Any] = []
+    forecast_revision_cells: list[tuple[Any, str]] = []
     for row in rows:
         values: list[Any] = [
             row.security_code,
@@ -2755,7 +3048,11 @@ def _write_metric_sheet(
         for idx, offset in enumerate(period_offsets):
             value_col = 11 + idx * 5
             ratio_col = value_col + 2
-            _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
+            value_cell = ws.cell(current_row, value_col)
+            _format_value_cell(value_cell, row.metric_base)
+            value_kind = row.value_kinds_by_offset.get(offset)
+            if value_kind in {FORECAST_REVISION_UP_KIND, FORECAST_REVISION_DOWN_KIND}:
+                forecast_revision_cells.append((value_cell, value_kind))
             ratio_cell = ws.cell(current_row, ratio_col)
             ratio_cell.number_format = "0.0%"
             if row.ratio_kinds_by_offset.get(offset) == FORECAST_PROGRESS_RATIO_KIND:
@@ -2774,6 +3071,15 @@ def _write_metric_sheet(
             "\u3053\u306e\u6bd4\u7387\u306f\u3001\u56db\u534a\u671f\u5b9f\u7e3e \u00f7 \u540c\u4e00\u5e74\u5ea6\u306e\u6700\u65b0\u901a\u671f\u4e88\u60f3\u3067\u8a08\u7b97\u3057\u305f\u6700\u65b0\u4e88\u60f3\u9032\u6357\u7387\u3067\u3059\u3002",
             "EDINET_MONITOR",
         )
+    for cell, value_kind in forecast_revision_cells:
+        color = (
+            FORECAST_REVISION_UP_FONT_COLOR
+            if value_kind == FORECAST_REVISION_UP_KIND
+            else FORECAST_REVISION_DOWN_FONT_COLOR
+        )
+        font = copy(cell.font)
+        font.color = color
+        cell.font = font
     ws.freeze_panes = "J2"
     ws.auto_filter.ref = ws.dimensions
     widths = {

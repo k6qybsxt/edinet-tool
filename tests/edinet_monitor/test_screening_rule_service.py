@@ -129,7 +129,7 @@ class ScreeningRuleServiceTest(unittest.TestCase):
         self.assertEqual(result["period_scope"], "annual")
         self.assertEqual(
             result["detail"]["check_results"][0]["metric_label"],
-            "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387\uff08\u5f53\u671f\uff09",
+            "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387(\u524d\u671f\u6bd4)\uff08\u5f53\u671f\uff09",
         )
 
     def test_annual_growth_quality_rule_keeps_calc_status_in_failure_detail(self) -> None:

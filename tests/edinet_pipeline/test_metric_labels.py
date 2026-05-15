@@ -36,7 +36,10 @@ class MetricLabelsTest(unittest.TestCase):
         self.assertEqual(metric_base_to_display_name("EPSGrowthRate"), "\u0045\u0050\u0053\u5897\u52a0\u7387")
         self.assertEqual(metric_base_to_display_name("EPSGrowthRate5Year"), "\u0045\u0050\u0053\u5897\u52a0\u7387(\uff15\u5e74)")
         self.assertEqual(metric_base_to_display_name("EPSGrowthRate10Year"), "\u0045\u0050\u0053\u5897\u52a0\u7387(10\u5e74)")
-        self.assertEqual(metric_base_to_display_name("NetSalesGrowthRate"), "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387")
+        self.assertEqual(
+            metric_base_to_display_name("NetSalesGrowthRate"),
+            "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387(\u524d\u671f\u6bd4)",
+        )
         self.assertEqual(metric_base_to_display_name("OrdinaryIncomeGrowthRate"), "\u7d4c\u5e38\u5229\u76ca\u5897\u76ca\u7387")
         self.assertEqual(metric_base_to_display_name("CashBalanceGrowthRate"), "\u73fe\u91d1\u6b8b\u9ad8\u5897\u52a0\u7387")
         self.assertEqual(metric_base_to_display_name("HalfNetSalesProgressRate"), "\u534a\u671f \u58f2\u4e0a\u9ad8\u9032\u6357\u7387")

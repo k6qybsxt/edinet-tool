@@ -208,6 +208,30 @@ def _create_market_derived_metrics_table(cur: sqlite3.Cursor) -> None:
     """)
 
 
+def _create_quarter_standalone_metrics_table(cur: sqlite3.Cursor) -> None:
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS quarter_standalone_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        security_code TEXT NOT NULL,
+        edinet_code TEXT,
+        fiscal_year INTEGER NOT NULL,
+        quarter_type TEXT NOT NULL,
+        period_end TEXT,
+        metric_key TEXT NOT NULL,
+        metric_base TEXT NOT NULL,
+        metric_group TEXT NOT NULL,
+        value_num REAL,
+        value_unit TEXT NOT NULL,
+        calc_status TEXT NOT NULL,
+        formula_name TEXT NOT NULL,
+        source_detail_json TEXT,
+        rule_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+
 def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
     cur.execute("""
     CREATE TABLE IF NOT EXISTS jquants_statement_raw (
@@ -754,6 +778,7 @@ def create_tables() -> None:
 
     _create_industry_aggregate_metrics_table(cur)
     _create_market_derived_metrics_table(cur)
+    _create_quarter_standalone_metrics_table(cur)
     _create_jquants_tables(cur)
     _ensure_jquants_financial_metrics_columns(cur)
 
@@ -968,6 +993,21 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_market_derived_metrics_source
     ON market_derived_metrics(source_type, source_id)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_quarter_standalone_metrics_scope
+    ON quarter_standalone_metrics(security_code, fiscal_year, quarter_type, metric_key)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_quarter_standalone_metrics_code_base_period
+    ON quarter_standalone_metrics(security_code, metric_base, quarter_type, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_quarter_standalone_metrics_base_year
+    ON quarter_standalone_metrics(metric_base, fiscal_year, quarter_type)
     """)
 
     cur.execute("""
