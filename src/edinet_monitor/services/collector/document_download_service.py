@@ -13,6 +13,7 @@ from edinet_monitor.config.settings import (
     DOWNLOAD_READ_TIMEOUT_SEC,
     EDINET_API_BASE_URL,
 )
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ def download_document_zip(
     connect_timeout_sec: int = DOWNLOAD_CONNECT_TIMEOUT_SEC,
     read_timeout_sec: int = DOWNLOAD_READ_TIMEOUT_SEC,
 ) -> Path:
+    api_key = validate_edinet_api_key(api_key)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     url = build_document_url(doc_id)

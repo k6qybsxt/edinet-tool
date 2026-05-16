@@ -37,6 +37,10 @@ GROWTH_BASE_BY_FLOW_BASE = {
 }
 
 
+def _chunked(items: list[str], size: int = 500) -> list[list[str]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
 @dataclass(frozen=True)
 class QuarterStandaloneMetricRow:
     security_code: str
@@ -329,37 +333,38 @@ def _fetch_edinet_doc_metric_values(
         return {}
     metric_keys = [_metric_key(base) for base in FLOW_BASES]
     values: dict[tuple[str, str], float | None] = {}
-    doc_placeholders = ",".join("?" for _ in doc_ids)
     key_placeholders = ",".join("?" for _ in metric_keys)
-    normalized_rows = conn.execute(
-        f"""
-        SELECT doc_id, metric_key, value_num
-        FROM normalized_metrics
-        WHERE doc_id IN ({doc_placeholders})
-          AND metric_key IN ({key_placeholders})
-        """,
-        [*doc_ids, *metric_keys],
-    ).fetchall()
-    for row in normalized_rows:
-        values[(str(row["doc_id"]), str(row["metric_key"]))] = _to_float(row["value_num"])
+    for doc_id_chunk in _chunked(doc_ids):
+        doc_placeholders = ",".join("?" for _ in doc_id_chunk)
+        normalized_rows = conn.execute(
+            f"""
+            SELECT doc_id, metric_key, value_num
+            FROM normalized_metrics
+            WHERE doc_id IN ({doc_placeholders})
+              AND metric_key IN ({key_placeholders})
+            """,
+            [*doc_id_chunk, *metric_keys],
+        ).fetchall()
+        for row in normalized_rows:
+            values[(str(row["doc_id"]), str(row["metric_key"]))] = _to_float(row["value_num"])
 
-    derived_rows = conn.execute(
-        f"""
-        SELECT doc_id, metric_key, value_num, calc_status
-        FROM derived_metrics
-        WHERE doc_id IN ({doc_placeholders})
-          AND metric_key IN ({key_placeholders})
-        """,
-        [*doc_ids, *metric_keys],
-    ).fetchall()
-    for row in derived_rows:
-        key = (str(row["doc_id"]), str(row["metric_key"]))
-        if key in values and values[key] is not None:
-            continue
-        if str(row["calc_status"] or "") == "missing_input":
-            values[key] = None
-        else:
-            values[key] = _to_float(row["value_num"])
+        derived_rows = conn.execute(
+            f"""
+            SELECT doc_id, metric_key, value_num, calc_status
+            FROM derived_metrics
+            WHERE doc_id IN ({doc_placeholders})
+              AND metric_key IN ({key_placeholders})
+            """,
+            [*doc_id_chunk, *metric_keys],
+        ).fetchall()
+        for row in derived_rows:
+            key = (str(row["doc_id"]), str(row["metric_key"]))
+            if key in values and values[key] is not None:
+                continue
+            if str(row["calc_status"] or "") == "missing_input":
+                values[key] = None
+            else:
+                values[key] = _to_float(row["value_num"])
     return values
 
 

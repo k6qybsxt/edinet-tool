@@ -16,6 +16,7 @@ from edinet_monitor.cli.save_normalized_metrics import run_save_normalized_metri
 from edinet_monitor.cli.save_raw_facts import run_save_raw_facts
 from edinet_monitor.config.settings import XBRL_RETENTION_ENABLED, XBRL_RETENTION_MONTHS
 from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.target_date_service import resolve_target_dates
 from edinet_monitor.services.storage.pipeline_run_store_service import (
     upsert_pipeline_run,
@@ -169,9 +170,7 @@ def run_daily_pipeline(
     timestamp_now_func: Callable[[], datetime] = datetime.now,
     timer_func: Callable[[], float] = perf_counter,
 ) -> dict[str, Any]:
-    effective_api_key = str(api_key or os.getenv("EDINET_API_KEY") or "").strip()
-    if not effective_api_key:
-        raise RuntimeError("Set EDINET_API_KEY before running.")
+    effective_api_key = validate_edinet_api_key(api_key or os.getenv("EDINET_API_KEY"))
 
     create_tables_func()
 

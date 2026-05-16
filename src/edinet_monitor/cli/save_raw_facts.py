@@ -15,6 +15,7 @@ from edinet_monitor.services.collector.document_filter_service import (
     is_half_form_type,
     normalize_form_codes,
 )
+from edinet_monitor.services.edinet_storage_path_service import resolve_storage_paths
 from edinet_monitor.services.parser.raw_fact_mapper import to_raw_fact_rows
 from edinet_monitor.services.parser.raw_fact_store_service import (
     delete_raw_facts_by_doc_id,
@@ -59,6 +60,24 @@ def run_save_raw_facts(
                 form_type = str(row["form_type"] or "")
                 xbrl_path = Path(row["xbrl_path"])
                 xbrl_member_name = str(row["xbrl_member_name"] or "")
+                resolved = resolve_storage_paths(dict(row))
+                if not xbrl_path.exists() and resolved.xbrl_path is not None:
+                    xbrl_path = resolved.xbrl_path
+                    conn.execute(
+                        """
+                        UPDATE filings
+                        SET xbrl_path = ?,
+                            zip_path = CASE WHEN ? <> '' THEN ? ELSE zip_path END
+                        WHERE doc_id = ?
+                        """,
+                        (
+                            str(resolved.xbrl_path),
+                            str(resolved.zip_path or ""),
+                            str(resolved.zip_path or ""),
+                            doc_id,
+                        ),
+                    )
+                    conn.commit()
 
                 print(f"[DEBUG] target_doc_id={doc_id}")
                 print(f"[DEBUG] xbrl_path={xbrl_path}")

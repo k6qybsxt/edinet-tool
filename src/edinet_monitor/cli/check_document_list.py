@@ -4,13 +4,12 @@ import os
 from datetime import date, timedelta
 
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.document_list_service import fetch_document_list
 
 
 def main() -> None:
-    api_key = os.getenv("EDINET_API_KEY")
-    if not api_key:
-        raise RuntimeError("環境変数 EDINET_API_KEY が未設定です。")
+    api_key = validate_edinet_api_key(os.getenv("EDINET_API_KEY"))
 
     for days_ago in range(1, 8):
         target_date = date.today() - timedelta(days=days_ago)

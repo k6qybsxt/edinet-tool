@@ -30,6 +30,7 @@ from edinet_monitor.config.settings import (
     ensure_data_dirs,
 )
 from edinet_monitor.services.collector.document_download_service import download_document_zip
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.manifest_download_service import (
     matches_manifest_row_submit_filter,
     process_manifest_download_row,
@@ -591,9 +592,7 @@ def resolve_manifest_path(*, manifest_name: str, manifest_path_text: str) -> Pat
 
 
 def main() -> None:
-    api_key = os.getenv("EDINET_API_KEY")
-    if not api_key:
-        raise RuntimeError("Set EDINET_API_KEY before running.")
+    api_key = validate_edinet_api_key(os.getenv("EDINET_API_KEY"))
 
     args = build_arg_parser().parse_args()
     ensure_data_dirs()

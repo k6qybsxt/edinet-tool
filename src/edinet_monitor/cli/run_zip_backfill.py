@@ -29,6 +29,7 @@ from edinet_monitor.config.settings import (
 )
 from edinet_monitor.services.collector.issuer_master_csv_service import load_allowed_edinet_codes
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.storage.raw_retention_service import cleanup_old_raw_storage
 from edinet_monitor.services.storage.manifest_service import (
     build_manifest_path,
@@ -727,9 +728,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    api_key = os.getenv("EDINET_API_KEY")
-    if not api_key:
-        raise RuntimeError("Set EDINET_API_KEY before running.")
+    api_key = validate_edinet_api_key(os.getenv("EDINET_API_KEY"))
 
     args = build_arg_parser().parse_args()
     start_date = date.fromisoformat(args.date_from)

@@ -1,6 +1,10 @@
 PowerShellコマンド
 $env:PYTHONPATH   = "C:\Users\silve\EDINET_Pipeline\src"
-$env:EDINET_API_KEY = "あなたのEDINET_APIキー"
+$env:EDINET_API_KEY = [Environment]::GetEnvironmentVariable("EDINET_API_KEY", "User")
+
+if ([string]::IsNullOrWhiteSpace($env:EDINET_API_KEY) -or $env:EDINET_API_KEY -eq "あなたのEDINET_APIキー") {
+  throw "EDINET_API_KEY が未設定、またはプレースホルダーのままです。実際のAPIキーをユーザー環境変数に設定してから実行してください。"
+}
 
 $DATE_FROM  = "2026-04-01"
 $DATE_TO    = "2026-04-09"

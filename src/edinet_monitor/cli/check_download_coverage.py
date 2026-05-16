@@ -19,6 +19,7 @@ from edinet_monitor.config.settings import (
 )
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.document_list_service import (
     DocumentListResult,
     fetch_document_list,
@@ -721,6 +722,8 @@ def parse_options(args: argparse.Namespace) -> CoverageOptions:
     api_key = os.getenv("EDINET_API_KEY", "").strip()
     if not args.skip_edinet and not api_key:
         raise RuntimeError("Set EDINET_API_KEY or use --skip-edinet for local-only checks.")
+    if not args.skip_edinet:
+        api_key = validate_edinet_api_key(api_key)
 
     target_form_codes = normalize_form_codes(args.form_codes or None)
     manifest_prefix = resolve_manifest_prefix_for_form_codes(

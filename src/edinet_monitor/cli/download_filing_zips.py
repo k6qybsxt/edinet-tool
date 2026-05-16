@@ -6,6 +6,7 @@ from typing import Any
 
 from edinet_monitor.db.schema import get_connection
 from edinet_monitor.services.collector.document_download_service import download_document_zip
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.download_queue_service import (
     fetch_pending_filings,
     mark_download_error,
@@ -86,9 +87,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    api_key = os.getenv("EDINET_API_KEY")
-    if not api_key:
-        raise RuntimeError("Set EDINET_API_KEY before running.")
+    api_key = validate_edinet_api_key(os.getenv("EDINET_API_KEY"))
 
     args = build_arg_parser().parse_args()
     run_download_filing_zips(

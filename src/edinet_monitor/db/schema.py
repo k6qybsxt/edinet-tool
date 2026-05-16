@@ -232,6 +232,41 @@ def _create_quarter_standalone_metrics_table(cur: sqlite3.Cursor) -> None:
     """)
 
 
+def _create_segment_metrics_table(cur: sqlite3.Cursor) -> None:
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS segment_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id TEXT NOT NULL,
+        edinet_code TEXT NOT NULL,
+        security_code TEXT,
+        form_type TEXT NOT NULL,
+        period_scope TEXT NOT NULL,
+        quarter_type TEXT,
+        fiscal_year INTEGER,
+        period_start TEXT,
+        period_end TEXT,
+        segment_kind TEXT NOT NULL,
+        segment_name TEXT NOT NULL,
+        axis_qname TEXT NOT NULL,
+        member_qname TEXT NOT NULL,
+        metric_base TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        value_kind TEXT NOT NULL,
+        value_num REAL,
+        value_unit TEXT NOT NULL,
+        source_tag TEXT NOT NULL,
+        tag_qname TEXT,
+        context_ref TEXT,
+        decimals TEXT,
+        calc_status TEXT NOT NULL,
+        source_detail_json TEXT,
+        rule_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+
 def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
     cur.execute("""
     CREATE TABLE IF NOT EXISTS jquants_statement_raw (
@@ -779,6 +814,7 @@ def create_tables() -> None:
     _create_industry_aggregate_metrics_table(cur)
     _create_market_derived_metrics_table(cur)
     _create_quarter_standalone_metrics_table(cur)
+    _create_segment_metrics_table(cur)
     _create_jquants_tables(cur)
     _ensure_jquants_financial_metrics_columns(cur)
 
@@ -1008,6 +1044,34 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_quarter_standalone_metrics_base_year
     ON quarter_standalone_metrics(metric_base, fiscal_year, quarter_type)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_segment_metrics_scope
+    ON segment_metrics(
+        doc_id,
+        segment_kind,
+        member_qname,
+        metric_key,
+        value_kind,
+        period_start,
+        period_end
+    )
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_segment_metrics_code_period
+    ON segment_metrics(security_code, period_scope, quarter_type, period_end)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_segment_metrics_metric_segment
+    ON segment_metrics(metric_base, segment_kind, segment_name)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_segment_metrics_doc_id
+    ON segment_metrics(doc_id)
     """)
 
     cur.execute("""

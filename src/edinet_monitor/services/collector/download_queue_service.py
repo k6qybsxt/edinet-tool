@@ -186,7 +186,9 @@ def fetch_xbrl_ready_filings(
         SELECT
             f.doc_id,
             f.form_type,
+            f.submit_date,
             f.xbrl_path,
+            f.zip_path,
             {member_column} AS xbrl_member_name
         FROM filings f
         INNER JOIN issuer_master im

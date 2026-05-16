@@ -19,6 +19,7 @@ if str(SRC_DIR) not in sys.path:
 from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     GENERAL_SHEET,
     MetricExcelCondition,
+    MetricExcelRow,
     ROW_KIND_AVERAGE,
     ROW_KIND_DETAIL,
     ROW_KIND_MEDIAN,
@@ -27,6 +28,7 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     build_metric_excel_rows,
     export_metric_excel,
     read_metric_excel_condition,
+    write_metric_excel,
 )
 
 
@@ -397,6 +399,54 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(condition.metric_labels, ["売上高", "売上原価率"])
         self.assertEqual(condition.period_offsets, [3, 2, 1])
         self.assertEqual(condition.trend, "increase")
+
+    def test_read_metric_excel_condition_parses_segment_mode(self) -> None:
+        path = self.tmp_path / "condition.xlsx"
+        _create_condition_workbook(path, [("\u30bb\u30b0\u30e1\u30f3\u30c8", "\u5730\u57df")])
+
+        condition = read_metric_excel_condition(path)
+
+        self.assertEqual(condition.segment_mode, "region")
+
+    def test_write_metric_excel_adds_segment_columns_only_when_needed(self) -> None:
+        output_path = self.tmp_path / "segment.xlsx"
+        rows = [
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="4613",
+                company_name="\u95a2\u897f\u30da\u30a4\u30f3\u30c8",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="quarter:2Q",
+                current_period_end="2025-09-30",
+                metric_base="ProfitBeforeTax",
+                metric_label="\u7d4c\u5e38\u5229\u76ca\u76f8\u5f53",
+                periods_by_offset={0: "2Q 2025-09"},
+                values_by_offset={0: 123.0},
+                units_by_offset={0: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None},
+                segment_kind="\u5730\u57df",
+                segment_name="\u65e5\u672c",
+            )
+        ]
+
+        write_metric_excel(
+            rows=rows,
+            condition=MetricExcelCondition(period_offsets=[0], segment_mode="region"),
+            output_path=output_path,
+            db_path=":memory:",
+            errors=[],
+            warnings=[],
+            target_companies=1,
+        )
+
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        headers = [cell.value for cell in ws[1]]
+        self.assertIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", headers)
+        self.assertIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
+        self.assertEqual(ws.cell(2, headers.index("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206") + 1).value, "\u5730\u57df")
+        self.assertEqual(ws.cell(2, headers.index("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d") + 1).value, "\u65e5\u672c")
 
     def test_read_metric_excel_condition_defaults_to_nine_years(self) -> None:
         path = self.tmp_path / "condition.xlsx"

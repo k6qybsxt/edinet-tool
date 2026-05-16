@@ -36,6 +36,10 @@ from edinet_monitor.services.quarter_standalone_metric_service import (
     QUARTER_STANDALONE_PERIOD_SCOPE,
     quarter_standalone_table_exists,
 )
+from edinet_monitor.services.segment_metric_service import (
+    SEGMENT_EXCEL_METRIC_LABELS,
+    segment_metrics_table_exists,
+)
 
 
 GENERAL_SHEET = "一般企業"
@@ -103,6 +107,16 @@ PERIOD_SCOPE_LABEL_BY_FORM_TYPE = {
     "043A00": "2Q",
 }
 ALL_PERIOD_SCOPES = ["annual", "quarter", "quarter_standalone", "forecast"]
+SEGMENT_MODES = {"none", "all", "region", "business"}
+SEGMENT_METRIC_BASES = tuple(SEGMENT_EXCEL_METRIC_LABELS)
+SEGMENT_VALUE_KIND_PRIORITY = {
+    "total": 0,
+    "operating_profit": 0,
+    "profit_before_tax": 0,
+    "profit_loss": 0,
+    "segment_profit": 0,
+    "external": 1,
+}
 QUARTER_SUPPORTED_BASES = {
     "NetSales",
     "OperatingIncome",
@@ -133,7 +147,9 @@ FORECAST_SUPPORTED_BASES = {
     "NetSales",
     "OperatingIncome",
     "OrdinaryIncome",
+    "ProfitBeforeTax",
     "ProfitLoss",
+    "SegmentProfit",
 }
 QUARTER_STANDALONE_SUPPORTED_BASES = set(QUARTER_STANDALONE_FLOW_BASES) | set(
     QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE.values()
@@ -206,7 +222,9 @@ MONETARY_BASES = {
     "SellingExpensesOnly",
     "OperatingIncome",
     "OrdinaryIncome",
+    "ProfitBeforeTax",
     "ProfitLoss",
+    "SegmentProfit",
     "OperatingCash",
     "InvestmentCash",
     "FinancingCash",
@@ -223,7 +241,6 @@ MONETARY_BASES = {
     "PolicyReserveProvision",
     "InvestmentExpenses",
     "ProjectExpenses",
-    "ProfitBeforeTax",
     "IncomeTaxes",
     "InterestBearingDebt",
     "MarketCapitalization",
@@ -363,7 +380,9 @@ FIXED_ROW_BASE_ORDER = [
     "SellingExpensesOnly",
     "OperatingIncome",
     "OrdinaryIncome",
+    "ProfitBeforeTax",
     "ProfitLoss",
+    "SegmentProfit",
     "EstimatedNetIncome",
     "TotalAssets",
     "NetAssets",
@@ -659,6 +678,7 @@ CONDITION_KEYS = {
     "比率上限": "percent_filter_max",
     "上限": "percent_filter_max",
     "以下": "percent_filter_max",
+    "セグメント": "segment_mode",
 }
 
 EXCEL_PERCENT_RATIO_PREFIX = "__excel_percent_ratio__:"
@@ -687,6 +707,7 @@ class MetricExcelCondition:
     percent_filter_period_offsets: list[int] = field(default_factory=lambda: [0])
     percent_filter_min: float | None = None
     percent_filter_max: float | None = None
+    segment_mode: str = "none"
     raw_values: dict[str, str] = field(default_factory=dict)
 
 
@@ -710,6 +731,8 @@ class MetricExcelRow:
     ranks_by_offset: dict[int, str] = field(default_factory=dict)
     ratio_kinds_by_offset: dict[int, str] = field(default_factory=dict)
     value_kinds_by_offset: dict[int, str] = field(default_factory=dict)
+    segment_kind: str = ""
+    segment_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -893,6 +916,28 @@ def _parse_period_scopes(value: str | None) -> list[str]:
     return scopes or ["annual"]
 
 
+def _parse_segment_mode(value: str | None) -> str:
+    text = _normalize_text(value).lower()
+    if not text or text in {"none", "なし", "不要", "no"}:
+        return "none"
+    mapping = {
+        "all": "all",
+        "すべて": "all",
+        "全部": "all",
+        "地域": "region",
+        "region": "region",
+        "地域別": "region",
+        "部門": "business",
+        "部門別": "business",
+        "事業": "business",
+        "事業別": "business",
+        "business": "business",
+    }
+    if text not in mapping:
+        raise ValueError("セグメントは none / all / 地域 / 部門 のいずれかで指定してください。")
+    return mapping[text]
+
+
 def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondition:
     path = Path(condition_xlsx)
     workbook = load_workbook(path, data_only=True)
@@ -972,6 +1017,7 @@ def read_metric_excel_condition(condition_xlsx: str | Path) -> MetricExcelCondit
         percent_filter_period_offsets=percent_filter_period_offsets,
         percent_filter_min=percent_filter_min,
         percent_filter_max=percent_filter_max,
+        segment_mode=_parse_segment_mode(raw.get("segment_mode")),
         raw_values=raw,
     )
 
@@ -1535,6 +1581,227 @@ def _filter_excel_visible_bases(
     return [base for base in bases if base not in SUPPRESSED_EXCEL_BASES]
 
 
+def _resolve_segment_bases(metric_labels: list[str]) -> list[str]:
+    if not metric_labels:
+        return list(SEGMENT_METRIC_BASES)
+    label_map = {
+        _normalize_text(label): base
+        for base, label in SEGMENT_EXCEL_METRIC_LABELS.items()
+    }
+    label_map.update(
+        {
+            _normalize_text("売上高"): "NetSales",
+            _normalize_text("営業利益"): "OperatingIncome",
+            _normalize_text("経常利益相当"): "ProfitBeforeTax",
+            _normalize_text("税引前利益"): "ProfitBeforeTax",
+            _normalize_text("純利益"): "ProfitLoss",
+            _normalize_text("セグメント利益"): "SegmentProfit",
+        }
+    )
+    bases: list[str] = []
+    seen: set[str] = set()
+    for label in metric_labels:
+        base = label_map.get(_normalize_text(label))
+        if base and base not in seen:
+            bases.append(base)
+            seen.add(base)
+    return bases
+
+
+def _segment_kind_matches(mode: str, kind: str) -> bool:
+    if mode == "all":
+        return kind in {"region", "business", "total"}
+    if mode == "region":
+        return kind in {"region", "total"}
+    if mode == "business":
+        return kind in {"business", "total"}
+    return False
+
+
+def _segment_value_priority(row: sqlite3.Row) -> int:
+    return SEGMENT_VALUE_KIND_PRIORITY.get(str(row["value_kind"] or ""), 9)
+
+
+def _segment_scale_value(value: float | None, value_unit: str) -> tuple[float | None, str]:
+    if value is None:
+        return None, ""
+    if str(value_unit or "").lower() == "yen":
+        return value / 1_000_000, "百万円"
+    return value, str(value_unit or "")
+
+
+def _segment_period_display(row: sqlite3.Row) -> str:
+    period_end = str(row["period_end"] or "")
+    period_month = period_end[:7] if len(period_end) >= 7 else period_end
+    if str(row["period_scope"] or "") == "quarter":
+        quarter = str(row["quarter_type"] or "2Q")
+        return f"{quarter} {period_month}" if period_month else quarter
+    return f"通期 {period_month}" if period_month else "通期"
+
+
+def _fetch_segment_metric_rows(
+    conn: sqlite3.Connection,
+    condition: MetricExcelCondition,
+    *,
+    metric_bases: list[str],
+) -> list[sqlite3.Row]:
+    if condition.segment_mode == "none" or not metric_bases:
+        return []
+    scope_filters: list[str] = []
+    if "annual" in condition.period_scopes:
+        scope_filters.append("annual")
+    if "quarter" in condition.period_scopes:
+        scope_filters.append("quarter")
+    if not scope_filters:
+        return []
+
+    where = [
+        "sm.calc_status = 'ok'",
+        f"sm.metric_base IN ({','.join('?' for _ in metric_bases)})",
+        f"sm.period_scope IN ({','.join('?' for _ in scope_filters)})",
+    ]
+    params: list[Any] = [*metric_bases, *scope_filters]
+    segment_kinds = [
+        kind
+        for kind in ("region", "business", "total")
+        if _segment_kind_matches(condition.segment_mode, kind)
+    ]
+    where.append(f"sm.segment_kind IN ({','.join('?' for _ in segment_kinds)})")
+    params.extend(segment_kinds)
+    if condition.industries:
+        where.append(f"im.industry_33 IN ({','.join('?' for _ in condition.industries)})")
+        params.extend(condition.industries)
+    if condition.security_codes:
+        where.append(
+            f"(substr(coalesce(sm.security_code, ''), 1, 4) IN ({','.join('?' for _ in condition.security_codes)}) "
+            f"OR coalesce(sm.security_code, '') IN ({','.join('?' for _ in condition.security_codes)}))"
+        )
+        params.extend(condition.security_codes)
+        params.extend(condition.security_codes)
+    if condition.company_names:
+        where.append(f"im.company_name IN ({','.join('?' for _ in condition.company_names)})")
+        params.extend(condition.company_names)
+
+    return conn.execute(
+        f"""
+        SELECT
+          sm.*,
+          im.company_name,
+          im.industry_33,
+          im.market
+        FROM segment_metrics sm
+        LEFT JOIN issuer_master im
+          ON im.edinet_code = sm.edinet_code
+        WHERE {' AND '.join(where)}
+        ORDER BY sm.security_code, sm.period_scope, sm.quarter_type, sm.fiscal_year,
+                 sm.segment_kind, sm.segment_name, sm.metric_base
+        """,
+        params,
+    ).fetchall()
+
+
+def _build_segment_metric_excel_rows(
+    conn: sqlite3.Connection,
+    condition: MetricExcelCondition,
+    warnings: list[str],
+) -> list[MetricExcelRow]:
+    if condition.segment_mode == "none":
+        return []
+    if not segment_metrics_table_exists(conn):
+        _append_warning_once(warnings, "segment_metrics_not_ready")
+        return []
+    metric_bases = _resolve_segment_bases(condition.metric_labels)
+    if not metric_bases:
+        _append_warning_once(warnings, "segment_metrics_no_matching_metric")
+        return []
+    raw_rows = _fetch_segment_metric_rows(conn, condition, metric_bases=metric_bases)
+    if not raw_rows:
+        _append_warning_once(warnings, "segment_metrics_empty")
+        return []
+
+    grouped: dict[tuple[str, str, str, str, str, str, str], dict[int, sqlite3.Row]] = {}
+    for raw in raw_rows:
+        fiscal_year = raw["fiscal_year"]
+        if fiscal_year is None:
+            continue
+        key = (
+            _normalize_security_code(raw["security_code"]),
+            str(raw["period_scope"] or ""),
+            str(raw["quarter_type"] or ""),
+            str(raw["segment_kind"] or ""),
+            str(raw["segment_name"] or ""),
+            str(raw["metric_base"] or ""),
+            str(raw["edinet_code"] or ""),
+        )
+        by_year = grouped.setdefault(key, {})
+        previous = by_year.get(int(fiscal_year))
+        if previous is None or _segment_value_priority(raw) < _segment_value_priority(previous):
+            by_year[int(fiscal_year)] = raw
+
+    rows: list[MetricExcelRow] = []
+    for key, by_year in grouped.items():
+        security_code, period_scope, quarter_type, segment_kind, segment_name, metric_base, _edinet_code = key
+        max_year = max(by_year)
+        periods_by_offset: dict[int, str] = {}
+        values_by_offset: dict[int, float | None] = {}
+        units_by_offset: dict[int, str] = {}
+        ratios_by_offset: dict[int, float | None] = {}
+        raw_values_by_offset: dict[int, float | None] = {}
+        display_scope = f"quarter:{quarter_type or '2Q'}" if period_scope == "quarter" else "annual"
+        current_period_end = ""
+        sample_row = by_year[max_year]
+        for offset in condition.period_offsets:
+            source_offset = _source_offset_for_display(display_scope, offset)
+            if source_offset is None:
+                periods_by_offset[offset] = ""
+                values_by_offset[offset] = None
+                units_by_offset[offset] = ""
+                ratios_by_offset[offset] = None
+                raw_values_by_offset[offset] = None
+                continue
+            source_year = max_year - source_offset
+            raw = by_year.get(source_year)
+            if raw is None:
+                periods_by_offset[offset] = ""
+                values_by_offset[offset] = None
+                units_by_offset[offset] = ""
+                ratios_by_offset[offset] = None
+                raw_values_by_offset[offset] = None
+                continue
+            raw_value = raw["value_num"]
+            scaled_value, unit = _segment_scale_value(raw_value, str(raw["value_unit"] or ""))
+            periods_by_offset[offset] = _segment_period_display(raw)
+            values_by_offset[offset] = scaled_value
+            units_by_offset[offset] = unit
+            ratios_by_offset[offset] = None
+            raw_values_by_offset[offset] = raw_value
+            if offset == 0:
+                current_period_end = str(raw["period_end"] or "")
+
+        rows.append(
+            MetricExcelRow(
+                sheet_name=_sheet_name_for_industry(sample_row["industry_33"]),
+                security_code=security_code,
+                company_name=str(sample_row["company_name"] or ""),
+                industry_33=str(sample_row["industry_33"] or ""),
+                market=str(sample_row["market"] or ""),
+                period_scope=display_scope,
+                row_kind=ROW_KIND_DETAIL,
+                current_period_end=current_period_end or str(sample_row["period_end"] or ""),
+                metric_base=metric_base,
+                metric_label=SEGMENT_EXCEL_METRIC_LABELS.get(metric_base, metric_base),
+                periods_by_offset=periods_by_offset,
+                values_by_offset=values_by_offset,
+                units_by_offset=units_by_offset,
+                ratios_by_offset=ratios_by_offset,
+                raw_values_by_offset=raw_values_by_offset,
+                segment_kind={"region": "地域", "business": "部門", "total": "合計"}.get(segment_kind, segment_kind),
+                segment_name=segment_name,
+            )
+        )
+    return rows
+
+
 def _mean(values: list[float]) -> float | None:
     if not values:
         return None
@@ -1753,13 +2020,16 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
             "period_scope": _period_scope_label(row.period_scope),
             "metric": row.metric_label,
         }
+        if row.segment_kind or row.segment_name:
+            item["segment_kind"] = row.segment_kind
+            item["segment_name"] = row.segment_name
         for offset in periods:
             item[PERIOD_LABEL_BY_OFFSET[offset]] = row.values_by_offset.get(offset)
         preview.append(item)
     return preview
 
 
-def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str]:
+def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str, str, str]:
     sheet_order = SHEET_ORDER.index(row.sheet_name)
     sheet_metric_order = ROW_BASE_ORDER_INDEX_BY_SHEET.get(row.sheet_name, ROW_BASE_ORDER_INDEX)
     metric_order = sheet_metric_order.get(row.metric_base, len(sheet_metric_order))
@@ -1783,7 +2053,15 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str]:
         ROW_KIND_AVERAGE: 1,
         ROW_KIND_MEDIAN: 2,
     }.get(row.row_kind, 9)
-    return (sheet_order, metric_order, scope_order, row_kind_order, row.security_code)
+    return (
+        sheet_order,
+        metric_order,
+        scope_order,
+        row_kind_order,
+        row.security_code,
+        row.segment_kind,
+        row.segment_name,
+    )
 
 
 def _aggregate_required_bases(row_bases: list[str]) -> list[str]:
@@ -2824,6 +3102,7 @@ def build_metric_excel_rows(
     target_companies = len({row.security_code for row in rows if row.row_kind == ROW_KIND_DETAIL})
     _assign_ranks(rows, condition.period_offsets)
     rows = _append_stat_rows(rows, condition.period_offsets, industry_only=False)
+    rows.extend(_build_segment_metric_excel_rows(conn, condition, warnings))
     rows.sort(key=_row_sort_key)
     preview_rows = _build_preview_rows(rows, condition.period_offsets, preview_limit)
     return rows, errors, warnings, preview_rows, target_companies
@@ -2863,6 +3142,7 @@ def _write_summary_sheet(
         ("company_names", ", ".join(condition.company_names) if condition.company_names else "ALL"),
         ("metrics", ", ".join(condition.metric_labels) if condition.metric_labels else "ALL"),
         ("period_scopes", ", ".join(condition.period_scopes)),
+        ("segment_mode", condition.segment_mode),
         (
             "periods",
             ", ".join(PERIOD_LABEL_BY_OFFSET[offset] for offset in condition.period_offsets),
@@ -2986,21 +3266,26 @@ def _write_metric_sheet(
     period_offsets: list[int],
 ) -> None:
     ws = workbook.create_sheet(sheet_name)
-    headers = ["証券コード", "企業名", "業種", "決算種別", "期末年月日_当期", "指標"]
-    for offset in period_offsets:
-        label = PERIOD_LABEL_BY_OFFSET[offset]
-        headers.extend([f"{label}_期間", f"{label}_数値", f"{label}_単位", f"{label}_比率"])
-    headers = [
+    include_segment_columns = any(row.segment_kind or row.segment_name for row in rows)
+    base_headers = [
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
         "\u30c6\u30f3\u30d0\u30ac\u30fc",
         "\u696d\u7a2e",
         "\u5e02\u5834\u533a\u5206",
+    ]
+    if include_segment_columns:
+        base_headers.extend(["\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", "\u30bb\u30b0\u30e1\u30f3\u30c8\u540d"])
+    base_headers.extend(
+        [
         "\u6c7a\u7b97\u7a2e\u5225",
         "\u884c\u7a2e\u5225",
         "\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f",
         "\u6307\u6a19",
-    ]
+        ]
+    )
+    base_col_count = len(base_headers)
+    headers = list(base_headers)
     for offset in period_offsets:
         label = PERIOD_LABEL_BY_OFFSET[offset]
         headers.extend(
@@ -3028,11 +3313,17 @@ def _write_metric_sheet(
             tenbagger_learning_mark(row.security_code),
             row.industry_33,
             row.market,
+        ]
+        if include_segment_columns:
+            values.extend([row.segment_kind, row.segment_name])
+        values.extend(
+            [
             _period_scope_label(row.period_scope),
             row.row_kind,
             row.current_period_end,
             row.metric_label,
-        ]
+            ]
+        )
         for offset in period_offsets:
             values.extend(
                 [
@@ -3046,7 +3337,7 @@ def _write_metric_sheet(
         ws.append(values)
         current_row = ws.max_row
         for idx, offset in enumerate(period_offsets):
-            value_col = 11 + idx * 5
+            value_col = base_col_count + 2 + idx * 5
             ratio_col = value_col + 2
             value_cell = ws.cell(current_row, value_col)
             _format_value_cell(value_cell, row.metric_base)
@@ -3061,7 +3352,7 @@ def _write_metric_sheet(
     _apply_period_block_styles(
         ws,
         period_offsets=period_offsets,
-        start_col=10,
+        start_col=base_col_count + 1,
         block_width=5,
     )
     progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
@@ -3080,22 +3371,15 @@ def _write_metric_sheet(
         font = copy(cell.font)
         font.color = color
         cell.font = font
-    ws.freeze_panes = "J2"
+    ws.freeze_panes = f"{get_column_letter(base_col_count + 1)}2"
     ws.auto_filter.ref = ws.dimensions
-    widths = {
-        "A": 12,
-        "B": 28,
-        "C": 12,
-        "D": 18,
-        "E": 12,
-        "F": 12,
-        "G": 16,
-        "H": 16,
-        "I": 24,
-    }
-    for column, width in widths.items():
-        ws.column_dimensions[column].width = width
-    for col_idx in range(10, ws.max_column + 1):
+    base_widths = [12, 28, 12, 18, 12]
+    if include_segment_columns:
+        base_widths.extend([14, 24])
+    base_widths.extend([12, 16, 16, 24])
+    for col_idx, width in enumerate(base_widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    for col_idx in range(base_col_count + 1, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 14
 
 
@@ -3105,22 +3389,18 @@ def _write_vertical_data_sheet(
     period_offsets: list[int],
 ) -> None:
     ws = workbook.create_sheet(VERTICAL_DATA_SHEET)
-    headers = [
-        "証券コード",
-        "企業名",
-        "業種",
-        "期間",
-        "指標",
-        "数値",
-        "単位",
-        "比率",
-    ]
+    include_segment_columns = any(row.segment_kind or row.segment_name for row in rows)
     headers = [
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
         "\u30c6\u30f3\u30d0\u30ac\u30fc",
         "\u696d\u7a2e",
         "\u5e02\u5834\u533a\u5206",
+    ]
+    if include_segment_columns:
+        headers.extend(["\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", "\u30bb\u30b0\u30e1\u30f3\u30c8\u540d"])
+    headers.extend(
+        [
         "\u6c7a\u7b97\u7a2e\u5225",
         "\u884c\u7a2e\u5225",
         "\u671f\u9593",
@@ -3129,7 +3409,8 @@ def _write_vertical_data_sheet(
         "\u5358\u4f4d",
         "\u6bd4\u7387",
         "\u9806\u4f4d",
-    ]
+        ]
+    )
     ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="D9EAF7")
@@ -3142,13 +3423,17 @@ def _write_vertical_data_sheet(
             period_text = row.periods_by_offset.get(offset, "")
             if not period_text:
                 continue
-            ws.append(
-                [
+            values: list[Any] = [
                     row.security_code,
                     row.company_name,
                     tenbagger_learning_mark(row.security_code),
                     row.industry_33,
                     row.market,
+            ]
+            if include_segment_columns:
+                values.extend([row.segment_kind, row.segment_name])
+            values.extend(
+                [
                     _period_scope_label(row.period_scope),
                     row.row_kind,
                     period_text,
@@ -3159,28 +3444,20 @@ def _write_vertical_data_sheet(
                     row.ranks_by_offset.get(offset, ""),
                 ]
             )
+            ws.append(values)
             current_row = ws.max_row
-            _format_value_cell(ws.cell(current_row, 10), row.metric_base)
-            ws.cell(current_row, 12).number_format = "0.0%"
+            value_col = 12 if include_segment_columns else 10
+            _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
+            ws.cell(current_row, value_col + 2).number_format = "0.0%"
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
-    widths = {
-        "A": 12,
-        "B": 28,
-        "C": 12,
-        "D": 18,
-        "E": 12,
-        "F": 12,
-        "G": 14,
-        "H": 28,
-        "I": 16,
-        "J": 10,
-        "K": 12,
-        "L": 12,
-    }
-    for column, width in widths.items():
-        ws.column_dimensions[column].width = width
+    base_widths = [12, 28, 12, 18, 12]
+    if include_segment_columns:
+        base_widths.extend([14, 24])
+    base_widths.extend([12, 14, 28, 16, 10, 12, 12, 12])
+    for col_idx, width in enumerate(base_widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
 
 
 def write_metric_excel(

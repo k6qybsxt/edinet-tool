@@ -7,6 +7,7 @@ from typing import Any
 
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.document_list_service import fetch_document_list
 from edinet_monitor.services.collector.document_row_mapper import to_filing_record
 from edinet_monitor.services.collector.filing_store_service import upsert_filings
@@ -136,9 +137,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    api_key = os.getenv("EDINET_API_KEY")
-    if not api_key:
-        raise RuntimeError("Set EDINET_API_KEY before running.")
+    api_key = validate_edinet_api_key(os.getenv("EDINET_API_KEY"))
 
     args = build_arg_parser().parse_args()
     target_dates = resolve_target_dates(

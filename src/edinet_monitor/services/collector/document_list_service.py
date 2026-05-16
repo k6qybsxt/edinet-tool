@@ -7,6 +7,7 @@ from typing import Any
 import requests
 
 from edinet_monitor.config.settings import EDINET_API_BASE_URL
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 
 
 @dataclass
@@ -22,6 +23,7 @@ def fetch_document_list(
     list_type: int = 2,
     timeout_sec: int = 30,
 ) -> DocumentListResult:
+    api_key = validate_edinet_api_key(api_key)
     url = f"{EDINET_API_BASE_URL}/documents.json"
 
     params = {

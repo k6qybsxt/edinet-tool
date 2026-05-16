@@ -9,6 +9,7 @@ from typing import Any, Callable
 from edinet_monitor.config.settings import TSE_LISTING_MASTER_CSV_PATH, ensure_data_dirs
 from edinet_monitor.services.collector.document_filter_service import filter_target_filings
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
+from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.document_list_service import (
     DocumentListResult,
     fetch_document_list,
@@ -206,9 +207,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    api_key = os.getenv("EDINET_API_KEY")
-    if not api_key:
-        raise RuntimeError("Set EDINET_API_KEY before running.")
+    api_key = validate_edinet_api_key(os.getenv("EDINET_API_KEY"))
 
     args = build_arg_parser().parse_args()
     target_dates = resolve_target_dates(
