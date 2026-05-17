@@ -9,6 +9,7 @@ from typing import Any
 JQUANTS_RULE_VERSION = "jquants-2026-05-06-v2"
 ACTUAL_PERIODS = {"1Q", "3Q"}
 FORECAST_TARGETS = {"FY"}
+_UNSET = object()
 FORECAST_STAGE_BY_PERIOD = {
     "FY": "initial",
     "4Q": "initial",
@@ -110,6 +111,15 @@ FORECAST_FIELD_MAP = {
     ],
 }
 
+INITIAL_FORECAST_FIELD_MAP = {
+    "FY": [
+        ("NxFSales", "NetSales", "sales", "yen"),
+        ("NxFOP", "OperatingIncome", "profit", "yen"),
+        ("NxFOdP", "OrdinaryIncome", "profit", "yen"),
+        ("NxFNp", "ProfitLoss", "profit", "yen"),
+    ],
+}
+
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -203,10 +213,31 @@ def _metric_from_field(
     quarter_type: str | None,
     forecast_target: str | None,
     forecast_stage: str | None,
+    fiscal_year: int | None | object = _UNSET,
+    period_start: str | None = None,
+    period_end: str | None = None,
 ) -> JQuantsStatementMetric:
     raw = build_statement_raw(row)
     decimal_value = _parse_decimal(row.get(field_name))
     calc_status = "ok" if decimal_value is not None else "missing"
+    metric_period_start = (
+        period_start
+        if period_start is not None
+        else (
+            raw.current_fiscal_year_start_date
+            if metric_kind == "forecast"
+            else raw.current_period_start_date
+        )
+    )
+    metric_period_end = (
+        period_end
+        if period_end is not None
+        else (
+            raw.current_fiscal_year_end_date
+            if metric_kind == "forecast"
+            else raw.current_period_end_date or raw.current_fiscal_year_end_date
+        )
+    )
     return JQuantsStatementMetric(
         disclosure_number=raw.disclosure_number,
         local_code=raw.local_code,
@@ -217,17 +248,9 @@ def _metric_from_field(
         quarter_type=quarter_type,
         forecast_target=forecast_target,
         forecast_stage=forecast_stage,
-        fiscal_year=raw.fiscal_year,
-        period_start=(
-            raw.current_fiscal_year_start_date
-            if metric_kind == "forecast"
-            else raw.current_period_start_date
-        ),
-        period_end=(
-            raw.current_fiscal_year_end_date
-            if metric_kind == "forecast"
-            else raw.current_period_end_date or raw.current_fiscal_year_end_date
-        ),
+        fiscal_year=raw.fiscal_year if fiscal_year is _UNSET else fiscal_year,
+        period_start=metric_period_start,
+        period_end=metric_period_end,
         disclosed_date=raw.disclosed_date,
         disclosed_time=raw.disclosed_time,
         metric_key=f"{metric_base}Current",
@@ -243,8 +266,34 @@ def _metric_from_field(
                 "api_version": "v2",
                 "field": field_name,
                 "forecast_stage": forecast_stage,
+                "period_start": metric_period_start,
+                "period_end": metric_period_end,
             }
         ),
+    )
+
+
+def _forecast_fields_for_stage(
+    row: dict[str, Any],
+    forecast_stage: str,
+    forecast_target: str,
+) -> tuple[list[tuple[str, str, str, str]], int | None, str | None, str | None]:
+    if forecast_stage == "initial":
+        period_start = _normalize_date(row.get("NxtFYSt"))
+        period_end = _normalize_date(row.get("NxtFYEn"))
+        fiscal_year = _date_year(period_end)
+        return (
+            INITIAL_FORECAST_FIELD_MAP.get(forecast_target, []),
+            fiscal_year,
+            period_start,
+            period_end,
+        )
+    raw = build_statement_raw(row)
+    return (
+        FORECAST_FIELD_MAP.get(forecast_target, []),
+        raw.fiscal_year,
+        raw.current_fiscal_year_start_date,
+        raw.current_fiscal_year_end_date,
     )
 
 
@@ -280,7 +329,12 @@ def statement_metrics_from_row(
     if include_forecasts:
         forecast_stage = FORECAST_STAGE_BY_PERIOD.get(period)
         if forecast_stage is not None:
-            for forecast_target, fields in FORECAST_FIELD_MAP.items():
+            for forecast_target in FORECAST_TARGETS:
+                fields, fiscal_year, period_start, period_end = _forecast_fields_for_stage(
+                    row,
+                    forecast_stage,
+                    forecast_target,
+                )
                 for field_name, metric_base, metric_group, value_unit in fields:
                     metrics.append(
                         _metric_from_field(
@@ -295,6 +349,9 @@ def statement_metrics_from_row(
                             quarter_type=None,
                             forecast_target=forecast_target,
                             forecast_stage=forecast_stage,
+                            fiscal_year=fiscal_year,
+                            period_start=period_start,
+                            period_end=period_end,
                         )
                     )
 

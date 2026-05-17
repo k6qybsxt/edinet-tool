@@ -88,6 +88,8 @@ def _statement_row(period: str = "1Q") -> dict:
         "CurPerEn": "2025-06-30",
         "CurFYSt": "2025-04-01",
         "CurFYEn": "2026-03-31",
+        "NxtFYSt": "2026-04-01",
+        "NxtFYEn": "2027-03-31",
         "Sales": "100000000",
         "OP": "12000000",
         "OdP": "",
@@ -108,6 +110,10 @@ def _statement_row(period: str = "1Q") -> dict:
         "FOdP": "48000000",
         "FNP": "30000000",
         "FEPS": "50.00",
+        "NxFSales": "450000000",
+        "NxFOP": "55000000",
+        "NxFOdP": "53000000",
+        "NxFNp": "33000000",
         "FSales2Q": "220000000",
         "FOP2Q": "25000000",
         "FOdP2Q": "24000000",
@@ -187,8 +193,11 @@ class JQuantsServicesTest(unittest.TestCase):
         metrics = statement_metrics_from_row(_statement_row("4Q"), include_forecasts=True)
         by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
 
-        self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].value_num, 400000000.0)
-        self.assertEqual(by_key[("forecast:FY", "initial", "ProfitLoss")].value_num, 30000000.0)
+        self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].value_num, 450000000.0)
+        self.assertEqual(by_key[("forecast:FY", "initial", "ProfitLoss")].value_num, 33000000.0)
+        self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].fiscal_year, 2027)
+        self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].period_start, "2026-04-01")
+        self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].period_end, "2027-03-31")
         self.assertNotIn(("actual:4Q", None, "NetSales"), by_key)
 
     def test_statement_mapper_ignores_unsupported_period_forecasts(self) -> None:

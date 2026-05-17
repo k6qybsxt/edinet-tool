@@ -408,7 +408,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
 
         self.assertEqual(condition.segment_mode, "region")
 
-    def test_write_metric_excel_adds_segment_columns_only_when_needed(self) -> None:
+    def test_write_metric_excel_uses_decision_column_for_segments(self) -> None:
         output_path = self.tmp_path / "segment.xlsx"
         rows = [
             MetricExcelRow(
@@ -420,12 +420,12 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 period_scope="quarter:2Q",
                 current_period_end="2025-09-30",
                 metric_base="ProfitBeforeTax",
-                metric_label="\u7d4c\u5e38\u5229\u76ca\u76f8\u5f53",
+                metric_label="\u7d4c\u5e38\u5229\u76ca",
                 periods_by_offset={0: "2Q 2025-09"},
                 values_by_offset={0: 123.0},
                 units_by_offset={0: "\u767e\u4e07\u5186"},
                 ratios_by_offset={0: None},
-                segment_kind="\u5730\u57df",
+                segment_kind="\u5730\u57df\u5225",
                 segment_name="\u65e5\u672c",
             )
         ]
@@ -443,10 +443,9 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         headers = [cell.value for cell in ws[1]]
-        self.assertIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", headers)
-        self.assertIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
-        self.assertEqual(ws.cell(2, headers.index("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206") + 1).value, "\u5730\u57df")
-        self.assertEqual(ws.cell(2, headers.index("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d") + 1).value, "\u65e5\u672c")
+        self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", headers)
+        self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
+        self.assertEqual(ws.cell(2, headers.index("\u6c7a\u7b97\u7a2e\u5225") + 1).value, "\u5730\u57df\u5225")
 
     def test_read_metric_excel_condition_defaults_to_nine_years(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1192,8 +1191,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual([row.ranks_by_offset.get(1) for row in rows[:2]], ["1/2", "2/2"])
         average_row = next(row for row in rows if row.row_kind == ROW_KIND_AVERAGE)
         median_row = next(row for row in rows if row.row_kind == ROW_KIND_MEDIAN)
-        self.assertEqual(average_row.metric_label, ROW_KIND_AVERAGE)
-        self.assertEqual(median_row.metric_label, ROW_KIND_MEDIAN)
+        self.assertEqual(average_row.metric_label, "4Q \u58f2\u4e0a\u9ad8")
+        self.assertEqual(median_row.metric_label, "4Q \u58f2\u4e0a\u9ad8")
         self.assertAlmostEqual(average_row.values_by_offset[1], 85.0)
         self.assertAlmostEqual(median_row.values_by_offset[1], 85.0)
         self.assertEqual(average_row.units_by_offset[1], "\u767e\u4e07\u5186")
@@ -1550,6 +1549,45 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertIsNotNone(ws["M2"].comment)
         self.assertEqual(ws["M2"].fill.fgColor.rgb, "00FFF2CC")
 
+    def test_jquants_quarter_bps_falls_back_to_net_assets_per_share(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, '11110', '1111', 'E00001', 'actual',
+                      'quarter', 'actual:2Q', '2Q', NULL, 2026,
+                      '2025-04-01', '2025-09-30', '2025-11-01', '15:00', ?,
+                      ?, ?, ?, ?, ?, 'field', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """,
+            [
+                ("bps_missing", "BPSCurrent", "BPS", "per_share", None, "yen", "missing"),
+                ("net_assets", "NetAssetsCurrent", "NetAssets", "balance", 500_000_000.0, "yen", "ok"),
+                ("shares", "OutstandingSharesCurrent", "OutstandingShares", "per_share", 100_000_000.0, "shares", "ok"),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["BPS"],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("jquants_metrics_not_found", warnings)
+        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:2Q")
+        self.assertEqual(row.metric_label, "2Q BPS")
+        self.assertEqual(row.values_by_offset[0], 5.0)
+        self.assertEqual(row.units_by_offset[0], "円")
+
     def test_quarter_standalone_rows_are_loaded(self) -> None:
         self.conn.execute(
             """
@@ -1634,6 +1672,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         value_cells_by_label = {
             ws.cell(row=row_index, column=9).value: ws.cell(row=row_index, column=11)
             for row_index in range(2, ws.max_row + 1)
+            if ws.cell(row=row_index, column=7).value == ROW_KIND_DETAIL
         }
         up_color = value_cells_by_label["1Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb
         down_color = value_cells_by_label["2Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb

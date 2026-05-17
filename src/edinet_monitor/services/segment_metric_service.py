@@ -109,7 +109,7 @@ METRIC_INFO_BY_TAG: dict[str, tuple[str, str, str, int]] = {
 SEGMENT_EXCEL_METRIC_LABELS = {
     "NetSales": "売上高",
     "OperatingIncome": "営業利益",
-    "ProfitBeforeTax": "経常利益相当",
+    "ProfitBeforeTax": "経常利益",
     "ProfitLoss": "純利益",
     "SegmentProfit": "セグメント利益",
 }

@@ -122,6 +122,7 @@ QUARTER_SUPPORTED_BASES = {
     "OperatingIncome",
     "OrdinaryIncome",
     "ProfitLoss",
+    "FCF",
     "EPS",
     "TotalAssets",
     "NetAssets",
@@ -149,13 +150,12 @@ FORECAST_SUPPORTED_BASES = {
     "OrdinaryIncome",
     "ProfitBeforeTax",
     "ProfitLoss",
-    "SegmentProfit",
 }
 QUARTER_STANDALONE_SUPPORTED_BASES = set(QUARTER_STANDALONE_FLOW_BASES) | set(
     QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE.values()
 )
 FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
-JQUANTS_QUARTER_TYPES = ("1Q", "3Q")
+JQUANTS_QUARTER_TYPES = ("1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGES = ("initial", "1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGE_LABELS = {
     "initial": "0Q",
@@ -205,7 +205,7 @@ INDUSTRY_ONLY_TOKEN = "\u696d\u7a2e\u306e\u307f"
 ROW_KIND_DETAIL = "\u660e\u7d30"
 ROW_KIND_AVERAGE = "\u5e73\u5747\u5024"
 ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
-SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES)
+SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES) | {"ProfitBeforeTax", "SegmentProfit"}
 PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
@@ -465,6 +465,7 @@ ROW_BASE_ORDER_INDEX = {
 }
 
 EXCEL_METRIC_LABEL_OVERRIDES = {
+    "ProfitBeforeTax": "経常利益",
     "CostOfSales": "├売上原価",
     "SellingExpenses": "└販管費",
     "GeneralAndAdministrativeExpenses": "　├ 一般管理費",
@@ -1135,6 +1136,10 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
     for ratio_base, row_base in ROW_BASE_BY_RATIO_BASE.items():
         mapping[_normalize_text(metric_base_to_display_name(ratio_base))] = row_base
         mapping[_normalize_text(ratio_base)] = row_base
+    mapping[_normalize_text("経常利益")] = "OrdinaryIncome"
+    mapping[_normalize_text("税引前利益")] = "OrdinaryIncome"
+    mapping[_normalize_text("税引き前利益")] = "OrdinaryIncome"
+    mapping[_normalize_text("経常利益相当")] = "OrdinaryIncome"
     return mapping
 
 
@@ -1497,6 +1502,12 @@ def _period_scope_label(period_scope: str) -> str:
     return "\u901a\u671f"
 
 
+def _decision_label_for_row(row: MetricExcelRow) -> str:
+    if row.segment_kind:
+        return _segment_decision_label(row.segment_kind)
+    return _period_scope_label(row.period_scope)
+
+
 def _source_offset_for_display(period_scope: str, display_offset: int) -> int | None:
     if period_scope == "annual":
         if display_offset == 0:
@@ -1592,8 +1603,10 @@ def _resolve_segment_bases(metric_labels: list[str]) -> list[str]:
         {
             _normalize_text("売上高"): "NetSales",
             _normalize_text("営業利益"): "OperatingIncome",
+            _normalize_text("経常利益"): "ProfitBeforeTax",
             _normalize_text("経常利益相当"): "ProfitBeforeTax",
             _normalize_text("税引前利益"): "ProfitBeforeTax",
+            _normalize_text("税引き前利益"): "ProfitBeforeTax",
             _normalize_text("純利益"): "ProfitLoss",
             _normalize_text("セグメント利益"): "SegmentProfit",
         }
@@ -1637,6 +1650,33 @@ def _segment_period_display(row: sqlite3.Row) -> str:
         quarter = str(row["quarter_type"] or "2Q")
         return f"{quarter} {period_month}" if period_month else quarter
     return f"通期 {period_month}" if period_month else "通期"
+
+
+def _segment_decision_label(segment_kind: str) -> str:
+    normalized = str(segment_kind or "").strip()
+    return {
+        "region": "地域別",
+        "地域": "地域別",
+        "地域別": "地域別",
+        "business": "部門別",
+        "部門": "部門別",
+        "部門別": "部門別",
+        "total": "合計",
+        "合計": "合計",
+    }.get(normalized, normalized)
+
+
+def _segment_metric_label(
+    *,
+    metric_base: str,
+    period_scope: str,
+    quarter_type: str,
+    segment_name: str,
+) -> str:
+    base_label = SEGMENT_EXCEL_METRIC_LABELS.get(metric_base, metric_base)
+    prefix = (quarter_type or "2Q") if period_scope == "quarter" else "4Q"
+    name = str(segment_name or "").strip() or "合計"
+    return f"{prefix} {base_label} <{name}>"
 
 
 def _fetch_segment_metric_rows(
@@ -1789,13 +1829,18 @@ def _build_segment_metric_excel_rows(
                 row_kind=ROW_KIND_DETAIL,
                 current_period_end=current_period_end or str(sample_row["period_end"] or ""),
                 metric_base=metric_base,
-                metric_label=SEGMENT_EXCEL_METRIC_LABELS.get(metric_base, metric_base),
+                metric_label=_segment_metric_label(
+                    metric_base=metric_base,
+                    period_scope=period_scope,
+                    quarter_type=quarter_type,
+                    segment_name=segment_name,
+                ),
                 periods_by_offset=periods_by_offset,
                 values_by_offset=values_by_offset,
                 units_by_offset=units_by_offset,
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
-                segment_kind={"region": "地域", "business": "部門", "total": "合計"}.get(segment_kind, segment_kind),
+                segment_kind=_segment_decision_label(segment_kind),
                 segment_name=segment_name,
             )
         )
@@ -1934,7 +1979,7 @@ def _append_stat_rows(
                     row_kind=row_kind,
                     current_period_end=first.current_period_end,
                     metric_base=metric_base,
-                    metric_label=row_kind,
+                    metric_label=first.metric_label,
                     periods_by_offset=periods_by_offset,
                     values_by_offset=values_by_offset,
                     units_by_offset=units_by_offset,
@@ -1998,7 +2043,7 @@ def _passes_percent_filters(
             if filing is None:
                 return False
             doc_id = str(filing["doc_id"])
-            value = metric_values.get((doc_id, _metric_key(base)))
+            value = _metric_value(metric_values, doc_id, base)
             if value is None:
                 return False
             numeric_value = float(value)
@@ -2009,6 +2054,17 @@ def _passes_percent_filters(
     return True
 
 
+def _metric_value(
+    metric_values: dict[tuple[str, str], float | None],
+    doc_id: str,
+    metric_base: str,
+) -> float | None:
+    value = metric_values.get((doc_id, _metric_key(metric_base)))
+    if value is None and metric_base == "OrdinaryIncome":
+        return metric_values.get((doc_id, _metric_key("ProfitBeforeTax")))
+    return value
+
+
 def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: int) -> list[dict[str, Any]]:
     preview = []
     for row in rows[:limit]:
@@ -2017,7 +2073,7 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
             "company_name": row.company_name,
             "industry_33": row.industry_33,
             "market": row.market,
-            "period_scope": _period_scope_label(row.period_scope),
+            "period_scope": _decision_label_for_row(row),
             "metric": row.metric_label,
         }
         if row.segment_kind or row.segment_name:
@@ -2029,8 +2085,9 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
     return preview
 
 
-def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str, str, str]:
+def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, int, str, str, str]:
     sheet_order = SHEET_ORDER.index(row.sheet_name)
+    segment_order = 1 if row.segment_kind or row.segment_name else 0
     sheet_metric_order = ROW_BASE_ORDER_INDEX_BY_SHEET.get(row.sheet_name, ROW_BASE_ORDER_INDEX)
     metric_order = sheet_metric_order.get(row.metric_base, len(sheet_metric_order))
     scope_order = {
@@ -2055,6 +2112,7 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, str, str, st
     }.get(row.row_kind, 9)
     return (
         sheet_order,
+        segment_order,
         metric_order,
         scope_order,
         row_kind_order,
@@ -2079,6 +2137,8 @@ def _aggregate_required_bases(row_bases: list[str]) -> list[str]:
             "ProfitLoss",
         }:
             required.add("NetSales")
+        if base == "OrdinaryIncome":
+            required.add("ProfitBeforeTax")
         if base == "NetAssets":
             required.add("TotalAssets")
     return sorted(required)
@@ -2535,6 +2595,180 @@ def _scale_jquants_value(metric_base: str, value: float | None) -> tuple[float |
     return value, ""
 
 
+def _jquants_metric_fetch_bases(requested_bases: set[str]) -> set[str]:
+    fetch_bases = set(requested_bases)
+    if "FCF" in fetch_bases:
+        fetch_bases.update({"OperatingCash", "InvestmentCash"})
+    if "BPS" in fetch_bases:
+        fetch_bases.update({"NetAssets", "OutstandingShares"})
+    return fetch_bases
+
+
+def _jquants_latest_row(
+    latest: dict[tuple[str, str, str, int, str, str], sqlite3.Row],
+    *,
+    security_code: str,
+    period_scope: str,
+    metric_base: str,
+    fiscal_year: int,
+    period_key: str,
+    forecast_stage: str | None,
+) -> sqlite3.Row | None:
+    return latest.get(
+        (
+            security_code,
+            "quarter" if period_scope.startswith("quarter") else "forecast",
+            metric_base,
+            fiscal_year,
+            period_key,
+            forecast_stage or "",
+        )
+    )
+
+
+def _jquants_ok_value(row: sqlite3.Row | None) -> float | None:
+    if (
+        row is not None
+        and str(row["calc_status"] or "") == "ok"
+        and row["value_num"] is not None
+    ):
+        return float(row["value_num"])
+    return None
+
+
+def _jquants_display_row_and_value(
+    latest: dict[tuple[str, str, str, int, str, str], sqlite3.Row],
+    *,
+    security_code: str,
+    period_scope: str,
+    metric_base: str,
+    fiscal_year: int,
+    period_key: str,
+    forecast_stage: str | None,
+) -> tuple[sqlite3.Row | None, float | None]:
+    if metric_base == "FCF" and period_scope.startswith("quarter"):
+        operating_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base="OperatingCash",
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        investment_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base="InvestmentCash",
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        operating_value = _jquants_ok_value(operating_row)
+        investment_value = _jquants_ok_value(investment_row)
+        value = (
+            operating_value + investment_value
+            if operating_value is not None and investment_value is not None
+            else None
+        )
+        return operating_row or investment_row, value
+    if metric_base == "BPS" and period_scope.startswith("quarter"):
+        row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base=metric_base,
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        direct_value = _jquants_ok_value(row)
+        if direct_value is not None:
+            return row, direct_value
+        net_assets_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base="NetAssets",
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        shares_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base="OutstandingShares",
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        net_assets_value = _jquants_ok_value(net_assets_row)
+        shares_value = _jquants_ok_value(shares_row)
+        value = (
+            net_assets_value / shares_value
+            if net_assets_value is not None and shares_value and shares_value > 0
+            else None
+        )
+        return row or net_assets_row or shares_row, value
+    row = _jquants_latest_row(
+        latest,
+        security_code=security_code,
+        period_scope=period_scope,
+        metric_base=metric_base,
+        fiscal_year=fiscal_year,
+        period_key=period_key,
+        forecast_stage=forecast_stage,
+    )
+    return row, _jquants_ok_value(row)
+
+
+def _find_existing_detail_row(
+    rows: list[MetricExcelRow],
+    *,
+    security_code: str,
+    period_scope: str,
+    metric_base: str,
+) -> MetricExcelRow | None:
+    for row in rows:
+        if (
+            row.row_kind == ROW_KIND_DETAIL
+            and row.security_code == security_code
+            and row.period_scope == period_scope
+            and row.metric_base == metric_base
+            and not row.segment_kind
+        ):
+            return row
+    return None
+
+
+def _merge_missing_offsets(
+    target: MetricExcelRow,
+    *,
+    period_offsets: list[int],
+    periods_by_offset: dict[int, str],
+    values_by_offset: dict[int, float | None],
+    units_by_offset: dict[int, str],
+    ratios_by_offset: dict[int, float | None],
+    raw_values_by_offset: dict[int, float | None],
+    ratio_kinds_by_offset: dict[int, str],
+    value_kinds_by_offset: dict[int, str],
+) -> None:
+    for offset in period_offsets:
+        if not target.periods_by_offset.get(offset) and periods_by_offset.get(offset):
+            target.periods_by_offset[offset] = periods_by_offset[offset]
+        if target.raw_values_by_offset.get(offset) is None and raw_values_by_offset.get(offset) is not None:
+            target.raw_values_by_offset[offset] = raw_values_by_offset[offset]
+            target.values_by_offset[offset] = values_by_offset.get(offset)
+            target.units_by_offset[offset] = units_by_offset.get(offset, "")
+            target.ratios_by_offset[offset] = ratios_by_offset.get(offset)
+        if offset not in target.ratio_kinds_by_offset and ratio_kinds_by_offset.get(offset):
+            target.ratio_kinds_by_offset[offset] = ratio_kinds_by_offset[offset]
+        if offset not in target.value_kinds_by_offset and value_kinds_by_offset.get(offset):
+            target.value_kinds_by_offset[offset] = value_kinds_by_offset[offset]
+
+
 def _append_jquants_rows(
     conn: sqlite3.Connection,
     condition: MetricExcelCondition,
@@ -2568,11 +2802,12 @@ def _append_jquants_rows(
     if not requested_bases:
         return
     max_offset = max(condition.period_offsets or [0])
+    metric_bases_to_fetch = _jquants_metric_fetch_bases(set(requested_bases) | FORECAST_PROGRESS_BASES)
     all_metric_rows = (
         _fetch_jquants_metric_rows(
             conn,
             security_codes=security_codes,
-            metric_bases=sorted(set(requested_bases) | FORECAST_PROGRESS_BASES),
+            metric_bases=sorted(metric_bases_to_fetch),
             min_fiscal_year=None,
         )
         if _jquants_table_exists(conn, "jquants_financial_metrics")
@@ -2752,22 +2987,14 @@ def _append_jquants_period_rows(
             fiscal_year = max_fiscal_year - offset
             if fiscal_year < min_year:
                 continue
-            row = latest.get(
-                (
-                    security_code,
-                    "quarter" if period_scope.startswith("quarter") else "forecast",
-                    base,
-                    fiscal_year,
-                    period_key,
-                    forecast_stage or "",
-                )
-            )
-            raw_value = (
-                float(row["value_num"])
-                if row is not None
-                and str(row["calc_status"] or "") == "ok"
-                and row["value_num"] is not None
-                else None
+            row, raw_value = _jquants_display_row_and_value(
+                latest,
+                security_code=security_code,
+                period_scope=period_scope,
+                metric_base=base,
+                fiscal_year=fiscal_year,
+                period_key=period_key,
+                forecast_stage=forecast_stage,
             )
             display_value, display_unit = _scale_jquants_value(base, raw_value)
             periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
@@ -2800,6 +3027,25 @@ def _append_jquants_period_rows(
                     ratios_by_offset[offset] = raw_value / forecast_value
                     ratio_kinds_by_offset[offset] = FORECAST_PROGRESS_RATIO_KIND
         if not any(value is not None for value in raw_values_by_offset.values()):
+            continue
+        existing_row = _find_existing_detail_row(
+            rows,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base=base,
+        )
+        if existing_row is not None:
+            _merge_missing_offsets(
+                existing_row,
+                period_offsets=period_offsets,
+                periods_by_offset=periods_by_offset,
+                values_by_offset=values_by_offset,
+                units_by_offset=units_by_offset,
+                ratios_by_offset=ratios_by_offset,
+                raw_values_by_offset=raw_values_by_offset,
+                ratio_kinds_by_offset=ratio_kinds_by_offset,
+                value_kinds_by_offset=value_kinds_by_offset,
+            )
             continue
         rows.append(
             MetricExcelRow(
@@ -2924,6 +3170,8 @@ def build_metric_excel_rows(
     for bases in selected_row_bases_by_sheet.values():
         for base in bases:
             selected_value_bases.add(base)
+            if base == "OrdinaryIncome":
+                selected_value_bases.add("ProfitBeforeTax")
             ratio_base = ABSORBED_RATIO_BASE_BY_ROW_BASE.get(base)
             if ratio_base:
                 selected_value_bases.add(ratio_base)
@@ -2937,9 +3185,13 @@ def build_metric_excel_rows(
             for sheet in SHEET_ORDER:
                 for base in _resolve_value_bases(sheet, trend_labels, errors):
                     selected_value_bases.add(base)
+                    if base == "OrdinaryIncome":
+                        selected_value_bases.add("ProfitBeforeTax")
         else:
             for bases in selected_row_bases_by_sheet.values():
                 selected_value_bases.update(bases)
+                if "OrdinaryIncome" in bases:
+                    selected_value_bases.add("ProfitBeforeTax")
 
     percent_filter_bases_by_sheet: dict[str, list[str]] = {sheet: [] for sheet in SHEET_ORDER}
     if condition.percent_filter_metric_labels:
@@ -2947,6 +3199,8 @@ def build_metric_excel_rows(
             bases = _resolve_value_bases(sheet, condition.percent_filter_metric_labels, errors)
             percent_filter_bases_by_sheet[sheet] = bases
             selected_value_bases.update(bases)
+            if "OrdinaryIncome" in bases:
+                selected_value_bases.add("ProfitBeforeTax")
 
     doc_ids = [str(row["doc_id"]) for row in filings]
     metric_values = _fetch_metric_values(
@@ -2999,7 +3253,7 @@ def build_metric_excel_rows(
                     filing = by_offset.get(source_offset) if source_offset is not None else None
                     value = None
                     if filing is not None:
-                        value = metric_values.get((str(filing["doc_id"]), _metric_key(trend_base)))
+                        value = _metric_value(metric_values, str(filing["doc_id"]), trend_base)
                     trend_values.append(value)
                 if not _passes_trend(trend_values, condition.trend):
                     trend_ok = False
@@ -3048,7 +3302,7 @@ def build_metric_excel_rows(
                     if base in DATE_POINT_PERIOD_BASES
                     else _period_display_for_filing(filing)
                 )
-                raw_value = metric_values.get((doc_id, _metric_key(base)))
+                raw_value = _metric_value(metric_values, doc_id, base)
                 raw_values_by_offset[offset] = raw_value
                 values_by_offset[offset] = _scale_value_for_document_unit(
                     base,
@@ -3064,7 +3318,7 @@ def build_metric_excel_rows(
                 if base in CONSTANT_RATIO_BY_ROW_BASE:
                     ratios_by_offset[offset] = CONSTANT_RATIO_BY_ROW_BASE[base]
                 elif ratio_base:
-                    ratios_by_offset[offset] = metric_values.get((doc_id, _metric_key(ratio_base)))
+                    ratios_by_offset[offset] = _metric_value(metric_values, doc_id, ratio_base)
                 else:
                     ratios_by_offset[offset] = None
 
@@ -3266,7 +3520,7 @@ def _write_metric_sheet(
     period_offsets: list[int],
 ) -> None:
     ws = workbook.create_sheet(sheet_name)
-    include_segment_columns = any(row.segment_kind or row.segment_name for row in rows)
+    include_segment_columns = False
     base_headers = [
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
@@ -3318,7 +3572,7 @@ def _write_metric_sheet(
             values.extend([row.segment_kind, row.segment_name])
         values.extend(
             [
-            _period_scope_label(row.period_scope),
+            _decision_label_for_row(row),
             row.row_kind,
             row.current_period_end,
             row.metric_label,
@@ -3389,7 +3643,7 @@ def _write_vertical_data_sheet(
     period_offsets: list[int],
 ) -> None:
     ws = workbook.create_sheet(VERTICAL_DATA_SHEET)
-    include_segment_columns = any(row.segment_kind or row.segment_name for row in rows)
+    include_segment_columns = False
     headers = [
         "\u8a3c\u5238\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
@@ -3434,7 +3688,7 @@ def _write_vertical_data_sheet(
                 values.extend([row.segment_kind, row.segment_name])
             values.extend(
                 [
-                    _period_scope_label(row.period_scope),
+                    _decision_label_for_row(row),
                     row.row_kind,
                     period_text,
                     row.metric_label,
