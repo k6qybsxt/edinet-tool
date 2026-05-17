@@ -741,13 +741,33 @@ def build_segment_metric_rows(
     return SegmentMetricBuildResult(rows=rows, candidates=candidates, warnings=warnings)
 
 
-def replace_segment_metrics(conn: sqlite3.Connection, rows: list[SegmentMetricRow]) -> int:
+def replace_segment_metrics(
+    conn: sqlite3.Connection,
+    rows: list[SegmentMetricRow],
+    *,
+    replace_doc_ids: list[str] | None = None,
+) -> int:
+    target_doc_ids = sorted(
+        {
+            str(doc_id or "").strip()
+            for doc_id in (replace_doc_ids or [row.doc_id for row in rows])
+            if str(doc_id or "").strip()
+        }
+    )
+    if target_doc_ids:
+        for chunk in _chunked(target_doc_ids):
+            placeholders = ",".join("?" for _ in chunk)
+            conn.execute(
+                f"DELETE FROM segment_metrics WHERE doc_id IN ({placeholders})",
+                chunk,
+            )
     if not rows:
+        conn.commit()
         return 0
     now = _now_text()
     conn.executemany(
         """
-        INSERT OR REPLACE INTO segment_metrics (
+        INSERT INTO segment_metrics (
             doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
             fiscal_year, period_start, period_end, segment_kind, segment_name,
             axis_qname, member_qname, metric_base, metric_key, value_kind,
@@ -868,7 +888,11 @@ def save_segment_metrics(
         date_to=date_to,
         form_codes=form_codes,
     )
-    saved_rows = replace_segment_metrics(conn, build.rows) if apply else 0
+    saved_rows = (
+        replace_segment_metrics(conn, build.rows, replace_doc_ids=doc_ids)
+        if apply
+        else 0
+    )
     report_path = write_segment_metric_report(
         result=build,
         output_dir=output_dir,

@@ -61,14 +61,6 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _create_segment_metrics_table(conn.cursor())
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX uq_segment_metrics_scope
-        ON segment_metrics(
-            doc_id, segment_kind, member_qname, metric_key, value_kind, period_start, period_end
-        )
-        """
-    )
 
 
 def _dimensions(member_qname: str) -> str:
@@ -189,6 +181,25 @@ class SegmentMetricServiceTest(unittest.TestCase):
         self.assertEqual(first_count, 1)
         self.assertEqual(second_count, 1)
         self.assertEqual(saved_count, 1)
+
+    def test_replace_segment_metrics_deletes_existing_doc_when_new_rows_are_empty(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="100000000",
+        )
+        self.conn.commit()
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+        replace_segment_metrics(self.conn, result.rows)
+
+        saved_count_before = self.conn.execute("SELECT count(*) FROM segment_metrics").fetchone()[0]
+        deleted_insert_count = replace_segment_metrics(self.conn, [], replace_doc_ids=["doc1"])
+        saved_count_after = self.conn.execute("SELECT count(*) FROM segment_metrics").fetchone()[0]
+
+        self.assertEqual(saved_count_before, 1)
+        self.assertEqual(deleted_insert_count, 0)
+        self.assertEqual(saved_count_after, 0)
 
     def test_build_segment_metric_rows_excludes_prior_period_segment_fact(self) -> None:
         _insert_raw_fact(
