@@ -7,7 +7,7 @@ from typing import Any
 
 
 JQUANTS_RULE_VERSION = "jquants-2026-05-06-v2"
-ACTUAL_PERIODS = {"1Q", "3Q"}
+ACTUAL_PERIODS = {"1Q", "2Q", "3Q"}
 FORECAST_TARGETS = {"FY"}
 _UNSET = object()
 FORECAST_STAGE_BY_PERIOD = {

@@ -8,6 +8,8 @@ import re
 import sqlite3
 from typing import Any
 
+from lxml import html as lxml_html
+
 from edinet_pipeline.services.linkbase_analyzer import analyze_linkbase_structure
 
 
@@ -105,6 +107,13 @@ METRIC_INFO_BY_TAG: dict[str, tuple[str, str, str, int]] = {
     **{tag: ("ProfitLoss", "SegmentProfitLossCurrent", "profit_loss", 10) for tag in PROFIT_LOSS_TAGS},
     **{tag: ("SegmentProfit", "SegmentProfitCurrent", "segment_profit", 10) for tag in SEGMENT_PROFIT_TAGS},
 }
+TEXTBLOCK_METRIC_INFO_BY_BASE: dict[str, tuple[str, str, str, int]] = {
+    "NetSales": ("NetSales", "SegmentNetSalesCurrent", "total", 80),
+    "OperatingIncome": ("OperatingIncome", "SegmentOperatingIncomeCurrent", "operating_profit", 80),
+    "ProfitBeforeTax": ("ProfitBeforeTax", "SegmentProfitBeforeTaxCurrent", "profit_before_tax", 80),
+    "ProfitLoss": ("ProfitLoss", "SegmentProfitLossCurrent", "profit_loss", 80),
+    "SegmentProfit": ("SegmentProfit", "SegmentProfitCurrent", "segment_profit", 80),
+}
 
 SEGMENT_EXCEL_METRIC_LABELS = {
     "NetSales": "売上高",
@@ -112,6 +121,11 @@ SEGMENT_EXCEL_METRIC_LABELS = {
     "ProfitBeforeTax": "経常利益",
     "ProfitLoss": "純利益",
     "SegmentProfit": "セグメント利益",
+}
+
+GEOGRAPHICAL_AREA_TEXTBLOCK_TAGS = {
+    "InformationAboutGeographicalAreasIFRSTextBlock",
+    "InformationAboutGeographicalAreasTextBlock",
 }
 
 
@@ -261,6 +275,49 @@ def _local_name(qname: str) -> str:
     return text
 
 
+def _concept_lookup_keys(qname: str) -> list[str]:
+    text = str(qname or "").strip()
+    local = _local_name(text)
+    keys = [text, local]
+    if "_" in local:
+        keys.append(local.rsplit("_", 1)[-1])
+    result: list[str] = []
+    for key in keys:
+        if key and key not in result:
+            result.append(key)
+    return result
+
+
+def _linkbase_label_for_qname(qname: str, labels_by_concept: dict[str, str]) -> str:
+    for key in _concept_lookup_keys(qname):
+        label = str(labels_by_concept.get(key) or "").strip()
+        if label:
+            return label
+    return ""
+
+
+def _linkbase_presentation_sequence(qname: str, structure_by_concept: dict[str, dict[str, Any]]) -> int | None:
+    for key in _concept_lookup_keys(qname):
+        item = structure_by_concept.get(key)
+        if not isinstance(item, dict):
+            continue
+        sequence = item.get("presentation_sequence")
+        try:
+            return int(sequence) if sequence is not None else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _segment_order_from_detail(source_detail_json: str) -> int:
+    detail = _safe_json(source_detail_json)
+    try:
+        value = detail.get("segment_order")
+        return int(value) if value is not None else 999999
+    except (TypeError, ValueError):
+        return 999999
+
+
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker.lower() in text.lower() for marker in markers)
 
@@ -294,14 +351,23 @@ def _member_priority(member_qname: str) -> int:
         return 0
     if "TotalOfReportableSegmentsMember" in local:
         return 1
-    if "ReportableSegmentsMember" in local:
+    if local == "ReportableSegmentsMember":
         return 2
     return 10
 
 
+def _is_total_member(member_qname: str) -> bool:
+    local = _local_name(member_qname)
+    return (
+        local == "ReportableSegmentsMember"
+        or local == "TotalOfReportableSegmentsMember"
+        or local == "TotalOfReportableSegmentsAndOthersMember"
+    )
+
+
 def _segment_kind(member_qname: str, axis_qname: str) -> str | None:
     text = f"{member_qname} {axis_qname}"
-    if _contains_any(text, TOTAL_MEMBER_MARKERS):
+    if _is_total_member(member_qname):
         return "total"
     if _contains_any(text, EXCLUDED_MEMBER_MARKERS):
         return None
@@ -315,10 +381,15 @@ def _segment_kind(member_qname: str, axis_qname: str) -> str | None:
 
 def _humanize_member_name(member_qname: str, labels_by_concept: dict[str, str]) -> str:
     local = _local_name(member_qname)
-    if _contains_any(local, TOTAL_MEMBER_MARKERS):
+    if _is_total_member(member_qname):
         return "合計"
+    if (
+        "OperatingSegmentsNotIncludedInReportableSegmentsAndOtherRevenueGeneratingBusinessActivities" in local
+        or local == "OtherReportableSegmentsMember"
+    ):
+        return "その他"
 
-    label = labels_by_concept.get(local, "").strip()
+    label = _linkbase_label_for_qname(member_qname, labels_by_concept)
     if label:
         return label
 
@@ -338,6 +409,282 @@ def _humanize_member_name(member_qname: str, labels_by_concept: dict[str, str]) 
         cleaned = cleaned.replace(suffix, "")
     cleaned = re.sub(r"([a-z])([A-Z])", r"\1 \2", cleaned).strip()
     return cleaned or local
+
+
+def _normalize_cell_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
+
+
+def _textblock_number(value: str) -> float | None:
+    text = _normalize_cell_text(value)
+    if not text or text in {"-", "－", "―"}:
+        return None
+    negative = "△" in text or text.startswith("(") and text.endswith(")")
+    cleaned = (
+        text.replace(",", "")
+        .replace("△", "")
+        .replace("▲", "")
+        .replace("－", "")
+        .replace("百万円", "")
+        .replace("千円", "")
+        .replace("億円", "")
+        .replace("円", "")
+        .replace("(", "")
+        .replace(")", "")
+        .strip()
+    )
+    if not cleaned:
+        return None
+    try:
+        number = float(cleaned)
+    except ValueError:
+        return None
+    return -number if negative else number
+
+
+def _textblock_unit_multiplier(text: str) -> int:
+    normalized = _normalize_cell_text(text)
+    if "億円" in normalized:
+        return 100_000_000
+    if "百万円" in normalized:
+        return 1_000_000
+    if "千円" in normalized:
+        return 1_000
+    return 1
+
+
+def _textblock_metric_info(label: str, section_metric: str | None = None) -> tuple[str, str, str, int] | None:
+    text = _normalize_cell_text(label).lower()
+    if not text:
+        return None
+    if any(marker in text for marker in ("非流動資産", "資産合計", "資産", "営業費用")):
+        return None
+    if "営業利益" in text or "operating profit" in text or "operating income" in text:
+        return ("OperatingIncome", "SegmentOperatingIncomeCurrent", "operating_profit", 10)
+    if "税引前" in text or "税金等調整前" in text or "before tax" in text:
+        return ("ProfitBeforeTax", "SegmentProfitBeforeTaxCurrent", "profit_before_tax", 10)
+    if ("純利益" in text or "親会社" in text or "profit attributable" in text) and "売上" not in text:
+        return ("ProfitLoss", "SegmentProfitLossCurrent", "profit_loss", 10)
+    if "セグメント利益" in text or "segment profit" in text:
+        return ("SegmentProfit", "SegmentProfitCurrent", "segment_profit", 10)
+    if "外部顧客" in text or "external" in text:
+        return ("NetSales", "SegmentExternalNetSalesCurrent", "external", 30)
+    if any(marker in text for marker in ("売上", "収益", "営業収益", "収入", "revenue", "sales")):
+        return ("NetSales", "SegmentNetSalesCurrent", "total", 10)
+    if text == "計" and section_metric == "NetSales":
+        return ("NetSales", "SegmentNetSalesCurrent", "total", 10)
+    return None
+
+
+def _textblock_section_metric(label: str) -> str | None:
+    info = _textblock_metric_info(label)
+    return info[0] if info else None
+
+
+def _textblock_segment_kind(name: str) -> str | None:
+    text = _normalize_cell_text(name)
+    if not text:
+        return None
+    if any(marker in text for marker in ("消去", "全社", "調整")):
+        return None
+    if text in {"合計", "連結", "連結合計", "総計"}:
+        return "total"
+    if _looks_like_region_label(text):
+        return "region"
+    return None
+
+
+def _looks_like_region_label(text: str) -> bool:
+    normalized = _normalize_cell_text(text)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in ("年度", "期間", "会計", "項目", "金額", "百万円", "千円", "億円")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "日本",
+            "国内",
+            "海外",
+            "北米",
+            "米州",
+            "米国",
+            "アメリカ",
+            "欧州",
+            "ヨーロッパ",
+            "アジア",
+            "中国",
+            "韓国",
+            "インド",
+            "シンガポール",
+            "英国",
+            "イギリス",
+            "オーストラリア",
+            "台湾",
+            "ASEAN",
+            "アフリカ",
+            "オセアニア",
+            "その他",
+            "Japan",
+            "Domestic",
+            "Overseas",
+            "North America",
+            "America",
+            "Europe",
+            "Asia",
+            "China",
+            "Korea",
+            "India",
+            "Singapore",
+            "United Kingdom",
+            "UK",
+            "Australia",
+            "Taiwan",
+            "ASEAN",
+            "Africa",
+            "Oceania",
+        )
+    )
+
+
+def _textblock_tables(value_text: str) -> list[list[list[str]]]:
+    text = str(value_text or "").strip()
+    if not text:
+        return []
+    try:
+        root = lxml_html.fromstring(f"<div>{text}</div>")
+    except Exception:
+        return []
+    tables: list[list[list[str]]] = []
+    for table in root.xpath(".//table"):
+        rows: list[list[str]] = []
+        for tr in table.xpath(".//tr"):
+            cells = [_normalize_cell_text(cell.text_content()) for cell in tr.xpath("./th|./td")]
+            if any(cells):
+                rows.append(cells)
+        if rows:
+            tables.append(rows)
+    return tables
+
+
+def _is_matrix_geography_table(rows: list[list[str]]) -> bool:
+    if not rows:
+        return False
+    header = rows[0]
+    if len(header) < 3:
+        return False
+    region_count = sum(1 for cell in header[1:] if _textblock_segment_kind(cell) in {"region", "total"})
+    metric_count = sum(1 for row in rows[1:] if row and _textblock_metric_info(row[0]) is not None)
+    return region_count >= 2 and metric_count >= 1
+
+
+def _matrix_textblock_entries(rows: list[list[str]]) -> list[tuple[str, str, str, float]]:
+    entries: list[tuple[str, str, str, float]] = []
+    if not rows:
+        return entries
+    headers = rows[0]
+    section_metric: str | None = None
+    for row in rows[1:]:
+        if not row:
+            continue
+        label = row[0]
+        values = row[1:]
+        if not any(_textblock_number(cell) is not None for cell in values):
+            section_metric = _textblock_section_metric(label) or section_metric
+            continue
+        info = _textblock_metric_info(label, section_metric)
+        if info is None:
+            continue
+        metric_base, metric_key, value_kind, _priority = info
+        for index, cell in enumerate(values, start=1):
+            if index >= len(headers):
+                continue
+            segment_name = headers[index]
+            kind = _textblock_segment_kind(segment_name)
+            if kind is None:
+                continue
+            value = _textblock_number(cell)
+            if value is None:
+                continue
+            entries.append((kind, segment_name if kind == "region" else "合計", metric_base, value))
+    return entries
+
+
+def _row_textblock_entries(rows: list[list[str]]) -> list[tuple[str, str, str, float]]:
+    entries: list[tuple[str, str, str, float]] = []
+    table_text = " ".join(" ".join(row) for row in rows)
+    if any(marker in table_text for marker in ("非流動資産", "有形固定資産", "年度末", "期末", "資産")) and not any(
+        marker in table_text for marker in ("売上", "収益", "営業収益", "収入")
+    ):
+        return entries
+
+    section_metric: str | None = None
+    value_column: int | None = None
+    for row in rows:
+        for index in range(len(row) - 1, 0, -1):
+            if _textblock_number(row[index]) is not None:
+                value_column = max(value_column or 0, index)
+                break
+    if value_column is None:
+        value_column = max((len(row) - 1 for row in rows), default=1)
+
+    for table_index, row in enumerate(rows):
+        if not row:
+            continue
+        label = row[0]
+        if _textblock_metric_info(label) is not None and all(_textblock_number(cell) is None for cell in row[1:]):
+            section_metric = _textblock_section_metric(label)
+            continue
+        kind = _textblock_segment_kind(label)
+        if kind is None:
+            continue
+        if value_column >= len(row):
+            continue
+        value = _textblock_number(row[value_column])
+        if value is None:
+            continue
+        metric_info = ("NetSales", "SegmentNetSalesCurrent", "total", 10)
+        if section_metric:
+            metric_info = _textblock_metric_info(section_metric) or metric_info
+        elif table_index > 0 and any(marker in table_text for marker in ("営業利益", "税引前", "純利益")):
+            metric_info = _textblock_metric_info(table_text) or metric_info
+        metric_base = metric_info[0]
+        if metric_base != "NetSales":
+            # Row-oriented geographical tables are usually sales or assets.  Avoid over-reading profit labels
+            # from surrounding explanatory text unless the row itself clearly says the metric.
+            metric_base = "NetSales"
+        entries.append((kind, label if kind == "region" else "合計", metric_base, value))
+    return entries
+
+
+def _geographical_textblock_entries(value_text: str) -> list[tuple[str, str, str, float, int]]:
+    tables = _textblock_tables(value_text)
+    entries: list[tuple[str, str, str, float, int]] = []
+    block_multiplier = _textblock_unit_multiplier(value_text)
+    matrix_tables = [rows for rows in tables if _is_matrix_geography_table(rows)]
+    if matrix_tables:
+        rows = matrix_tables[-1]
+        multiplier = _textblock_unit_multiplier(" ".join(" ".join(row) for row in rows))
+        if multiplier == 1:
+            multiplier = block_multiplier
+        for kind, segment_name, metric_base, value in _matrix_textblock_entries(rows):
+            entries.append((kind, segment_name, metric_base, value * multiplier, multiplier))
+        return entries
+
+    for rows in tables:
+        table_text = " ".join(" ".join(row) for row in rows)
+        if any(marker in table_text for marker in ("非流動資産", "有形固定資産", "年度末", "期末", "資産")) and not any(
+            marker in table_text for marker in ("売上", "収益", "営業収益", "収入", "revenue", "sales")
+        ):
+            continue
+        if not any(_textblock_segment_kind(row[0] if row else "") in {"region", "total"} for row in rows):
+            continue
+        multiplier = _textblock_unit_multiplier(table_text)
+        if multiplier == 1:
+            multiplier = block_multiplier
+        for kind, segment_name, metric_base, value in _row_textblock_entries(rows):
+            entries.append((kind, segment_name, metric_base, value * multiplier, multiplier))
+    return entries
 
 
 def _value_unit(row: sqlite3.Row) -> str:
@@ -458,14 +805,17 @@ def _fetch_raw_facts(conn: sqlite3.Connection, doc_ids: list[str]) -> list[sqlit
     return rows
 
 
-def _labels_for_filing(filing: sqlite3.Row) -> dict[str, str]:
+def _linkbase_structure_for_filing(filing: sqlite3.Row) -> dict[str, dict[str, Any]]:
     try:
-        structure = analyze_linkbase_structure(
+        return analyze_linkbase_structure(
             xbrl_path=str(filing["xbrl_path"] or ""),
             zip_path=str(filing["zip_path"] or ""),
         )
     except Exception:
         return {}
+
+
+def _labels_from_structure(structure: dict[str, dict[str, Any]]) -> dict[str, str]:
     return {
         str(concept): str(info.get("label") or "").strip()
         for concept, info in structure.items()
@@ -495,10 +845,14 @@ def build_segment_metric_rows(
     filings_by_doc = {str(row["doc_id"]): row for row in filings}
     raw_facts = _fetch_raw_facts(conn, list(filings_by_doc))
     raw_doc_ids = {str(row["doc_id"] or "") for row in raw_facts}
-    labels_by_doc = {
-        doc_id: _labels_for_filing(row)
+    linkbase_by_doc = {
+        doc_id: _linkbase_structure_for_filing(row)
         for doc_id, row in filings_by_doc.items()
         if doc_id in raw_doc_ids
+    }
+    labels_by_doc = {
+        doc_id: _labels_from_structure(structure)
+        for doc_id, structure in linkbase_by_doc.items()
     }
 
     selected: dict[tuple[Any, ...], tuple[int, int, SegmentMetricRow]] = {}
@@ -523,10 +877,91 @@ def build_segment_metric_rows(
             "source_tag": tag_name,
             "context_ref": str(raw["context_ref"] or ""),
         }
+        if tag_name in GEOGRAPHICAL_AREA_TEXTBLOCK_TAGS:
+            form_type = str(filing["form_type"] or "")
+            period_scope, quarter_type = SEGMENT_PERIOD_SCOPE_BY_FORM_TYPE.get(form_type, (form_type, ""))
+            for segment_index, (kind, segment_name, metric_base, text_value, _multiplier) in enumerate(_geographical_textblock_entries(
+                str(raw["value_text"] or "")
+            )):
+                info_from_text = TEXTBLOCK_METRIC_INFO_BY_BASE.get(metric_base)
+                if info_from_text is None:
+                    continue
+                metric_base, metric_key, value_kind, tag_priority = info_from_text
+                member_qname = f"textblock:{segment_name}"
+                row = SegmentMetricRow(
+                    doc_id=str(raw["doc_id"] or ""),
+                    edinet_code=str(filing["edinet_code"] or ""),
+                    security_code=security_code,
+                    form_type=form_type,
+                    period_scope=period_scope,
+                    quarter_type=quarter_type,
+                    fiscal_year=_parse_year(raw["period_end"] or filing["period_end"]),
+                    period_start=str(raw["period_start"] or ""),
+                    period_end=period_end,
+                    segment_kind=kind,
+                    segment_name=segment_name,
+                    axis_qname="textblock:InformationAboutGeographicalAreas",
+                    member_qname=member_qname,
+                    metric_base=metric_base,
+                    metric_key=metric_key,
+                    value_kind=value_kind,
+                    value_num=text_value,
+                    value_unit="yen",
+                    source_tag=tag_name,
+                    tag_qname=str(raw["tag_qname"] or ""),
+                    context_ref=str(raw["context_ref"] or ""),
+                    decimals="",
+                    calc_status="ok",
+                    source_detail_json=json.dumps(
+                        {
+                            "axis_qname": "textblock:InformationAboutGeographicalAreas",
+                            "member_qname": member_qname,
+                            "member_priority": 50,
+                            "segment_order": segment_index,
+                            "tag_priority": tag_priority,
+                            "company_name": company_name,
+                            "source": "geographical_area_textblock",
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    rule_version=rule_version,
+                )
+                key = (
+                    row.doc_id,
+                    row.segment_kind,
+                    "TOTAL" if row.segment_kind == "total" else row.member_qname,
+                    row.metric_key,
+                    row.value_kind,
+                    row.period_start,
+                    row.period_end,
+                )
+                priority = (50, tag_priority)
+                previous = selected.get(key)
+                if previous is None or priority < (previous[0], previous[1]):
+                    selected[key] = (priority[0], priority[1], row)
+                    candidates.append(
+                        SegmentCandidate(
+                            **candidate_common,
+                            segment_kind=kind,
+                            segment_name=segment_name,
+                            member_qname=member_qname,
+                            metric_base=metric_base,
+                            value_kind=value_kind,
+                            value_num=text_value,
+                            status="selected",
+                            reason="selected_geographical_area_textblock",
+                        )
+                    )
+            continue
         if axis_member is None:
             continue
         axis_qname, member_qname = axis_member
         kind = _segment_kind(member_qname, axis_qname)
+        segment_order = _linkbase_presentation_sequence(
+            member_qname,
+            linkbase_by_doc.get(str(raw["doc_id"]), {}),
+        )
         segment_name = _humanize_member_name(member_qname, labels_by_doc.get(str(raw["doc_id"]), {}))
         if kind is None:
             candidates.append(
@@ -653,6 +1088,7 @@ def build_segment_metric_rows(
                     "axis_qname": axis_qname,
                     "member_qname": member_qname,
                     "member_priority": _member_priority(member_qname),
+                    "segment_order": segment_order,
                     "tag_priority": tag_priority,
                     "company_name": company_name,
                     "source": "raw_facts",
@@ -731,6 +1167,7 @@ def build_segment_metric_rows(
             row.quarter_type,
             row.period_end,
             row.segment_kind,
+            _segment_order_from_detail(row.source_detail_json),
             row.segment_name,
             row.metric_base,
             row.value_kind,

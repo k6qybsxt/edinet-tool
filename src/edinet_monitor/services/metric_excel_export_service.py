@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import calendar
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from copy import copy
@@ -110,12 +112,12 @@ ALL_PERIOD_SCOPES = ["annual", "quarter", "quarter_standalone", "forecast"]
 SEGMENT_MODES = {"none", "all", "region", "business"}
 SEGMENT_METRIC_BASES = tuple(SEGMENT_EXCEL_METRIC_LABELS)
 SEGMENT_VALUE_KIND_PRIORITY = {
-    "total": 0,
+    "external": 0,
+    "total": 1,
     "operating_profit": 0,
     "profit_before_tax": 0,
     "profit_loss": 0,
     "segment_profit": 0,
-    "external": 1,
 }
 QUARTER_SUPPORTED_BASES = {
     "NetSales",
@@ -123,6 +125,8 @@ QUARTER_SUPPORTED_BASES = {
     "OrdinaryIncome",
     "ProfitLoss",
     "FCF",
+    "InvestmentCashToNetSalesRatio",
+    "InvestmentCashToOperatingCashRatio",
     "EPS",
     "TotalAssets",
     "NetAssets",
@@ -206,6 +210,16 @@ ROW_KIND_DETAIL = "\u660e\u7d30"
 ROW_KIND_AVERAGE = "\u5e73\u5747\u5024"
 ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
 SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES) | {"ProfitBeforeTax", "SegmentProfit"}
+QUARTER_SUPPRESSED_EXCEL_BASES = {
+    "CashBalanceGrowthRate",
+    "OutstandingSharesGrowthRate",
+    "AssetsPerShare",
+    "LiabilitiesPerShare",
+}
+QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER = {
+    "1Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+    "3Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+}
 PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
@@ -734,6 +748,7 @@ class MetricExcelRow:
     value_kinds_by_offset: dict[int, str] = field(default_factory=dict)
     segment_kind: str = ""
     segment_name: str = ""
+    segment_order: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1516,6 +1531,55 @@ def _source_offset_for_display(period_scope: str, display_offset: int) -> int | 
     return display_offset
 
 
+def _parse_iso_date(value: Any) -> datetime | None:
+    text = str(value or "").strip()[:10]
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _date_text(value: Any) -> str:
+    parsed = _parse_iso_date(value)
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
+
+
+def _add_months_to_period_end(value: Any, months: int) -> str:
+    parsed = _parse_iso_date(value)
+    if parsed is None:
+        return ""
+    month_index = parsed.month - 1 + months
+    year = parsed.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(parsed.day, calendar.monthrange(year, month)[1])
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _add_years_to_period_end(value: Any, years: int = 1) -> str:
+    parsed = _parse_iso_date(value)
+    if parsed is None:
+        return ""
+    try:
+        return parsed.replace(year=parsed.year + years).strftime("%Y-%m-%d")
+    except ValueError:
+        # Leap-day fiscal years should remain at month-end.
+        year = parsed.year + years
+        day = calendar.monthrange(year, parsed.month)[1]
+        return f"{year:04d}-{parsed.month:02d}-{day:02d}"
+
+
+def _annual_current_period_end_from_latest_actual(value: Any) -> str:
+    return _add_years_to_period_end(value, 1)
+
+
+def _current_period_end_for_scope(value: Any, period_scope: str) -> str:
+    if period_scope == "annual":
+        return _annual_current_period_end_from_latest_actual(value)
+    return _date_text(value)
+
+
 def _calendar_year_bucket(period_bucket_end: str | None) -> int | None:
     text = str(period_bucket_end or "").strip()
     if len(text) < 4:
@@ -1635,6 +1699,20 @@ def _segment_value_priority(row: sqlite3.Row) -> int:
     return SEGMENT_VALUE_KIND_PRIORITY.get(str(row["value_kind"] or ""), 9)
 
 
+def _segment_order_from_row(row: sqlite3.Row) -> int | None:
+    try:
+        detail = json.loads(str(row["source_detail_json"] or "{}"))
+    except Exception:
+        return None
+    if not isinstance(detail, dict):
+        return None
+    try:
+        value = detail.get("segment_order")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _segment_scale_value(value: float | None, value_unit: str) -> tuple[float | None, str]:
     if value is None:
         return None, ""
@@ -1645,11 +1723,23 @@ def _segment_scale_value(value: float | None, value_unit: str) -> tuple[float | 
 
 def _segment_period_display(row: sqlite3.Row) -> str:
     period_end = str(row["period_end"] or "")
-    period_month = period_end[:7] if len(period_end) >= 7 else period_end
     if str(row["period_scope"] or "") == "quarter":
         quarter = str(row["quarter_type"] or "2Q")
-        return f"{quarter} {period_month}" if period_month else quarter
+        return f"{quarter} {period_end}" if period_end else quarter
+    period_month = period_end[:7] if len(period_end) >= 7 else period_end
     return f"通期 {period_month}" if period_month else "通期"
+
+
+def _normalize_segment_name_for_excel(segment_name: Any) -> str:
+    text = str(segment_name or "").strip()
+    normalized = _normalize_text(text).lower()
+    if (
+        "operatingsegmentsnotincludedinreportablesegmentsandotherrevenuegeneratingbusinessactivities"
+        in normalized
+        or normalized == "otherreportablesegmentsmember"
+    ):
+        return "\u305d\u306e\u4ed6"
+    return text
 
 
 def _segment_decision_label(segment_kind: str) -> str:
@@ -1759,37 +1849,64 @@ def _build_segment_metric_excel_rows(
         _append_warning_once(warnings, "segment_metrics_empty")
         return []
 
+    max_year_by_scope: dict[tuple[str, str, str, str], int] = {}
+    current_period_end_by_scope: dict[tuple[str, str, str, str], str] = {}
     grouped: dict[tuple[str, str, str, str, str, str, str], dict[int, sqlite3.Row]] = {}
+    segment_order_by_key: dict[tuple[str, str, str, str, str, str, str], int] = {}
     for raw in raw_rows:
         fiscal_year = raw["fiscal_year"]
         if fiscal_year is None:
             continue
+        security_code = _normalize_security_code(raw["security_code"])
+        period_scope = str(raw["period_scope"] or "")
+        quarter_type = str(raw["quarter_type"] or "")
+        edinet_code = str(raw["edinet_code"] or "")
+        scope_key = (security_code, period_scope, quarter_type, edinet_code)
+        year = int(fiscal_year)
+        period_end = _date_text(raw["period_end"])
+        if year > max_year_by_scope.get(scope_key, -1):
+            max_year_by_scope[scope_key] = year
+            current_period_end_by_scope[scope_key] = (
+                _annual_current_period_end_from_latest_actual(period_end)
+                if period_scope == "annual"
+                else period_end
+            )
+        elif year == max_year_by_scope.get(scope_key, -1) and period_end:
+            current_period_end_by_scope[scope_key] = (
+                _annual_current_period_end_from_latest_actual(period_end)
+                if period_scope == "annual"
+                else max(period_end, current_period_end_by_scope.get(scope_key, ""))
+            )
         key = (
-            _normalize_security_code(raw["security_code"]),
-            str(raw["period_scope"] or ""),
-            str(raw["quarter_type"] or ""),
+            security_code,
+            period_scope,
+            quarter_type,
             str(raw["segment_kind"] or ""),
-            str(raw["segment_name"] or ""),
+            _normalize_segment_name_for_excel(raw["segment_name"]),
             str(raw["metric_base"] or ""),
-            str(raw["edinet_code"] or ""),
+            edinet_code,
         )
+        segment_order = _segment_order_from_row(raw)
+        if segment_order is not None:
+            segment_order_by_key[key] = min(segment_order_by_key.get(key, segment_order), segment_order)
         by_year = grouped.setdefault(key, {})
-        previous = by_year.get(int(fiscal_year))
+        previous = by_year.get(year)
         if previous is None or _segment_value_priority(raw) < _segment_value_priority(previous):
-            by_year[int(fiscal_year)] = raw
+            by_year[year] = raw
 
     rows: list[MetricExcelRow] = []
     for key, by_year in grouped.items():
-        security_code, period_scope, quarter_type, segment_kind, segment_name, metric_base, _edinet_code = key
-        max_year = max(by_year)
+        security_code, period_scope, quarter_type, segment_kind, segment_name, metric_base, edinet_code = key
+        scope_key = (security_code, period_scope, quarter_type, edinet_code)
+        max_year = max_year_by_scope.get(scope_key, max(by_year))
         periods_by_offset: dict[int, str] = {}
         values_by_offset: dict[int, float | None] = {}
         units_by_offset: dict[int, str] = {}
         ratios_by_offset: dict[int, float | None] = {}
         raw_values_by_offset: dict[int, float | None] = {}
         display_scope = f"quarter:{quarter_type or '2Q'}" if period_scope == "quarter" else "annual"
-        current_period_end = ""
-        sample_row = by_year[max_year]
+        current_period_end = current_period_end_by_scope.get(scope_key, "")
+        sample_row = by_year.get(max_year) or by_year[max(by_year)]
         for offset in condition.period_offsets:
             source_offset = _source_offset_for_display(display_scope, offset)
             if source_offset is None:
@@ -1815,8 +1932,6 @@ def _build_segment_metric_excel_rows(
             units_by_offset[offset] = unit
             ratios_by_offset[offset] = None
             raw_values_by_offset[offset] = raw_value
-            if offset == 0:
-                current_period_end = str(raw["period_end"] or "")
 
         rows.append(
             MetricExcelRow(
@@ -1827,7 +1942,7 @@ def _build_segment_metric_excel_rows(
                 market=str(sample_row["market"] or ""),
                 period_scope=display_scope,
                 row_kind=ROW_KIND_DETAIL,
-                current_period_end=current_period_end or str(sample_row["period_end"] or ""),
+                current_period_end=current_period_end,
                 metric_base=metric_base,
                 metric_label=_segment_metric_label(
                     metric_base=metric_base,
@@ -1842,6 +1957,7 @@ def _build_segment_metric_excel_rows(
                 raw_values_by_offset=raw_values_by_offset,
                 segment_kind=_segment_decision_label(segment_kind),
                 segment_name=segment_name,
+                segment_order=segment_order_by_key.get(key),
             )
         )
     return rows
@@ -2085,7 +2201,7 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
     return preview
 
 
-def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, int, str, str, str]:
+def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, int, str, str, int, str]:
     sheet_order = SHEET_ORDER.index(row.sheet_name)
     segment_order = 1 if row.segment_kind or row.segment_name else 0
     sheet_metric_order = ROW_BASE_ORDER_INDEX_BY_SHEET.get(row.sheet_name, ROW_BASE_ORDER_INDEX)
@@ -2118,6 +2234,7 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, int, str, st
         row_kind_order,
         row.security_code,
         row.segment_kind,
+        row.segment_order if row.segment_order is not None else 999999,
         row.segment_name,
     )
 
@@ -2555,6 +2672,72 @@ def _max_jquants_fiscal_year(
     return max(years) if years else None
 
 
+def _period_end_from_jquants_row(row: sqlite3.Row | None) -> str:
+    if row is None:
+        return ""
+    return _date_text(row["period_end"])
+
+
+def _quarter_standalone_period_end(
+    rows: list[sqlite3.Row],
+    *,
+    security_code: str,
+    fiscal_year: int,
+    quarter: str,
+) -> str:
+    matching = [
+        _date_text(row["period_end"])
+        for row in rows
+        if _normalize_security_code(row["security_code"] or "") == security_code
+        and row["fiscal_year"] is not None
+        and int(row["fiscal_year"]) == fiscal_year
+        and str(row["quarter_type"] or "") == quarter
+        and _date_text(row["period_end"])
+    ]
+    if matching:
+        return max(matching)
+
+    quarter_order = ["1Q", "2Q", "3Q", "4Q"]
+    if quarter not in quarter_order:
+        return ""
+    target_index = quarter_order.index(quarter)
+    ordered_fallback_quarters = sorted(
+        (item for item in quarter_order if item != quarter),
+        key=lambda item: (abs(target_index - quarter_order.index(item)), quarter_order.index(item) > target_index),
+    )
+    for other in ordered_fallback_quarters:
+        other_dates = [
+            _date_text(row["period_end"])
+            for row in rows
+            if _normalize_security_code(row["security_code"] or "") == security_code
+            and row["fiscal_year"] is not None
+            and int(row["fiscal_year"]) == fiscal_year
+            and str(row["quarter_type"] or "") == other
+            and _date_text(row["period_end"])
+        ]
+        if not other_dates:
+            continue
+        other_index = quarter_order.index(other)
+        return _add_months_to_period_end(max(other_dates), (target_index - other_index) * 3)
+    return ""
+
+
+def _quarter_standalone_period_display(
+    rows: list[sqlite3.Row],
+    *,
+    security_code: str,
+    fiscal_year: int,
+    quarter: str,
+) -> str:
+    period_end = _quarter_standalone_period_end(
+        rows,
+        security_code=security_code,
+        fiscal_year=fiscal_year,
+        quarter=quarter,
+    )
+    return f"{quarter} {period_end}" if period_end else quarter
+
+
 def _jquants_period_display(row: sqlite3.Row | None, period_scope: str, metric_base: str | None = None) -> str:
     if row is None:
         return ""
@@ -2601,6 +2784,10 @@ def _jquants_metric_fetch_bases(requested_bases: set[str]) -> set[str]:
         fetch_bases.update({"OperatingCash", "InvestmentCash"})
     if "BPS" in fetch_bases:
         fetch_bases.update({"NetAssets", "OutstandingShares"})
+    if "InvestmentCashToNetSalesRatio" in fetch_bases:
+        fetch_bases.update({"InvestmentCash", "NetSales"})
+    if "InvestmentCashToOperatingCashRatio" in fetch_bases:
+        fetch_bases.update({"InvestmentCash", "OperatingCash"})
     return fetch_bases
 
 
@@ -2646,6 +2833,34 @@ def _jquants_display_row_and_value(
     period_key: str,
     forecast_stage: str | None,
 ) -> tuple[sqlite3.Row | None, float | None]:
+    if metric_base in {"InvestmentCashToNetSalesRatio", "InvestmentCashToOperatingCashRatio"} and period_scope.startswith("quarter"):
+        investment_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base="InvestmentCash",
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        denominator_base = "NetSales" if metric_base == "InvestmentCashToNetSalesRatio" else "OperatingCash"
+        denominator_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base=denominator_base,
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        investment_value = _jquants_ok_value(investment_row)
+        denominator_value = _jquants_ok_value(denominator_row)
+        value = (
+            abs(investment_value) / denominator_value
+            if investment_value is not None and denominator_value and denominator_value > 0
+            else None
+        )
+        return investment_row or denominator_row, value
     if metric_base == "FCF" and period_scope.startswith("quarter"):
         operating_row = _jquants_latest_row(
             latest,
@@ -2839,7 +3054,11 @@ def _append_jquants_rows(
                     rows,
                     company=company,
                     security_code=security_code,
-                    base_candidates=[base for base in base_candidates if base in QUARTER_SUPPORTED_BASES],
+                    base_candidates=[
+                        base
+                        for base in base_candidates
+                        if base in QUARTER_SUPPORTED_BASES and base not in QUARTER_SUPPRESSED_EXCEL_BASES
+                    ],
                     period_scope=f"quarter:{quarter}",
                     period_key=f"actual:{quarter}",
                     latest=latest,
@@ -2897,11 +3116,19 @@ def _append_quarter_standalone_period_rows(
     for quarter in ("1Q", "2Q", "3Q", "4Q"):
         period_scope = f"{QUARTER_STANDALONE_PERIOD_SCOPE}:{quarter}"
         for base in base_candidates:
+            if base in QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER.get(quarter, set()):
+                continue
             periods_by_offset: dict[int, str] = {}
             values_by_offset: dict[int, float | None] = {}
             units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
             raw_values_by_offset: dict[int, float | None] = {}
+            current_period_end = _quarter_standalone_period_end(
+                all_rows,
+                security_code=security_code,
+                fiscal_year=max_fiscal_year,
+                quarter=quarter,
+            )
             for offset in period_offsets:
                 fiscal_year = max_fiscal_year - offset
                 if fiscal_year < min_year:
@@ -2915,7 +3142,12 @@ def _append_quarter_standalone_period_rows(
                     else None
                 )
                 display_value, display_unit = _scale_jquants_value(base, raw_value)
-                periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
+                periods_by_offset[offset] = _quarter_standalone_period_display(
+                    all_rows,
+                    security_code=security_code,
+                    fiscal_year=fiscal_year,
+                    quarter=quarter,
+                )
                 values_by_offset[offset] = display_value
                 units_by_offset[offset] = display_unit if raw_value is not None else ""
                 raw_values_by_offset[offset] = raw_value
@@ -2933,7 +3165,7 @@ def _append_quarter_standalone_period_rows(
                     market=str(company["market"] or ""),
                     period_scope=period_scope,
                     row_kind=ROW_KIND_DETAIL,
-                    current_period_end=periods_by_offset.get(0, ""),
+                    current_period_end=current_period_end,
                     metric_base=base,
                     metric_label=_metric_label_for_excel(
                         base,
@@ -2983,6 +3215,7 @@ def _append_jquants_period_rows(
         raw_values_by_offset: dict[int, float | None] = {}
         ratio_kinds_by_offset: dict[int, str] = {}
         value_kinds_by_offset: dict[int, str] = {}
+        current_period_end = ""
         for offset in period_offsets:
             fiscal_year = max_fiscal_year - offset
             if fiscal_year < min_year:
@@ -2998,6 +3231,8 @@ def _append_jquants_period_rows(
             )
             display_value, display_unit = _scale_jquants_value(base, raw_value)
             periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
+            if offset == 0 and row is not None:
+                current_period_end = _period_end_from_jquants_row(row)
             values_by_offset[offset] = display_value
             units_by_offset[offset] = display_unit if raw_value is not None else ""
             raw_values_by_offset[offset] = raw_value
@@ -3056,7 +3291,7 @@ def _append_jquants_period_rows(
                 market=str(company["market"] or ""),
                 period_scope=period_scope,
                 row_kind=ROW_KIND_DETAIL,
-                current_period_end=periods_by_offset.get(0, ""),
+                current_period_end=current_period_end,
                 metric_base=base,
                 metric_label=_metric_label_for_excel(
                     base,
@@ -3331,7 +3566,10 @@ def build_metric_excel_rows(
                     market=str(current["market"] or ""),
                     period_scope=current_period_scope,
                     row_kind=ROW_KIND_DETAIL,
-                    current_period_end=str(current["period_end"] or ""),
+                    current_period_end=_current_period_end_for_scope(
+                        current["period_end"],
+                        current_period_scope,
+                    ),
                     metric_base=base,
                     metric_label=_metric_label_for_excel(
                         base,

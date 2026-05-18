@@ -41,6 +41,11 @@ def _read_bytes(path: Path) -> bytes | None:
         return None
 
 
+def _is_public_doc_entry(entry_name: str) -> bool:
+    normalized = entry_name.replace("\\", "/")
+    return f"/{normalized}".find("/XBRL/PublicDoc/") >= 0
+
+
 def _find_public_doc_companion_entry_name(
     *,
     zip_path: Path,
@@ -57,12 +62,12 @@ def _find_public_doc_companion_entry_name(
         expected_name = f"{xbrl_stem}_{suffix}.xml"
         for entry_name in entries:
             normalized = entry_name.replace("\\", "/")
-            if normalized.endswith(f"/{expected_name}") and "/XBRL/PublicDoc/" in normalized:
+            if normalized.endswith(f"/{expected_name}") and _is_public_doc_entry(normalized):
                 return entry_name
 
     for entry_name in entries:
         normalized = entry_name.replace("\\", "/")
-        if normalized.endswith(f"_{suffix}.xml") and "/XBRL/PublicDoc/" in normalized:
+        if normalized.endswith(f"_{suffix}.xml") and _is_public_doc_entry(normalized):
             return entry_name
 
     return None
@@ -229,6 +234,72 @@ def _parse_parent_child_roles(root: etree._Element | None, arc_local_name: str) 
     return concept_roles
 
 
+def _parse_presentation_order(root: etree._Element | None) -> dict[str, dict[str, object]]:
+    if root is None:
+        return {}
+
+    result: dict[str, dict[str, object]] = {}
+    for link_index, link in enumerate(root.xpath(".//*[local-name()='presentationLink']")):
+        role = str(link.get(XLINK_ROLE) or "")
+        concept_by_loc_label: dict[str, str] = {}
+        parent_to_children: dict[str, list[tuple[float, int, str]]] = {}
+        parents: set[str] = set()
+        children: set[str] = set()
+
+        for loc in link.xpath("./*[local-name()='loc']"):
+            loc_label = str(loc.get(XLINK_LABEL) or "")
+            href = str(loc.get(XLINK_HREF) or "")
+            concept_name = _concept_name_from_href(href)
+            if loc_label and concept_name:
+                concept_by_loc_label[loc_label] = concept_name
+
+        for arc_index, arc in enumerate(link.xpath("./*[local-name()='presentationArc']")):
+            parent = concept_by_loc_label.get(str(arc.get(XLINK_FROM) or ""))
+            child = concept_by_loc_label.get(str(arc.get(XLINK_TO) or ""))
+            if not parent or not child:
+                continue
+            order_text = str(arc.get("order") or "")
+            try:
+                order = float(order_text)
+            except ValueError:
+                order = 999999.0
+            parent_to_children.setdefault(parent, []).append((order, arc_index, child))
+            parents.add(parent)
+            children.add(child)
+
+        sequence = 0
+        visited: set[str] = set()
+
+        def remember(concept_name: str, depth: int) -> None:
+            nonlocal sequence
+            sequence += 1
+            rank = (link_index * 1_000_000) + sequence
+            current = result.get(concept_name)
+            if current is None or rank < int(current.get("presentation_sequence") or 0):
+                result[concept_name] = {
+                    "presentation_sequence": rank,
+                    "presentation_depth": depth,
+                    "presentation_order_role": role,
+                }
+
+        def visit(concept_name: str, depth: int) -> None:
+            if concept_name in visited:
+                return
+            visited.add(concept_name)
+            remember(concept_name, depth)
+            for _order, _arc_index, child in sorted(parent_to_children.get(concept_name, [])):
+                visit(child, depth + 1)
+
+        roots = sorted(parents - children)
+        for root_concept in roots:
+            visit(root_concept, 0)
+
+        for parent in sorted(parents):
+            visit(parent, 0)
+
+    return result
+
+
 def _parse_calculation_relationships(root: etree._Element | None) -> dict[str, list[dict[str, object]]]:
     if root is None:
         return {}
@@ -317,7 +388,7 @@ def _load_schema_bytes(
                     normalized = entry.filename.replace("\\", "/")
                     if entry.is_dir():
                         continue
-                    if normalized.endswith(".xsd") and "/XBRL/PublicDoc/" in normalized:
+                    if normalized.endswith(".xsd") and _is_public_doc_entry(normalized):
                         with zf.open(entry.filename) as handle:
                             result.append(handle.read())
         except Exception:
@@ -392,6 +463,7 @@ def _analyze_cached(xbrl_path_text: str, zip_path_text: str) -> dict[str, dict[s
     pre_children, pre_parents = _parse_parent_child(pre_root, "presentationArc")
     cal_children, cal_parents = _parse_parent_child(cal_root, "calculationArc")
     presentation_roles = _parse_parent_child_roles(pre_root, "presentationArc")
+    presentation_orders = _parse_presentation_order(pre_root)
     calculation_roles = _parse_parent_child_roles(cal_root, "calculationArc")
     calculation_relationships = _parse_calculation_relationships(cal_root)
     definition_relationships = _parse_definition_relationships(def_root)
@@ -401,6 +473,7 @@ def _analyze_cached(xbrl_path_text: str, zip_path_text: str) -> dict[str, dict[s
     concept_names.update(labels_by_role.keys())
     concept_names.update(pre_children.keys())
     concept_names.update(pre_parents.keys())
+    concept_names.update(presentation_orders.keys())
     concept_names.update(cal_children.keys())
     concept_names.update(cal_parents.keys())
     concept_names.update(presentation_roles.keys())
@@ -421,6 +494,7 @@ def _analyze_cached(xbrl_path_text: str, zip_path_text: str) -> dict[str, dict[s
             "label": label,
             "labels_by_role": labels_by_role.get(concept_name, {}),
             "presentation_roles": sorted(presentation_roles.get(concept_name, set())),
+            **presentation_orders.get(concept_name, {}),
             "presentation_parent_tags": parent_tags,
             "presentation_parent_labels": parent_labels,
             "presentation_child_count": len(pre_children.get(concept_name, set())),

@@ -2188,16 +2188,17 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
-    _append_growth_rows(
-        out_rows,
-        metric_rows=metric_rows,
-        sample_row=sample_row,
-        source_metric_base="CashAndCashEquivalents",
-        derived_metric_base="CashBalanceGrowthRate",
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        rule_version=rule_version,
-    )
+    if period_scope == "annual":
+        _append_growth_rows(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            source_metric_base="CashAndCashEquivalents",
+            derived_metric_base="CashBalanceGrowthRate",
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
     _append_fixed_period_growth_rows(
         out_rows,
         metric_rows=metric_rows,
@@ -2226,20 +2227,21 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
-    _append_fixed_period_growth_rows(
-        out_rows,
-        metric_rows=metric_rows,
-        sample_row=sample_row,
-        source_metric_base="CashAndCashEquivalents",
-        derived_metric_base_5year="CashBalanceGrowthRate5Year",
-        derived_metric_base_10year="CashBalanceGrowthRate10Year",
-        current_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
-        base_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
-        historical_growth_values=historical_growth_values,
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        rule_version=rule_version,
-    )
+    if period_scope == "annual":
+        _append_fixed_period_growth_rows(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            source_metric_base="CashAndCashEquivalents",
+            derived_metric_base_5year="CashBalanceGrowthRate5Year",
+            derived_metric_base_10year="CashBalanceGrowthRate10Year",
+            current_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
+            base_input_builder=lambda rows, suffix: _single_metric_input(rows, "CashAndCashEquivalents", suffix),
+            historical_growth_values=historical_growth_values,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
     _append_rows_from_inputs(
         out_rows,
         metric_rows=metric_rows,
@@ -2332,33 +2334,35 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
     )
-    _append_growth_rows_from_inputs(
-        out_rows,
-        metric_rows=metric_rows,
-        sample_row=sample_row,
-        derived_metric_base="OutstandingSharesGrowthRate",
-        metric_group="growth",
-        formula_name="outstanding_shares_growth_rate",
-        display_formula="current_outstanding_shares / prior_outstanding_shares * 100",
-        input_builder=_outstanding_shares_input,
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        rule_version=rule_version,
-    )
-    _append_fixed_period_growth_rows(
-        out_rows,
-        metric_rows=metric_rows,
-        sample_row=sample_row,
-        source_metric_base="OutstandingShares",
-        derived_metric_base_5year="OutstandingSharesGrowthRate5Year",
-        derived_metric_base_10year="OutstandingSharesGrowthRate10Year",
-        current_input_builder=_outstanding_shares_input,
-        base_input_builder=_outstanding_shares_input,
-        historical_growth_values=historical_growth_values,
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        rule_version=rule_version,
-    )
+    if period_scope == "annual":
+        _append_growth_rows_from_inputs(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            derived_metric_base="OutstandingSharesGrowthRate",
+            metric_group="growth",
+            formula_name="outstanding_shares_growth_rate",
+            display_formula="current_outstanding_shares / prior_outstanding_shares * 100",
+            input_builder=_outstanding_shares_input,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
+    if period_scope == "annual":
+        _append_fixed_period_growth_rows(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            source_metric_base="OutstandingShares",
+            derived_metric_base_5year="OutstandingSharesGrowthRate5Year",
+            derived_metric_base_10year="OutstandingSharesGrowthRate10Year",
+            current_input_builder=_outstanding_shares_input,
+            base_input_builder=_outstanding_shares_input,
+            historical_growth_values=historical_growth_values,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+        )
 
     _append_outstanding_shares_rows(
         out_rows,
@@ -2400,43 +2404,44 @@ def calculate_derived_metrics(
         require_positive_denominator=True,
         value_unit="yen_per_share",
     )
-    _append_ratio_rows(
-        out_rows,
-        metric_rows=metric_rows,
-        sample_row=sample_row,
-        derived_metric_base="AssetsPerShare",
-        metric_group="share",
-        formula_name="assets_per_share",
-        display_formula="total_assets / outstanding_shares",
-        numerator_builder=lambda metric_rows, suffix: _single_metric("TotalAssets", suffix),
-        denominator_builder=_outstanding_shares_input,
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        rule_version=rule_version,
-        require_positive_denominator=True,
-        value_unit="yen_per_share",
-    )
-    _append_ratio_rows(
-        out_rows,
-        metric_rows=metric_rows,
-        sample_row=sample_row,
-        derived_metric_base="LiabilitiesPerShare",
-        metric_group="share",
-        formula_name="liabilities_per_share",
-        display_formula="(total_assets - net_assets) / outstanding_shares",
-        numerator_builder=lambda metric_rows, suffix: _difference_metric_input(
-            metric_rows,
-            left_metric_base="TotalAssets",
-            right_metric_base="NetAssets",
-            suffix=suffix,
-        ),
-        denominator_builder=_outstanding_shares_input,
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        rule_version=rule_version,
-        require_positive_denominator=True,
-        value_unit="yen_per_share",
-    )
+    if period_scope == "annual":
+        _append_ratio_rows(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            derived_metric_base="AssetsPerShare",
+            metric_group="share",
+            formula_name="assets_per_share",
+            display_formula="total_assets / outstanding_shares",
+            numerator_builder=lambda metric_rows, suffix: _single_metric("TotalAssets", suffix),
+            denominator_builder=_outstanding_shares_input,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+            require_positive_denominator=True,
+            value_unit="yen_per_share",
+        )
+        _append_ratio_rows(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            derived_metric_base="LiabilitiesPerShare",
+            metric_group="share",
+            formula_name="liabilities_per_share",
+            display_formula="(total_assets - net_assets) / outstanding_shares",
+            numerator_builder=lambda metric_rows, suffix: _difference_metric_input(
+                metric_rows,
+                left_metric_base="TotalAssets",
+                right_metric_base="NetAssets",
+                suffix=suffix,
+            ),
+            denominator_builder=_outstanding_shares_input,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+            require_positive_denominator=True,
+            value_unit="yen_per_share",
+        )
     _append_ratio_rows(
         out_rows,
         metric_rows=metric_rows,

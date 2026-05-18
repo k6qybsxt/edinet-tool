@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import sys
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -98,6 +100,25 @@ def _insert_raw_fact(
     )
 
 
+def _insert_geographical_textblock(conn: sqlite3.Connection, value_text: str, period_end: str = "2025-09-30") -> None:
+    conn.execute(
+        """
+        INSERT INTO raw_facts (
+            doc_id, tag_name, tag_qname, context_ref, unit_ref, decimals,
+            period_type, period_start, period_end, instant_date, is_nil,
+            context_dimensions_json, unit_measures_json, value_text
+        ) VALUES (
+            'doc1', 'InformationAboutGeographicalAreasIFRSTextBlock',
+            'jpcrp_cor:InformationAboutGeographicalAreasIFRSTextBlock',
+            'InterimDuration', '', '',
+            'duration', '2025-04-01', ?, NULL, 0,
+            '{}', '{}', ?
+        )
+        """,
+        (period_end, value_text),
+    )
+
+
 class SegmentMetricServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
@@ -163,6 +184,136 @@ class SegmentMetricServiceTest(unittest.TestCase):
         self.assertEqual(profit_row.value_num, 30000000.0)
         excluded_reasons = {candidate.reason for candidate in result.candidates if candidate.status == "excluded"}
         self.assertIn("excluded_adjustment_or_elimination_member", excluded_reasons)
+
+    def test_plural_reportable_segments_member_is_not_total(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:JAPANReportableSegmentsMember",
+            value_text="100000000",
+        )
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:ReportableSegmentsMember",
+            value_text="500000000",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_member = {row.member_qname: row for row in result.rows}
+        self.assertEqual(row_by_member["jpcrp_cor:JAPANReportableSegmentsMember"].segment_kind, "region")
+        self.assertEqual(row_by_member["jpcrp_cor:JAPANReportableSegmentsMember"].segment_name, "日本")
+        self.assertEqual(row_by_member["jpcrp_cor:ReportableSegmentsMember"].segment_kind, "total")
+
+    def test_geographical_area_textblock_matrix_table_extracts_current_region_values(self) -> None:
+        _insert_geographical_textblock(
+            self.conn,
+            """
+            <p>（単位：百万円）</p>
+            <table>
+              <tr><td></td><td>日本</td><td>北米</td><td>連結</td></tr>
+              <tr><td>営業収益</td><td></td><td></td><td></td></tr>
+              <tr><td>外部顧客への営業収益</td><td>10</td><td>20</td><td>30</td></tr>
+              <tr><td>営業利益</td><td>1</td><td>2</td><td>3</td></tr>
+            </table>
+            """,
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_name_base = {(row.segment_name, row.metric_base): row for row in result.rows}
+        self.assertEqual(row_by_name_base[("日本", "NetSales")].segment_kind, "region")
+        self.assertEqual(row_by_name_base[("日本", "NetSales")].value_num, 10_000_000.0)
+        self.assertEqual(row_by_name_base[("北米", "OperatingIncome")].value_num, 2_000_000.0)
+        self.assertEqual(row_by_name_base[("合計", "NetSales")].segment_kind, "total")
+
+    def test_geographical_area_textblock_row_table_extracts_current_sales_column(self) -> None:
+        _insert_geographical_textblock(
+            self.conn,
+            """
+            <table>
+              <tr><td>項目</td><td>2024年度</td><td>2025年度</td></tr>
+              <tr><td>金額（百万円）</td><td>金額（百万円）</td><td>金額（百万円）</td></tr>
+              <tr><td>売上高：</td><td></td><td></td></tr>
+              <tr><td>日本</td><td>10</td><td>11</td></tr>
+              <tr><td>米国</td><td>20</td><td>22</td></tr>
+              <tr><td>その他地域</td><td>5</td><td>6</td></tr>
+            </table>
+            """,
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_name = {row.segment_name: row for row in result.rows if row.metric_base == "NetSales"}
+        self.assertEqual(row_by_name["日本"].value_num, 11_000_000.0)
+        self.assertEqual(row_by_name["米国"].value_num, 22_000_000.0)
+        self.assertEqual(row_by_name["その他地域"].value_num, 6_000_000.0)
+
+    def test_operating_segments_not_included_label_is_other(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname=(
+                "jpcrp_cor:"
+                "OperatingSegmentsNotIncludedInReportableSegmentsAndOtherRevenueGeneratingBusinessActivitiesMember"
+            ),
+            value_text="100000000",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        self.assertEqual(result.rows[0].segment_kind, "business")
+        self.assertEqual(result.rows[0].segment_name, "その他")
+
+    def test_segment_member_label_and_order_come_from_public_doc_linkbase(self) -> None:
+        tmp_dir = Path("tests") / "_tmp_segment_linkbase"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = tmp_dir / "sample.zip"
+        lab_xml = """<?xml version="1.0" encoding="utf-8"?>
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/link">
+    <link:loc xlink:type="locator" xlink:href="sample.xsd#jpcrp030000-asr_E00001-000_PaintBusinessMember" xlink:label="paint" />
+    <link:label xlink:type="resource" xlink:label="label_paint" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="ja">塗料事業</link:label>
+    <link:labelArc xlink:type="arc" xlink:from="paint" xlink:to="label_paint" />
+  </link:labelLink>
+</link:linkbase>
+"""
+        pre_xml = """<?xml version="1.0" encoding="utf-8"?>
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:presentationLink xlink:type="extended" xlink:role="http://example.com/role/Segments">
+    <link:loc xlink:type="locator" xlink:href="sample.xsd#jpcrp_cor_OperatingSegmentsAxis" xlink:label="axis" />
+    <link:loc xlink:type="locator" xlink:href="sample.xsd#jpcrp030000-asr_E00001-000_PaintBusinessMember" xlink:label="paint" />
+    <link:presentationArc xlink:type="arc" xlink:from="axis" xlink:to="paint" order="3" />
+  </link:presentationLink>
+</link:linkbase>
+"""
+        try:
+            with ZipFile(zip_path, "w") as zf:
+                zf.writestr("XBRL/PublicDoc/sample.xbrl", "<xbrli:xbrl/>")
+                zf.writestr("XBRL/PublicDoc/sample_lab.xml", lab_xml)
+                zf.writestr("XBRL/PublicDoc/sample_pre.xml", pre_xml)
+            self.conn.execute("UPDATE filings SET zip_path = ?, xbrl_path = 'sample.xbrl' WHERE doc_id = 'doc1'", (str(zip_path),))
+            _insert_raw_fact(
+                self.conn,
+                tag_name="NetSales",
+                member_qname="jpcrp030000-asr_E00001-000:PaintBusinessMember",
+                value_text="100000000",
+            )
+            self.conn.commit()
+
+            result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        self.assertEqual(result.rows[0].segment_name, "塗料事業")
+        detail = json.loads(result.rows[0].source_detail_json)
+        self.assertIsInstance(detail.get("segment_order"), int)
 
     def test_replace_segment_metrics_is_idempotent(self) -> None:
         _insert_raw_fact(

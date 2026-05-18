@@ -216,6 +216,37 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE segment_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id TEXT NOT NULL,
+            edinet_code TEXT NOT NULL,
+            security_code TEXT,
+            form_type TEXT NOT NULL,
+            period_scope TEXT NOT NULL,
+            quarter_type TEXT,
+            fiscal_year INTEGER,
+            period_start TEXT,
+            period_end TEXT,
+            segment_kind TEXT NOT NULL,
+            segment_name TEXT NOT NULL,
+            axis_qname TEXT,
+            member_qname TEXT,
+            metric_base TEXT NOT NULL,
+            metric_key TEXT NOT NULL,
+            value_kind TEXT NOT NULL,
+            value_num REAL,
+            value_unit TEXT NOT NULL,
+            source_tag TEXT,
+            tag_qname TEXT,
+            context_ref TEXT,
+            decimals TEXT,
+            calc_status TEXT NOT NULL,
+            source_detail_json TEXT,
+            rule_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
 
@@ -446,6 +477,89 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", headers)
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
         self.assertEqual(ws.cell(2, headers.index("\u6c7a\u7b97\u7a2e\u5225") + 1).value, "\u5730\u57df\u5225")
+
+    def test_segment_rows_align_offsets_to_company_latest_period(self) -> None:
+        long_other = (
+            "Operating Segments Not Included In Reportable Segments "
+            "And Other Revenue Generating Business Activities"
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO segment_metrics (
+                doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
+                fiscal_year, period_start, period_end, segment_kind, segment_name,
+                axis_qname, member_qname, metric_base, metric_key, value_kind,
+                value_num, value_unit, source_tag, tag_qname, context_ref, decimals,
+                calc_status, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, 'E00001', '1111', '043A00', 'quarter', '2Q',
+                ?, '2025-04-01', ?, 'business', ?,
+                'axis', 'member', 'NetSales', 'NetSalesCurrent', 'external',
+                ?, 'yen', 'RevenuesFromExternalCustomers', 'tag', 'context', '-6',
+                'ok', '{}', 'test', 'now', 'now'
+            )
+            """,
+            [
+                ("old_segment", 2025, "2024-09-30", long_other, 10_000_000.0),
+                ("current_segment", 2026, "2025-09-30", "\u305d\u306e\u4ed6", 20_000_000.0),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["\u58f2\u4e0a\u9ad8"],
+            period_scopes=["quarter"],
+            period_offsets=[1, 0],
+            segment_mode="business",
+        )
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        segment_row = next(row for row in _detail_rows(rows) if row.segment_kind)
+        self.assertEqual(segment_row.segment_name, "\u305d\u306e\u4ed6")
+        self.assertEqual(segment_row.current_period_end, "2025-09-30")
+        self.assertEqual(segment_row.periods_by_offset[0], "2Q 2025-09-30")
+        self.assertEqual(segment_row.values_by_offset[0], 20.0)
+        self.assertEqual(segment_row.periods_by_offset[1], "2Q 2024-09-30")
+        self.assertEqual(segment_row.values_by_offset[1], 10.0)
+
+    def test_segment_rows_sort_by_linkbase_order(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO segment_metrics (
+                doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
+                fiscal_year, period_start, period_end, segment_kind, segment_name,
+                axis_qname, member_qname, metric_base, metric_key, value_kind,
+                value_num, value_unit, source_tag, tag_qname, context_ref, decimals,
+                calc_status, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, 'E00001', '1111', '043A00', 'quarter', '2Q',
+                2026, '2025-04-01', '2025-09-30', 'business', ?,
+                'axis', ?, 'NetSales', 'NetSalesCurrent', 'external',
+                ?, 'yen', 'RevenuesFromExternalCustomers', 'tag', 'context', '-6',
+                'ok', ?, 'test', 'now', 'now'
+            )
+            """,
+            [
+                ("second_segment", "後順位", "member2", 20_000_000.0, '{"segment_order": 20}'),
+                ("first_segment", "先順位", "member1", 10_000_000.0, '{"segment_order": 10}'),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["売上高"],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+            segment_mode="business",
+        )
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        segment_rows = [row for row in _detail_rows(rows) if row.segment_kind]
+        self.assertEqual([row.segment_name for row in segment_rows], ["先順位", "後順位"])
 
     def test_read_metric_excel_condition_defaults_to_nine_years(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1624,6 +1738,43 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(row.metric_label, "2Q \u58f2\u4e0a\u9ad8 \u5358\u72ec")
         self.assertEqual(row.values_by_offset[0], 120.0)
         self.assertEqual(row.units_by_offset[0], "\u767e\u4e07\u5186")
+
+    def test_quarter_standalone_infers_4q_current_period_end(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            )
+            VALUES ('1111', 'E00001', 2026, ?, ?,
+                    'NetSalesCurrent', 'NetSales', 'sales', ?, 'yen',
+                    'ok', 'fixture', '{}', 'test', 'now', 'now')
+            """,
+            [
+                ("3Q", "2025-12-31", 300_000_000.0),
+                ("4Q", "", None),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["\u58f2\u4e0a\u9ad8"],
+            period_scopes=["quarter_standalone"],
+            period_offsets=[0],
+        )
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        row = next(
+            row
+            for row in _detail_rows(rows)
+            if row.period_scope == "quarter_standalone:4Q" and row.metric_base == "NetSales"
+        )
+        self.assertEqual(row.current_period_end, "2026-03-31")
+        self.assertEqual(row.periods_by_offset[0], "4Q 2026-03-31")
 
     def test_forecast_revision_values_use_font_color_only(self) -> None:
         self.conn.executemany(

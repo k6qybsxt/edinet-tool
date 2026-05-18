@@ -30,7 +30,7 @@ PRE_XML = """<?xml version="1.0" encoding="utf-8"?>
   <link:presentationLink xlink:type="extended" xlink:role="http://example.com/role/StatementOfIncome">
     <link:loc xlink:type="locator" xlink:href="sample.xsd#jpigp_cor_ExpenseIFRS" xlink:label="ExpenseIFRS" />
     <link:loc xlink:type="locator" xlink:href="sample.xsd#jppfs_cor_SellingGeneralAndAdministrativeExpenses" xlink:label="SellingGeneralAndAdministrativeExpenses" />
-    <link:presentationArc xlink:type="arc" xlink:from="ExpenseIFRS" xlink:to="SellingGeneralAndAdministrativeExpenses" />
+    <link:presentationArc xlink:type="arc" xlink:from="ExpenseIFRS" xlink:to="SellingGeneralAndAdministrativeExpenses" order="2" />
   </link:presentationLink>
 </link:linkbase>
 """
@@ -69,6 +69,7 @@ class LinkbaseAnalyzerTest(unittest.TestCase):
             structure["SellingGeneralAndAdministrativeExpenses"]["presentation_parent_labels"],
             ["費用合計"],
         )
+        self.assertIn("presentation_sequence", structure["SellingGeneralAndAdministrativeExpenses"])
 
     def test_analyze_linkbase_structure_reads_public_doc_companions_from_zip(self) -> None:
         tmp_dir = Path("tests") / "_tmp_linkbase_zip"
@@ -97,6 +98,29 @@ class LinkbaseAnalyzerTest(unittest.TestCase):
             structure["SellingGeneralAndAdministrativeExpenses"]["presentation_parent_labels"],
             ["費用合計"],
         )
+        self.assertIn("presentation_sequence", structure["SellingGeneralAndAdministrativeExpenses"])
+
+    def test_analyze_linkbase_structure_reads_root_public_doc_entries_from_zip(self) -> None:
+        tmp_dir = Path("tests") / "_tmp_linkbase_zip_root"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = tmp_dir / "sample.zip"
+        try:
+            with ZipFile(zip_path, "w") as zf:
+                zf.writestr("XBRL/PublicDoc/sample.xbrl", "<xbrli:xbrl/>")
+                zf.writestr("XBRL/PublicDoc/sample_lab.xml", LAB_XML)
+                zf.writestr("XBRL/PublicDoc/sample_pre.xml", PRE_XML)
+                zf.writestr("XBRL/PublicDoc/sample_cal.xml", CAL_XML)
+
+            structure = analyze_linkbase_structure(
+                xbrl_path="sample.xbrl",
+                zip_path=str(zip_path),
+            )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        self.assertEqual(structure["ExpenseIFRS"]["label"], "費用合計")
+        self.assertIn("presentation_sequence", structure["SellingGeneralAndAdministrativeExpenses"])
 
 
 if __name__ == "__main__":

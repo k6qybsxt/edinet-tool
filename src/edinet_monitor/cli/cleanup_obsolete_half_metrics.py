@@ -9,16 +9,20 @@ from edinet_monitor.db.schema import get_connection
 
 
 OBSOLETE_HALF_METRIC_KEYS = [
+    "CashBalanceGrowthRateCurrent",
     "NetSalesGrowthRate5YearCurrent",
     "NetSalesGrowthRate10YearCurrent",
     "OrdinaryIncomeGrowthRate5YearCurrent",
     "OrdinaryIncomeGrowthRate10YearCurrent",
     "CashBalanceGrowthRate5YearCurrent",
     "CashBalanceGrowthRate10YearCurrent",
+    "OutstandingSharesGrowthRateCurrent",
     "OutstandingSharesGrowthRate5YearCurrent",
     "OutstandingSharesGrowthRate10YearCurrent",
     "TheoreticalSharePriceGrowthRate5YearCurrent",
     "TheoreticalSharePriceGrowthRate10YearCurrent",
+    "AssetsPerShareCurrent",
+    "LiabilitiesPerShareCurrent",
 ]
 
 

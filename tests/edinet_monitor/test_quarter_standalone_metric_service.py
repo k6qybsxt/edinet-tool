@@ -205,6 +205,9 @@ def _insert_jquants_metric(
     quarter_type: str,
     period_end: str,
     value: float,
+    metric_base: str = "NetSales",
+    metric_group: str = "sales",
+    source_field: str = "Sales",
 ) -> None:
     conn.execute(
         """
@@ -218,10 +221,22 @@ def _insert_jquants_metric(
         VALUES (?, '7203', '7203', 'E00001', 'actual',
                 'quarter', ?, ?, NULL, NULL,
                 ?, NULL, ?, ?, '15:00',
-                'NetSalesCurrent', 'NetSales', 'sales', ?, 'yen', 'ok',
-                'Sales', 'test', 'now', 'now')
+                ?, ?, ?, ?, 'yen', 'ok',
+                ?, 'test', 'now', 'now')
         """,
-        (disclosure_number, f"actual:{quarter_type}", quarter_type, fiscal_year, period_end, period_end, value),
+        (
+            disclosure_number,
+            f"actual:{quarter_type}",
+            quarter_type,
+            fiscal_year,
+            period_end,
+            period_end,
+            f"{metric_base}Current",
+            metric_base,
+            metric_group,
+            value,
+            source_field,
+        ),
     )
 
 
@@ -293,6 +308,48 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         self.assertEqual(rows[(2026, "4Q", "NetSales")].value_num, 130)
         self.assertAlmostEqual(rows[(2026, "2Q", "NetSalesGrowthRate")].value_num or 0, 1.2)
         self.assertTrue(result.output_path.exists())
+
+    def test_uses_jquants_2q_and_derives_fcf_cumulative(self) -> None:
+        for quarter, period_end, operating_cash, investment_cash in [
+            ("1Q", "2025-06-30", 100.0, -20.0),
+            ("2Q", "2025-09-30", 180.0, -50.0),
+            ("3Q", "2025-12-31", 240.0, -70.0),
+        ]:
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2026{quarter}cfo",
+                fiscal_year=2026,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=operating_cash,
+                metric_base="OperatingCash",
+                metric_group="cashflow",
+                source_field="CFO",
+            )
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2026{quarter}cfi",
+                fiscal_year=2026,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=investment_cash,
+                metric_base="InvestmentCash",
+                metric_group="cashflow",
+                source_field="CFI",
+            )
+
+        result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
+
+        rows = {
+            (row.fiscal_year, row.quarter_type, row.metric_base): row
+            for row in result.rows
+            if row.metric_base in {"OperatingCash", "InvestmentCash", "FCF"}
+        }
+        self.assertEqual(rows[(2026, "2Q", "OperatingCash")].value_num, 80.0)
+        self.assertEqual(rows[(2026, "2Q", "InvestmentCash")].value_num, -30.0)
+        self.assertEqual(rows[(2026, "1Q", "FCF")].value_num, 80.0)
+        self.assertEqual(rows[(2026, "2Q", "FCF")].value_num, 50.0)
+        self.assertEqual(rows[(2026, "3Q", "FCF")].value_num, 40.0)
 
     def test_apply_is_idempotent(self) -> None:
         _insert_jquants_metric(

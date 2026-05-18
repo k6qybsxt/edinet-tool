@@ -35,6 +35,10 @@ GROWTH_BASE_BY_FLOW_BASE = {
     "FinancingCash": "FinancingCashGrowthRate",
     "FCF": "FCFGrowthRate",
 }
+SUPPRESSED_GROWTH_BASES_BY_QUARTER = {
+    "1Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+    "3Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+}
 
 
 def _chunked(items: list[str], size: int = 500) -> list[list[str]]:
@@ -270,7 +274,7 @@ def _fetch_jquants_cumulative_values(
     where = [
         f"(security_code IN ({placeholders}) OR local_code IN ({placeholders}))",
         "period_scope = 'quarter'",
-        "period_key IN ('actual:1Q', 'actual:3Q')",
+        "period_key IN ('actual:1Q', 'actual:2Q', 'actual:3Q')",
         f"metric_base IN ({base_placeholders})",
     ]
     params: list[Any] = [*security_codes, *security_codes, *FLOW_BASES]
@@ -308,7 +312,7 @@ def _fetch_jquants_cumulative_values(
             continue
         security_code = _normalize_security_code(row["security_code"] or row["local_code"])
         quarter_type = str(row["quarter_type"] or "")
-        if quarter_type not in {"1Q", "3Q"}:
+        if quarter_type not in {"1Q", "2Q", "3Q"}:
             continue
         _add_value(
             cumulative,
@@ -471,9 +475,27 @@ def _merge_cumulative_sources(*sources: dict[tuple[str, int, str], dict[str, Any
     return merged
 
 
+def _derive_cumulative_values(cumulative: dict[tuple[str, int, str], dict[str, Any]]) -> None:
+    for item in cumulative.values():
+        values = item.get("values", {})
+        sources = item.get("sources", {})
+        if "FCF" not in values:
+            operating_cash = _to_float(values.get("OperatingCash"))
+            investment_cash = _to_float(values.get("InvestmentCash"))
+            if operating_cash is not None and investment_cash is not None:
+                values["FCF"] = operating_cash + investment_cash
+                sources["FCF"] = "derived:OperatingCash+InvestmentCash"
+        if "EstimatedNetIncome" not in values:
+            ordinary_income = _to_float(values.get("OrdinaryIncome"))
+            if ordinary_income is not None:
+                values["EstimatedNetIncome"] = ordinary_income * 0.7
+                sources["EstimatedNetIncome"] = "derived:OrdinaryIncome*0.7"
+
+
 def _build_rows_from_cumulative(
     cumulative: dict[tuple[str, int, str], dict[str, Any]],
 ) -> list[QuarterStandaloneMetricRow]:
+    _derive_cumulative_values(cumulative)
     rows: list[QuarterStandaloneMetricRow] = []
     standalone_values: dict[tuple[str, int, str, str], float | None] = {}
     scope_keys = sorted({(code, fiscal_year) for code, fiscal_year, _quarter in cumulative})
@@ -553,6 +575,8 @@ def _build_rows_from_cumulative(
         for base in bases_for_scope:
             growth_base = GROWTH_BASE_BY_FLOW_BASE[base]
             for quarter_type in QUARTER_TYPES:
+                if growth_base in SUPPRESSED_GROWTH_BASES_BY_QUARTER.get(quarter_type, set()):
+                    continue
                 current = standalone_values.get((security_code, fiscal_year, quarter_type, base))
                 prior = standalone_values.get((security_code, fiscal_year - 1, quarter_type, base))
                 if current is None or prior is None or prior <= 0:
@@ -590,8 +614,24 @@ def _build_rows_from_cumulative(
     return rows
 
 
+def _delete_obsolete_quarter_standalone_rows(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        DELETE FROM quarter_standalone_metrics
+        WHERE quarter_type IN ('1Q', '3Q')
+          AND metric_base IN (
+            'OperatingCashGrowthRate',
+            'InvestmentCashGrowthRate',
+            'FinancingCashGrowthRate',
+            'FCFGrowthRate'
+          )
+        """
+    )
+
+
 def _save_rows(conn: sqlite3.Connection, rows: list[QuarterStandaloneMetricRow]) -> int:
     now = datetime.now().isoformat(timespec="seconds")
+    _delete_obsolete_quarter_standalone_rows(conn)
     conn.executemany(
         """
         INSERT INTO quarter_standalone_metrics (
