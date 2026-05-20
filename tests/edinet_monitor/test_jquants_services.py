@@ -25,6 +25,9 @@ from edinet_monitor.services.jquants.raw_json_store import (  # noqa: E402
     fins_summary_raw_path,
     write_fins_summary_raw_jsonl,
 )
+from edinet_monitor.services.jquants.raw_rebuild_service import (  # noqa: E402
+    rebuild_jquants_financial_metrics_from_raw,
+)
 from edinet_monitor.services.jquants.repository import (  # noqa: E402
     record_ingest_progress,
     upsert_financial_metrics,
@@ -378,6 +381,107 @@ class JQuantsServicesTest(unittest.TestCase):
 
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM jquants_financial_metrics").fetchone()[0], len(metrics))
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM jquants_daily_quotes").fetchone()[0], 1)
+        conn.close()
+
+    def test_rebuild_metrics_from_raw_adds_forecast_operating_income(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE issuer_master (
+                edinet_code TEXT PRIMARY KEY,
+                security_code TEXT
+            );
+            INSERT INTO issuer_master VALUES ('E00001', '11110');
+            CREATE TABLE jquants_statement_raw (
+                disclosure_number TEXT PRIMARY KEY,
+                disclosed_date TEXT,
+                local_code TEXT,
+                security_code TEXT,
+                type_of_current_period TEXT,
+                raw_json TEXT
+            );
+            CREATE TABLE jquants_financial_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                disclosure_number TEXT NOT NULL,
+                local_code TEXT NOT NULL,
+                security_code TEXT,
+                edinet_code TEXT,
+                metric_kind TEXT NOT NULL,
+                period_scope TEXT NOT NULL,
+                period_key TEXT NOT NULL,
+                quarter_type TEXT,
+                forecast_target TEXT,
+                forecast_stage TEXT,
+                fiscal_year INTEGER,
+                period_start TEXT,
+                period_end TEXT,
+                disclosed_date TEXT,
+                disclosed_time TEXT,
+                metric_key TEXT NOT NULL,
+                metric_base TEXT NOT NULL,
+                metric_group TEXT NOT NULL,
+                value_num REAL,
+                value_unit TEXT NOT NULL,
+                calc_status TEXT NOT NULL,
+                source_field TEXT NOT NULL,
+                source_detail_json TEXT,
+                rule_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX uq_jquants_financial_metrics_scope
+            ON jquants_financial_metrics(disclosure_number, period_key, metric_key);
+            """
+        )
+        row = _statement_row("3Q")
+        conn.execute(
+            """
+            INSERT INTO jquants_statement_raw (
+                disclosure_number, disclosed_date, local_code, security_code,
+                type_of_current_period, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["DiscNo"],
+                row["DiscDate"],
+                row["Code"],
+                "1111",
+                row["CurPerType"],
+                json.dumps(row, ensure_ascii=False),
+            ),
+        )
+
+        dry_run = rebuild_jquants_financial_metrics_from_raw(
+            conn,
+            date_from="2026-05-01",
+            date_to="2026-05-31",
+            periods={"3Q"},
+            apply=False,
+        )
+        self.assertGreater(dry_run.metrics_built, 0)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM jquants_financial_metrics").fetchone()[0], 0)
+
+        result = rebuild_jquants_financial_metrics_from_raw(
+            conn,
+            date_from="2026-05-01",
+            date_to="2026-05-31",
+            periods={"3Q"},
+            apply=True,
+        )
+
+        metric = conn.execute(
+            """
+            SELECT value_num, source_field
+            FROM jquants_financial_metrics
+            WHERE metric_kind = 'forecast'
+              AND forecast_stage = '3Q'
+              AND metric_base = 'OperatingIncome'
+            """
+        ).fetchone()
+        self.assertEqual(result.raw_rows, 1)
+        self.assertEqual(metric["value_num"], 50000000.0)
+        self.assertEqual(metric["source_field"], "FOP")
         conn.close()
 
 

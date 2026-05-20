@@ -171,6 +171,8 @@ def _insert_edinet_metric(
     form_type: str,
     period_end: str,
     value: float,
+    metric_base: str = "NetSales",
+    metric_group: str = "sales",
 ) -> None:
     conn.execute(
         """
@@ -189,11 +191,20 @@ def _insert_edinet_metric(
             fiscal_year, period_end, period_scope, value_num, value_unit, calc_status,
             formula_name, rule_version, created_at, updated_at
         )
-        VALUES (?, 'E00001', '7203', 'NetSalesCurrent', 'NetSales', 'sales',
+        VALUES (?, 'E00001', '7203', ?, ?, ?,
                 CAST(substr(?, 1, 4) AS INTEGER), ?, ?, ?, 'yen', 'ok',
                 'fixture', 'test', 'now', 'now')
         """,
-        (doc_id, period_end, period_end, "annual" if form_type == "030000" else "quarter", value),
+        (
+            doc_id,
+            f"{metric_base}Current",
+            metric_base,
+            metric_group,
+            period_end,
+            period_end,
+            "annual" if form_type == "030000" else "quarter",
+            value,
+        ),
     )
 
 
@@ -309,7 +320,7 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         self.assertAlmostEqual(rows[(2026, "2Q", "NetSalesGrowthRate")].value_num or 0, 1.2)
         self.assertTrue(result.output_path.exists())
 
-    def test_uses_jquants_2q_and_derives_fcf_cumulative(self) -> None:
+    def test_suppresses_1q_to_3q_cashflow_standalone_rows(self) -> None:
         for quarter, period_end, operating_cash, investment_cash in [
             ("1Q", "2025-06-30", 100.0, -20.0),
             ("2Q", "2025-09-30", 180.0, -50.0),
@@ -337,6 +348,24 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
                 metric_group="cashflow",
                 source_field="CFI",
             )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2026cfo",
+            form_type="030000",
+            period_end="2026-03-31",
+            value=400.0,
+            metric_base="OperatingCash",
+            metric_group="cashflow",
+        )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2026cfi",
+            form_type="030000",
+            period_end="2026-03-31",
+            value=-150.0,
+            metric_base="InvestmentCash",
+            metric_group="cashflow",
+        )
 
         result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
 
@@ -345,11 +374,18 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
             for row in result.rows
             if row.metric_base in {"OperatingCash", "InvestmentCash", "FCF"}
         }
-        self.assertEqual(rows[(2026, "2Q", "OperatingCash")].value_num, 80.0)
-        self.assertEqual(rows[(2026, "2Q", "InvestmentCash")].value_num, -30.0)
-        self.assertEqual(rows[(2026, "1Q", "FCF")].value_num, 80.0)
-        self.assertEqual(rows[(2026, "2Q", "FCF")].value_num, 50.0)
-        self.assertEqual(rows[(2026, "3Q", "FCF")].value_num, 40.0)
+        self.assertNotIn((2026, "1Q", "OperatingCash"), rows)
+        self.assertNotIn((2026, "2Q", "OperatingCash"), rows)
+        self.assertNotIn((2026, "3Q", "OperatingCash"), rows)
+        self.assertNotIn((2026, "4Q", "OperatingCash"), rows)
+        self.assertNotIn((2026, "1Q", "InvestmentCash"), rows)
+        self.assertNotIn((2026, "2Q", "InvestmentCash"), rows)
+        self.assertNotIn((2026, "3Q", "InvestmentCash"), rows)
+        self.assertNotIn((2026, "4Q", "InvestmentCash"), rows)
+        self.assertNotIn((2026, "1Q", "FCF"), rows)
+        self.assertNotIn((2026, "2Q", "FCF"), rows)
+        self.assertNotIn((2026, "3Q", "FCF"), rows)
+        self.assertNotIn((2026, "4Q", "FCF"), rows)
 
     def test_apply_is_idempotent(self) -> None:
         _insert_jquants_metric(

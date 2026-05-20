@@ -37,7 +37,15 @@ GROWTH_BASE_BY_FLOW_BASE = {
 }
 SUPPRESSED_GROWTH_BASES_BY_QUARTER = {
     "1Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+    "2Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
     "3Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+    "4Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+}
+SUPPRESSED_FLOW_BASES_BY_QUARTER = {
+    "1Q": {"OperatingCash", "InvestmentCash", "FinancingCash", "FCF"},
+    "2Q": {"OperatingCash", "InvestmentCash", "FinancingCash", "FCF"},
+    "3Q": {"OperatingCash", "InvestmentCash", "FinancingCash", "FCF"},
+    "4Q": {"OperatingCash", "InvestmentCash", "FinancingCash", "FCF"},
 }
 
 
@@ -512,6 +520,8 @@ def _build_rows_from_cumulative(
             previous_cumulative: float | None = None
             previous_quarter: str | None = None
             for quarter_type in QUARTER_TYPES:
+                if base in SUPPRESSED_FLOW_BASES_BY_QUARTER.get(quarter_type, set()):
+                    continue
                 item = cumulative.get((security_code, fiscal_year, quarter_type))
                 cumulative_value = (
                     _to_float(item["values"].get(base))
@@ -618,8 +628,12 @@ def _delete_obsolete_quarter_standalone_rows(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         DELETE FROM quarter_standalone_metrics
-        WHERE quarter_type IN ('1Q', '3Q')
+        WHERE quarter_type IN ('1Q', '2Q', '3Q', '4Q')
           AND metric_base IN (
+            'OperatingCash',
+            'InvestmentCash',
+            'FinancingCash',
+            'FCF',
             'OperatingCashGrowthRate',
             'InvestmentCashGrowthRate',
             'FinancingCashGrowthRate',

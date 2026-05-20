@@ -177,6 +177,10 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertIsNone(by_key["BPSGrowthRate10YearCurrent"]["value_num"])
         self.assertAlmostEqual(by_key["OutstandingSharesGrowthRateCurrent"]["value_num"], 950_000 / 948_000)
         self.assertAlmostEqual(by_key["OutstandingSharesGrowthRate5YearCurrent"]["value_num"], 950_000 / 920_000)
+        self.assertAlmostEqual(by_key["OperatingCashGrowthRateCurrent"]["value_num"], 90_000 / 80_000)
+        self.assertAlmostEqual(by_key["InvestmentCashGrowthRateCurrent"]["value_num"], -20_000 / -18_000)
+        self.assertAlmostEqual(by_key["FinancingCashGrowthRateCurrent"]["value_num"], -10_000 / -8_000)
+        self.assertAlmostEqual(by_key["FCFGrowthRateCurrent"]["value_num"], 70_000 / 62_000)
         self.assertAlmostEqual(by_key["BPSCurrent"]["value_num"], 1_000_000 / 950_000)
         self.assertAlmostEqual(by_key["AssetsPerShareCurrent"]["value_num"], 2_000_000 / 950_000)
         self.assertAlmostEqual(

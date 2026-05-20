@@ -1827,8 +1827,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         }
         up_color = value_cells_by_label["1Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb
         down_color = value_cells_by_label["2Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb
-        self.assertTrue(str(up_color).endswith("C00000"))
-        self.assertTrue(str(down_color).endswith("1F4E79"))
+        self.assertTrue(str(up_color).endswith("FF0000"))
+        self.assertTrue(str(down_color).endswith("00B0F0"))
 
 
 if __name__ == "__main__":

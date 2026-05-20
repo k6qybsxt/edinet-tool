@@ -100,6 +100,30 @@ def _insert_raw_fact(
     )
 
 
+def _insert_raw_fact_context_ref(
+    conn: sqlite3.Connection,
+    *,
+    tag_name: str,
+    context_ref: str,
+    value_text: str,
+    period_end: str = "2025-09-30",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO raw_facts (
+            doc_id, tag_name, tag_qname, context_ref, unit_ref, decimals,
+            period_type, period_start, period_end, instant_date, is_nil,
+            context_dimensions_json, unit_measures_json, value_text
+        ) VALUES (
+            'doc1', ?, ?, ?, 'JPY', '-6',
+            'duration', '2025-04-01', ?, NULL, 0,
+            NULL, '{}', ?
+        )
+        """,
+        (tag_name, f"jpcrp_cor:{tag_name}", context_ref, period_end, value_text),
+    )
+
+
 def _insert_geographical_textblock(conn: sqlite3.Connection, value_text: str, period_end: str = "2025-09-30") -> None:
     conn.execute(
         """
@@ -206,6 +230,46 @@ class SegmentMetricServiceTest(unittest.TestCase):
         self.assertEqual(row_by_member["jpcrp_cor:JAPANReportableSegmentsMember"].segment_kind, "region")
         self.assertEqual(row_by_member["jpcrp_cor:JAPANReportableSegmentsMember"].segment_name, "日本")
         self.assertEqual(row_by_member["jpcrp_cor:ReportableSegmentsMember"].segment_kind, "total")
+
+    def test_context_ref_segment_member_is_used_when_dimensions_are_missing(self) -> None:
+        _insert_raw_fact_context_ref(
+            self.conn,
+            tag_name="NetSales",
+            context_ref="InterimDuration_jpcrp040300-ssr_E00893-000JAPANReportableSegmentsMember",
+            value_text="100000000",
+        )
+        _insert_raw_fact_context_ref(
+            self.conn,
+            tag_name="OrdinaryIncome",
+            context_ref="InterimDuration_jpcrp040300-ssr_E00893-000JAPANReportableSegmentsMember",
+            value_text="30000000",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_base = {row.metric_base: row for row in result.rows}
+        self.assertEqual(row_by_base["NetSales"].segment_kind, "region")
+        self.assertEqual(row_by_base["NetSales"].value_num, 100000000.0)
+        self.assertEqual(row_by_base["SegmentProfit"].value_num, 30000000.0)
+        self.assertEqual(row_by_base["SegmentProfit"].source_tag, "OrdinaryIncome")
+
+    def test_operating_income_fills_segment_profit_when_segment_profit_is_absent(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="OperatingIncome",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="30000000",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_base = {row.metric_base: row for row in result.rows}
+        self.assertEqual(row_by_base["OperatingIncome"].value_num, 30000000.0)
+        self.assertEqual(row_by_base["SegmentProfit"].value_num, 30000000.0)
+        detail = json.loads(row_by_base["SegmentProfit"].source_detail_json)
+        self.assertEqual(detail["source"], "operating_income_segment_profit_fallback")
 
     def test_geographical_area_textblock_matrix_table_extracts_current_region_values(self) -> None:
         _insert_geographical_textblock(

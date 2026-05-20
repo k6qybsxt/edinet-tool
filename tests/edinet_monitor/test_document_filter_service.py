@@ -70,8 +70,19 @@ class DocumentFilterServiceTest(unittest.TestCase):
 
         self.assertEqual([str(row["docID"]) for row in filtered], ["S100H001"])
 
-    def test_normalize_form_codes_accepts_half_friendly_alias(self) -> None:
-        self.assertEqual(normalize_form_codes("043000"), ("043A00",))
+    def test_filter_target_filings_accepts_requested_pre_reform_second_quarter_form_code(self) -> None:
+        rows = [
+            build_document_row(docID="S100A001", formCode="030000"),
+            build_document_row(docID="S100Q201", formCode="043000", docTypeCode="140"),
+            build_document_row(docID="S100Q2X1", formCode="043000", docTypeCode="160"),
+        ]
+
+        filtered = filter_target_filings(rows, form_codes=("043000",))
+
+        self.assertEqual([str(row["docID"]) for row in filtered], ["S100Q201"])
+
+    def test_normalize_form_codes_keeps_pre_reform_second_quarter_code(self) -> None:
+        self.assertEqual(normalize_form_codes("043000"), ("043000",))
 
 
 if __name__ == "__main__":

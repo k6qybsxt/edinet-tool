@@ -6,16 +6,16 @@ from typing import Any
 from edinet_monitor.config.settings import TARGET_FORM_CODES
 
 
-FORM_CODE_ALIASES = {
-    # The EDINET API uses 043A00 for 半期報告書. Keep 043000 as a friendly
-    # operator alias because it is easy to confuse with the XBRL jpcrp040300.
-    "043000": "043A00",
-}
+FORM_CODE_ALIASES: dict[str, str] = {}
 
-HALF_REPORT_FORM_CODES = {"043A00"}
+# These functions are also used by the existing "2Q" processing path.
+# 043A00 is the post-reform half-year report; 043000 is the pre-reform
+# second-quarter report.
+HALF_REPORT_FORM_CODES = {"043A00", "043000"}
 DOC_TYPE_CODES_BY_FORM_CODE = {
-    "030000": {"120"},  # 有価証券報告書
-    "043A00": {"160"},  # 半期報告書
+    "030000": {"120"},  # annual securities report
+    "043A00": {"160"},  # half-year report
+    "043000": {"140"},  # pre-reform second-quarter report
 }
 
 

@@ -93,6 +93,7 @@ PROFIT_LOSS_TAGS = {
     "ProfitLossAttributableToOwnersOfParentIFRS",
 }
 SEGMENT_PROFIT_TAGS = {
+    "OrdinaryIncome",
     "SegmentProfit",
     "SegmentProfitLoss",
     "SegmentProfitLossIFRS",
@@ -322,7 +323,28 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker.lower() in text.lower() for marker in markers)
 
 
-def _segment_axis_member(dimensions_json: Any) -> tuple[str, str] | None:
+def _segment_member_from_context_ref(context_ref: Any) -> str | None:
+    text = str(context_ref or "")
+    if not text:
+        return None
+    markers = (
+        "ReportableSegmentsMember",
+        "ReportableSegmentMember",
+        "OperatingSegmentMember",
+        "OperatingSegmentsNotIncludedInReportableSegmentsAndOtherRevenueGeneratingBusinessActivitiesMember",
+        "TotalOfReportableSegmentsAndOthersMember",
+        "TotalOfReportableSegmentsMember",
+        "ReconcilingItemsMember",
+    )
+    if not any(marker in text for marker in markers):
+        return None
+    for part in text.split("_")[1:]:
+        if any(marker in part for marker in markers):
+            return part
+    return None
+
+
+def _segment_axis_member(dimensions_json: Any, context_ref: Any = None) -> tuple[str, str] | None:
     dimensions = _safe_json(dimensions_json)
     axis_members = dimensions.get("axis_members") or {}
     if isinstance(axis_members, dict):
@@ -342,6 +364,9 @@ def _segment_axis_member(dimensions_json: Any) -> tuple[str, str] | None:
             member_text = str(item.get("member") or "")
             if _contains_any(axis_text, SEGMENT_AXIS_MARKERS) or _contains_any(member_text, SEGMENT_AXIS_MARKERS):
                 return axis_text, member_text
+    fallback_member = _segment_member_from_context_ref(context_ref)
+    if fallback_member:
+        return "context_ref:OperatingSegmentsAxis", fallback_member
     return None
 
 
@@ -775,6 +800,8 @@ def _fetch_raw_facts(conn: sqlite3.Connection, doc_ids: list[str]) -> list[sqlit
     if not doc_ids:
         return []
     rows: list[sqlite3.Row] = []
+    metric_tags = sorted(METRIC_INFO_BY_TAG)
+    metric_placeholders = ",".join("?" for _ in metric_tags)
     for chunk in _chunked(doc_ids):
         placeholders = ",".join("?" for _ in chunk)
         rows.extend(
@@ -797,9 +824,27 @@ def _fetch_raw_facts(conn: sqlite3.Connection, doc_ids: list[str]) -> list[sqlit
                   value_text
                 FROM raw_facts
                 WHERE doc_id IN ({placeholders})
-                  AND coalesce(context_dimensions_json, '') <> ''
+                  AND (
+                    coalesce(context_dimensions_json, '') <> ''
+                    OR (
+                      tag_name IN ({metric_placeholders})
+                      AND (
+                        context_ref LIKE '%ReportableSegmentsMember%'
+                        OR context_ref LIKE '%ReportableSegmentMember%'
+                        OR context_ref LIKE '%OperatingSegmentMember%'
+                        OR context_ref LIKE '%OperatingSegmentsNotIncludedInReportableSegmentsAndOtherRevenueGeneratingBusinessActivitiesMember%'
+                        OR context_ref LIKE '%TotalOfReportableSegmentsAndOthersMember%'
+                        OR context_ref LIKE '%TotalOfReportableSegmentsMember%'
+                        OR context_ref LIKE '%ReconcilingItemsMember%'
+                      )
+                    )
+                    OR tag_name IN (
+                      'InformationAboutGeographicalAreasIFRSTextBlock',
+                      'InformationAboutGeographicalAreasTextBlock'
+                    )
+                  )
                 """,
-                chunk,
+                [*chunk, *metric_tags],
             ).fetchall()
         )
     return rows
@@ -864,7 +909,7 @@ def build_segment_metric_rows(
             continue
         tag_name = str(raw["tag_name"] or "")
         info = _metric_info(tag_name)
-        axis_member = _segment_axis_member(raw["context_dimensions_json"])
+        axis_member = _segment_axis_member(raw["context_dimensions_json"], raw["context_ref"])
         value_num = _to_float(raw["value_text"])
         company_name = str(filing["company_name"] or "")
         security_code = _normalize_security_code(filing["security_code"] or "")
@@ -1159,7 +1204,7 @@ def build_segment_metric_rows(
                 )
             )
 
-    rows = [item[2] for item in selected.values()]
+    rows = _add_segment_profit_fallback_rows([item[2] for item in selected.values()])
     rows.sort(
         key=lambda row: (
             row.security_code,
@@ -1176,6 +1221,66 @@ def build_segment_metric_rows(
     if filings and not rows:
         warnings.append("segment_candidates_not_found")
     return SegmentMetricBuildResult(rows=rows, candidates=candidates, warnings=warnings)
+
+
+def _add_segment_profit_fallback_rows(rows: list[SegmentMetricRow]) -> list[SegmentMetricRow]:
+    existing_segment_profit_keys = {
+        (
+            row.doc_id,
+            row.segment_kind,
+            row.member_qname,
+            row.period_start,
+            row.period_end,
+        )
+        for row in rows
+        if row.metric_base == "SegmentProfit"
+    }
+    fallback_rows: list[SegmentMetricRow] = []
+    for row in rows:
+        if row.metric_base != "OperatingIncome":
+            continue
+        key = (
+            row.doc_id,
+            row.segment_kind,
+            row.member_qname,
+            row.period_start,
+            row.period_end,
+        )
+        if key in existing_segment_profit_keys:
+            continue
+        detail = _safe_json(row.source_detail_json)
+        detail["source"] = "operating_income_segment_profit_fallback"
+        detail["fallback_from_metric_base"] = row.metric_base
+        fallback_rows.append(
+            SegmentMetricRow(
+                doc_id=row.doc_id,
+                edinet_code=row.edinet_code,
+                security_code=row.security_code,
+                form_type=row.form_type,
+                period_scope=row.period_scope,
+                quarter_type=row.quarter_type,
+                fiscal_year=row.fiscal_year,
+                period_start=row.period_start,
+                period_end=row.period_end,
+                segment_kind=row.segment_kind,
+                segment_name=row.segment_name,
+                axis_qname=row.axis_qname,
+                member_qname=row.member_qname,
+                metric_base="SegmentProfit",
+                metric_key="SegmentProfitCurrent",
+                value_kind="segment_profit",
+                value_num=row.value_num,
+                value_unit=row.value_unit,
+                source_tag=row.source_tag,
+                tag_qname=row.tag_qname,
+                context_ref=row.context_ref,
+                decimals=row.decimals,
+                calc_status=row.calc_status,
+                source_detail_json=json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                rule_version=row.rule_version,
+            )
+        )
+    return [*rows, *fallback_rows]
 
 
 def replace_segment_metrics(

@@ -54,6 +54,10 @@ MONITOR_DB_ROOT = _path_from_env(
     r"E:\EDINET_Data\edinet_monitor\db",
 )
 DB_PATH = MONITOR_DB_ROOT / "edinet_monitor.db"
+DB_BACKUP_ROOT = _path_from_env(
+    "EDINET_MONITOR_DB_BACKUP_ROOT",
+    r"D:\EDINET_Backup",
+)
 
 MONITOR_STORAGE_ROOT = _path_from_env(
     "EDINET_MONITOR_STORAGE_ROOT",

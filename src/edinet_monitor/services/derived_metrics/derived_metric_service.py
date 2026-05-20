@@ -870,6 +870,7 @@ def _append_growth_rows(
     accounting_standard: str,
     document_display_unit: str,
     rule_version: str,
+    require_positive_denominator: bool = True,
 ) -> None:
     for current_suffix in GROWTH_SUFFIXES:
         current_offset = SUFFIX_TO_PERIOD_OFFSET[current_suffix]
@@ -881,7 +882,7 @@ def _append_growth_rows(
         value_num, calc_status = _ratio_status(
             numerator=current_value,
             denominator=prior_value,
-            require_positive_denominator=True,
+            require_positive_denominator=require_positive_denominator,
         )
         reference_row = _pick_reference_row(metric_rows, [current_key, prior_key, sample_row["metric_key"]])
 
@@ -2199,6 +2200,36 @@ def calculate_derived_metrics(
             document_display_unit=document_display_unit,
             rule_version=rule_version,
         )
+    for source_metric_base, derived_metric_base in [
+        ("OperatingCash", "OperatingCashGrowthRate"),
+        ("InvestmentCash", "InvestmentCashGrowthRate"),
+        ("FinancingCash", "FinancingCashGrowthRate"),
+    ]:
+        _append_growth_rows(
+            out_rows,
+            metric_rows=metric_rows,
+            sample_row=sample_row,
+            source_metric_base=source_metric_base,
+            derived_metric_base=derived_metric_base,
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            rule_version=rule_version,
+            require_positive_denominator=False,
+        )
+    _append_growth_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="FCFGrowthRate",
+        metric_group="growth",
+        formula_name="fcf_growth_rate",
+        display_formula="current_fcf / prior_fcf * 100",
+        input_builder=_fcf_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+        require_positive_denominator=False,
+    )
     _append_fixed_period_growth_rows(
         out_rows,
         metric_rows=metric_rows,

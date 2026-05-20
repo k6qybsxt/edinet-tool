@@ -99,14 +99,16 @@ ABSORBED_RATIO_BASES = set(ROW_BASE_BY_RATIO_BASE)
 PERIOD_SCOPE_BY_FORM_TYPE = {
     "030000": "annual",
     "043A00": "quarter:2Q",
+    "043000": "quarter:2Q",
 }
 FORM_TYPES_BY_PERIOD_SCOPE = {
     "annual": ("030000",),
-    "quarter": ("043A00",),
+    "quarter": ("043A00", "043000"),
 }
 PERIOD_SCOPE_LABEL_BY_FORM_TYPE = {
     "030000": "\u901a\u671f",
     "043A00": "2Q",
+    "043000": "2Q",
 }
 ALL_PERIOD_SCOPES = ["annual", "quarter", "quarter_standalone", "forecast"]
 SEGMENT_MODES = {"none", "all", "region", "business"}
@@ -217,15 +219,53 @@ QUARTER_SUPPRESSED_EXCEL_BASES = {
     "LiabilitiesPerShare",
 }
 QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER = {
-    "1Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
-    "3Q": {"OperatingCashGrowthRate", "InvestmentCashGrowthRate", "FinancingCashGrowthRate", "FCFGrowthRate"},
+    "1Q": {
+        "OperatingCash",
+        "InvestmentCash",
+        "FinancingCash",
+        "FCF",
+        "OperatingCashGrowthRate",
+        "InvestmentCashGrowthRate",
+        "FinancingCashGrowthRate",
+        "FCFGrowthRate",
+    },
+    "2Q": {
+        "OperatingCash",
+        "InvestmentCash",
+        "FinancingCash",
+        "FCF",
+        "OperatingCashGrowthRate",
+        "InvestmentCashGrowthRate",
+        "FinancingCashGrowthRate",
+        "FCFGrowthRate",
+    },
+    "3Q": {
+        "OperatingCash",
+        "InvestmentCash",
+        "FinancingCash",
+        "FCF",
+        "OperatingCashGrowthRate",
+        "InvestmentCashGrowthRate",
+        "FinancingCashGrowthRate",
+        "FCFGrowthRate",
+    },
+    "4Q": {
+        "OperatingCash",
+        "InvestmentCash",
+        "FinancingCash",
+        "FCF",
+        "OperatingCashGrowthRate",
+        "InvestmentCashGrowthRate",
+        "FinancingCashGrowthRate",
+        "FCFGrowthRate",
+    },
 }
 PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
 FORECAST_PROGRESS_FILL_COLOR = "FFF2CC"
-FORECAST_REVISION_UP_FONT_COLOR = "C00000"
-FORECAST_REVISION_DOWN_FONT_COLOR = "1F4E79"
+FORECAST_REVISION_UP_FONT_COLOR = "FF0000"
+FORECAST_REVISION_DOWN_FONT_COLOR = "00B0F0"
 
 MONETARY_BASES = {
     "NetSales",

@@ -76,7 +76,8 @@ def fetch_historical_growth_values(
     if not edinet_code or not current_period_end:
         return {}
     conn.row_factory = sqlite3.Row
-    reference_form_type = "043A00" if is_half_form_type(filing.get("form_type")) else "030000"
+    reference_form_types = ("043A00", "043000") if is_half_form_type(filing.get("form_type")) else ("030000",)
+    form_type_placeholders = ",".join("?" for _ in reference_form_types)
 
     target_period_ends = {
         offset: _shift_year(current_period_end, offset).isoformat()
@@ -112,11 +113,11 @@ def fetch_historical_growth_values(
         INNER JOIN normalized_metrics nm
             ON nm.doc_id = f.doc_id
         WHERE f.edinet_code = ?
-          AND f.form_type = ?
+          AND f.form_type IN ({form_type_placeholders})
           AND f.period_end IN ({period_placeholders})
           AND nm.metric_key IN ({metric_placeholders})
         """,
-        (edinet_code, reference_form_type, *period_params, *normalized_keys),
+        (edinet_code, *reference_form_types, *period_params, *normalized_keys),
     ).fetchall()
     metric_key_to_base = {
         metric_key: metric_base
@@ -153,11 +154,11 @@ def fetch_historical_growth_values(
         INNER JOIN derived_metrics dm
             ON dm.doc_id = f.doc_id
         WHERE f.edinet_code = ?
-          AND f.form_type = ?
+          AND f.form_type IN ({form_type_placeholders})
           AND f.period_end IN ({period_placeholders})
           AND dm.metric_key IN ({derived_placeholders})
         """,
-        (edinet_code, reference_form_type, *period_params, *derived_keys),
+        (edinet_code, *reference_form_types, *period_params, *derived_keys),
     ).fetchall()
     derived_key_to_base = {
         metric_key: metric_base
@@ -197,11 +198,11 @@ def fetch_historical_growth_values(
         INNER JOIN normalized_metrics nm
             ON nm.doc_id = f.doc_id
         WHERE f.edinet_code = ?
-          AND f.form_type = ?
+          AND f.form_type IN ({form_type_placeholders})
           AND f.period_end IN ({period_placeholders})
           AND nm.metric_key IN ({share_placeholders})
         """,
-        (edinet_code, reference_form_type, *period_params, *share_keys),
+        (edinet_code, *reference_form_types, *period_params, *share_keys),
     ).fetchall()
     share_components: dict[tuple[int, str], dict[str, Any]] = {}
     for row in share_rows:
