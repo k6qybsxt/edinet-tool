@@ -171,10 +171,31 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(by_key[("actual:1Q", None, "NetSales")].value_num, 100000000.0)
         self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].calc_status, "missing")
         self.assertEqual(by_key[("actual:1Q", None, "OutstandingShares")].value_num, 1000000.0)
+        self.assertEqual(by_key[("actual:1Q", None, "BPS")].value_num, 400.0)
+        self.assertEqual(by_key[("actual:1Q", None, "EPS")].calc_status, "missing")
         self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].value_num, 400000000.0)
         self.assertEqual(by_key[("forecast:FY", "1Q", "OperatingIncome")].value_num, 50000000.0)
         self.assertNotIn(("forecast:FY", "1Q", "EPS"), by_key)
         self.assertNotIn(("forecast:2Q", "1Q", "NetSales"), by_key)
+
+    def test_statement_mapper_uses_profit_before_tax_as_ordinary_income_fallback(self) -> None:
+        row = _statement_row("1Q")
+        row["ProfitBeforeTax"] = "48000000"
+        row["EPS"] = "999.99"
+        row["BPS"] = "999.99"
+
+        metrics = statement_metrics_from_row(row, include_forecasts=False)
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
+
+        self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].value_num, 48000000.0)
+        self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].source_field, "ProfitBeforeTax")
+        self.assertAlmostEqual(by_key[("actual:1Q", None, "EPS")].value_num, 33.6)
+        self.assertEqual(
+            by_key[("actual:1Q", None, "EPS")].source_field,
+            "calculated:OrdinaryIncome*0.7/OutstandingShares",
+        )
+        self.assertEqual(by_key[("actual:1Q", None, "BPS")].value_num, 400.0)
+        self.assertEqual(by_key[("actual:1Q", None, "BPS")].source_field, "calculated:Eq/OutstandingShares")
 
     def test_statement_mapper_keeps_2q_actuals(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("2Q"), include_forecasts=False)

@@ -87,13 +87,10 @@ class JQuantsQuote:
 ACTUAL_FIELD_MAP = [
     ("Sales", "NetSales", "sales", "yen"),
     ("OP", "OperatingIncome", "profit", "yen"),
-    ("OdP", "OrdinaryIncome", "profit", "yen"),
     ("NP", "ProfitLoss", "profit", "yen"),
-    ("EPS", "EPS", "per_share", "yen_per_share"),
     ("TA", "TotalAssets", "balance", "yen"),
     ("Eq", "NetAssets", "balance", "yen"),
     ("EqAR", "EquityRatio", "ratio", "ratio"),
-    ("BPS", "BPS", "per_share", "yen_per_share"),
     ("CFO", "OperatingCash", "cashflow", "yen"),
     ("CFI", "InvestmentCash", "cashflow", "yen"),
     ("CFF", "FinancingCash", "cashflow", "yen"),
@@ -101,6 +98,14 @@ ACTUAL_FIELD_MAP = [
     ("ShOutFY", "IssuedShares", "shares", "shares"),
     ("TrShFY", "TreasuryShares", "shares", "shares"),
 ]
+ORDINARY_INCOME_ACTUAL_FIELDS = (
+    "OdP",
+    "ProfitBeforeTax",
+    "ProfitLossBeforeTax",
+    "IncomeBeforeIncomeTaxes",
+    "ProfitBeforeIncomeTaxes",
+    "PBT",
+)
 
 FORECAST_FIELD_MAP = {
     "FY": [
@@ -273,6 +278,69 @@ def _metric_from_field(
     )
 
 
+def _metric_from_first_available_field(
+    row: dict[str, Any],
+    *,
+    field_names: tuple[str, ...],
+    metric_base: str,
+    metric_group: str,
+    value_unit: str,
+    metric_kind: str,
+    period_scope: str,
+    period_key: str,
+    quarter_type: str | None,
+    forecast_target: str | None,
+    forecast_stage: str | None,
+) -> JQuantsStatementMetric:
+    selected_field = field_names[0]
+    selected_value: Decimal | None = None
+    for field_name in field_names:
+        decimal_value = _parse_decimal(row.get(field_name))
+        if decimal_value is not None:
+            selected_field = field_name
+            selected_value = decimal_value
+            break
+
+    raw = build_statement_raw(row)
+    calc_status = "ok" if selected_value is not None else "missing"
+    period_start = raw.current_period_start_date
+    period_end = raw.current_period_end_date or raw.current_fiscal_year_end_date
+    return JQuantsStatementMetric(
+        disclosure_number=raw.disclosure_number,
+        local_code=raw.local_code,
+        security_code=raw.security_code,
+        metric_kind=metric_kind,
+        period_scope=period_scope,
+        period_key=period_key,
+        quarter_type=quarter_type,
+        forecast_target=forecast_target,
+        forecast_stage=forecast_stage,
+        fiscal_year=raw.fiscal_year,
+        period_start=period_start,
+        period_end=period_end,
+        disclosed_date=raw.disclosed_date,
+        disclosed_time=raw.disclosed_time,
+        metric_key=f"{metric_base}Current",
+        metric_base=metric_base,
+        metric_group=metric_group,
+        value_num=_to_float(selected_value),
+        value_unit=value_unit,
+        calc_status=calc_status,
+        source_field=selected_field if selected_value is not None else "|".join(field_names),
+        source_detail_json=_json_dumps(
+            {
+                "source": "jquants",
+                "api_version": "v2",
+                "field": selected_field if selected_value is not None else None,
+                "fallback_fields": list(field_names),
+                "period_start": period_start,
+                "period_end": period_end,
+                "rule": "first available ordinary income / profit before tax field",
+            }
+        ),
+    )
+
+
 def _forecast_fields_for_stage(
     row: dict[str, Any],
     forecast_stage: str,
@@ -324,7 +392,24 @@ def statement_metrics_from_row(
                     forecast_stage=None,
                 )
             )
+        metrics.append(
+            _metric_from_first_available_field(
+                row,
+                field_names=ORDINARY_INCOME_ACTUAL_FIELDS,
+                metric_base="OrdinaryIncome",
+                metric_group="profit",
+                value_unit="yen",
+                metric_kind="actual",
+                period_scope="quarter",
+                period_key=f"actual:{period}",
+                quarter_type=period,
+                forecast_target=None,
+                forecast_stage=None,
+            )
+        )
         metrics.append(_outstanding_shares_metric(row, period))
+        metrics.append(_calculated_eps_metric(row, period))
+        metrics.append(_calculated_bps_metric(row, period))
 
     if include_forecasts:
         forecast_stage = FORECAST_STAGE_BY_PERIOD.get(period)
@@ -358,21 +443,29 @@ def statement_metrics_from_row(
     return metrics
 
 
+def _ordinary_income_value(row: dict[str, Any]) -> tuple[Decimal | None, str | None]:
+    for field_name in ORDINARY_INCOME_ACTUAL_FIELDS:
+        value = _parse_decimal(row.get(field_name))
+        if value is not None:
+            return value, field_name
+    return None, None
+
+
+def _outstanding_shares_value(row: dict[str, Any]) -> tuple[Decimal | None, str]:
+    issued = _parse_decimal(row.get("ShOutFY"))
+    treasury = _parse_decimal(row.get("TrShFY"))
+    if issued is None:
+        return None, "missing"
+    treasury_value = treasury or Decimal("0")
+    if Decimal("0") <= treasury_value < Decimal("1000"):
+        treasury_value = Decimal("0")
+    return issued - treasury_value, "ok"
+
+
 def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
     issued_field = "ShOutFY"
     treasury_field = "TrShFY"
-    issued = _parse_decimal(row.get(issued_field))
-    treasury = _parse_decimal(row.get(treasury_field))
-    calc_status = "ok"
-    value: Decimal | None
-    if issued is None:
-        value = None
-        calc_status = "missing"
-    else:
-        treasury_value = treasury or Decimal("0")
-        if Decimal("0") <= treasury_value < Decimal("1000"):
-            treasury_value = Decimal("0")
-        value = issued - treasury_value
+    value, calc_status = _outstanding_shares_value(row)
     raw = build_statement_raw(row)
     return JQuantsStatementMetric(
         disclosure_number=raw.disclosure_number,
@@ -402,6 +495,96 @@ def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsState
                 "api_version": "v2",
                 "issued_field": issued_field,
                 "treasury_field": treasury_field,
+            }
+        ),
+    )
+
+
+def _calculated_eps_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
+    ordinary_income, ordinary_source_field = _ordinary_income_value(row)
+    outstanding_shares, shares_status = _outstanding_shares_value(row)
+    value: Decimal | None = None
+    calc_status = "missing"
+    if (
+        ordinary_income is not None
+        and outstanding_shares is not None
+        and outstanding_shares > 0
+    ):
+        value = ordinary_income * Decimal("0.7") / outstanding_shares
+        calc_status = "ok"
+    raw = build_statement_raw(row)
+    return JQuantsStatementMetric(
+        disclosure_number=raw.disclosure_number,
+        local_code=raw.local_code,
+        security_code=raw.security_code,
+        metric_kind="actual",
+        period_scope="quarter",
+        period_key=f"actual:{period}",
+        quarter_type=period,
+        forecast_target=None,
+        forecast_stage=None,
+        fiscal_year=raw.fiscal_year,
+        period_start=raw.current_period_start_date,
+        period_end=raw.current_period_end_date or raw.current_fiscal_year_end_date,
+        disclosed_date=raw.disclosed_date,
+        disclosed_time=raw.disclosed_time,
+        metric_key="EPSCurrent",
+        metric_base="EPS",
+        metric_group="per_share",
+        value_num=_to_float(value),
+        value_unit="yen_per_share",
+        calc_status=calc_status,
+        source_field="calculated:OrdinaryIncome*0.7/OutstandingShares",
+        source_detail_json=_json_dumps(
+            {
+                "source": "jquants",
+                "api_version": "v2",
+                "ordinary_income_field": ordinary_source_field,
+                "shares_status": shares_status,
+                "rule": "EPS = OrdinaryIncome * 0.7 / OutstandingShares",
+            }
+        ),
+    )
+
+
+def _calculated_bps_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
+    net_assets = _parse_decimal(row.get("Eq"))
+    outstanding_shares, shares_status = _outstanding_shares_value(row)
+    value: Decimal | None = None
+    calc_status = "missing"
+    if net_assets is not None and outstanding_shares is not None and outstanding_shares > 0:
+        value = net_assets / outstanding_shares
+        calc_status = "ok"
+    raw = build_statement_raw(row)
+    return JQuantsStatementMetric(
+        disclosure_number=raw.disclosure_number,
+        local_code=raw.local_code,
+        security_code=raw.security_code,
+        metric_kind="actual",
+        period_scope="quarter",
+        period_key=f"actual:{period}",
+        quarter_type=period,
+        forecast_target=None,
+        forecast_stage=None,
+        fiscal_year=raw.fiscal_year,
+        period_start=raw.current_period_start_date,
+        period_end=raw.current_period_end_date or raw.current_fiscal_year_end_date,
+        disclosed_date=raw.disclosed_date,
+        disclosed_time=raw.disclosed_time,
+        metric_key="BPSCurrent",
+        metric_base="BPS",
+        metric_group="per_share",
+        value_num=_to_float(value),
+        value_unit="yen_per_share",
+        calc_status=calc_status,
+        source_field="calculated:Eq/OutstandingShares",
+        source_detail_json=_json_dumps(
+            {
+                "source": "jquants",
+                "api_version": "v2",
+                "net_assets_field": "Eq",
+                "shares_status": shares_status,
+                "rule": "BPS = NetAssets / OutstandingShares",
             }
         ),
     )

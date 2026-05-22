@@ -123,9 +123,15 @@ SEGMENT_VALUE_KIND_PRIORITY = {
 }
 QUARTER_SUPPORTED_BASES = {
     "NetSales",
+    "NetSalesGrowthRate",
     "OperatingIncome",
+    "OperatingIncomeGrowthRate",
     "OrdinaryIncome",
+    "OrdinaryIncomeGrowthRate",
     "ProfitLoss",
+    "ProfitLossGrowthRate",
+    "EstimatedNetIncome",
+    "EstimatedNetIncomeGrowthRate",
     "FCF",
     "InvestmentCashToNetSalesRatio",
     "InvestmentCashToOperatingCashRatio",
@@ -149,6 +155,13 @@ QUARTER_SUPPORTED_BASES = {
     "TheoreticalSharePriceGrowthRate",
     "TheoreticalPBR",
     "TheoreticalPER",
+}
+QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE = {
+    "NetSalesGrowthRate": "NetSales",
+    "OperatingIncomeGrowthRate": "OperatingIncome",
+    "OrdinaryIncomeGrowthRate": "OrdinaryIncome",
+    "ProfitLossGrowthRate": "ProfitLoss",
+    "EstimatedNetIncomeGrowthRate": "EstimatedNetIncome",
 }
 FORECAST_SUPPORTED_BASES = {
     "NetSales",
@@ -2820,6 +2833,11 @@ def _scale_jquants_value(metric_base: str, value: float | None) -> tuple[float |
 
 def _jquants_metric_fetch_bases(requested_bases: set[str]) -> set[str]:
     fetch_bases = set(requested_bases)
+    for growth_base, source_base in QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE.items():
+        if growth_base in fetch_bases:
+            fetch_bases.add(source_base)
+    if "EstimatedNetIncome" in fetch_bases:
+        fetch_bases.add("OrdinaryIncome")
     if "FCF" in fetch_bases:
         fetch_bases.update({"OperatingCash", "InvestmentCash"})
     if "BPS" in fetch_bases:
@@ -2873,6 +2891,45 @@ def _jquants_display_row_and_value(
     period_key: str,
     forecast_stage: str | None,
 ) -> tuple[sqlite3.Row | None, float | None]:
+    if metric_base in QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE and period_scope.startswith("quarter"):
+        source_base = QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE[metric_base]
+        current_row, current_value = _jquants_display_row_and_value(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base=source_base,
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        prior_row, prior_value = _jquants_display_row_and_value(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base=source_base,
+            fiscal_year=fiscal_year - 1,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        value = (
+            current_value / prior_value
+            if current_value is not None and prior_value is not None and prior_value > 0
+            else None
+        )
+        return current_row or prior_row, value
+    if metric_base == "EstimatedNetIncome" and period_scope.startswith("quarter"):
+        ordinary_row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base="OrdinaryIncome",
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        ordinary_value = _jquants_ok_value(ordinary_row)
+        value = ordinary_value * 0.7 if ordinary_value is not None else None
+        return ordinary_row, value
     if metric_base in {"InvestmentCashToNetSalesRatio", "InvestmentCashToOperatingCashRatio"} and period_scope.startswith("quarter"):
         investment_row = _jquants_latest_row(
             latest,

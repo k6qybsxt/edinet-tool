@@ -1663,6 +1663,44 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertIsNotNone(ws["M2"].comment)
         self.assertEqual(ws["M2"].fill.fgColor.rgb, "00FFF2CC")
 
+    def test_jquants_quarter_cumulative_growth_uses_prior_year_same_quarter(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, '11110', '1111', 'E00001', 'actual',
+                      'quarter', 'actual:1Q', '1Q', NULL, ?,
+                      ?, ?, ?, '15:00', 'NetSalesCurrent',
+                      'NetSales', 'sales', ?, 'yen', 'ok', 'field', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """,
+            [
+                ("actual_current", 2026, "2025-04-01", "2025-06-30", "2025-08-01", 120_000_000.0),
+                ("actual_prior", 2025, "2024-04-01", "2024-06-30", "2024-08-01", 100_000_000.0),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["NetSalesGrowthRate"],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("jquants_metrics_not_found", warnings)
+        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
+        self.assertEqual(row.metric_label, "1Q 売上高増収率(前期比)")
+        self.assertAlmostEqual(row.values_by_offset[0], 1.2)
+        self.assertEqual(row.units_by_offset[0], "%")
+
     def test_jquants_quarter_bps_falls_back_to_net_assets_per_share(self) -> None:
         self.conn.executemany(
             """

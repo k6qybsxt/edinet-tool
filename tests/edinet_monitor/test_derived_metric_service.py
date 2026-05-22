@@ -400,6 +400,56 @@ class DerivedMetricServiceTest(unittest.TestCase):
             "S100OLD",
         )
 
+    def test_current_growth_rates_use_previous_doc_current_when_available(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("NetSalesPrior1", 1_000_000),
+            build_normalized_row("OperatingIncomeCurrent", 500_000),
+            build_normalized_row("OperatingIncomePrior1", 400_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 240_000),
+            build_normalized_row("OrdinaryIncomePrior1", 200_000),
+            build_normalized_row("ProfitLossCurrent", 300_000),
+            build_normalized_row("ProfitLossPrior1", 250_000),
+            build_normalized_row("NetAssetsCurrent", 1_000_000),
+            build_normalized_row("NetAssetsPrior1", 900_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("IssuedSharesPrior1", 1_000_000),
+            build_normalized_row("TreasurySharesCurrent", 50_000),
+            build_normalized_row("TreasurySharesPrior1", 52_000),
+        ]
+        historical_growth_values = {
+            "OperatingIncome": {
+                1: {"doc_id": "S100PRIOR", "metric_key": "OperatingIncomeCurrent", "period_end": "2024-03-31", "value_num": 250_000}
+            },
+            "ProfitLoss": {
+                1: {"doc_id": "S100PRIOR", "metric_key": "ProfitLossCurrent", "period_end": "2024-03-31", "value_num": 100_000}
+            },
+            "EstimatedNetIncome": {
+                1: {"doc_id": "S100PRIOR", "metric_key": "EstimatedNetIncomeCurrent", "period_end": "2024-03-31", "value_num": 70_000}
+            },
+            "OutstandingShares": {
+                1: {"doc_id": "S100PRIOR", "metric_key": "OutstandingSharesCurrent", "period_end": "2024-03-31", "value_num": 900_000}
+            },
+        }
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="jpgaap",
+            document_display_unit="百万円",
+            historical_growth_values=historical_growth_values,
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertAlmostEqual(by_key["OperatingIncomeGrowthRateCurrent"]["value_num"], 500_000 / 250_000)
+        self.assertAlmostEqual(by_key["ProfitLossGrowthRateCurrent"]["value_num"], 300_000 / 100_000)
+        self.assertAlmostEqual(by_key["EstimatedNetIncomeGrowthRateCurrent"]["value_num"], 168_000 / 70_000)
+        self.assertAlmostEqual(by_key["OutstandingSharesGrowthRateCurrent"]["value_num"], 950_000 / 900_000)
+        self.assertEqual(
+            by_key["OutstandingSharesGrowthRateCurrent"]["source_detail_json"]["prior_detail"]["base_doc_id"],
+            "S100PRIOR",
+        )
+
     def test_financial_leverage_adjustment_returns_zero_when_balance_sheet_product_is_nonpositive(self) -> None:
         normalized_rows = [
             build_normalized_row("OrdinaryIncomeCurrent", 120_000_000),

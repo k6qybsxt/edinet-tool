@@ -7,13 +7,16 @@ from typing import Any
 from edinet_monitor.services.collector.document_filter_service import is_half_form_type
 
 
-HISTORICAL_GROWTH_OFFSETS = (9,)
+HISTORICAL_GROWTH_OFFSETS = (1, 4, 9)
 HISTORICAL_NORMALIZED_METRIC_KEYS = {
     "NetSales": "NetSalesCurrent",
+    "OperatingIncome": "OperatingIncomeCurrent",
     "OrdinaryIncome": "OrdinaryIncomeCurrent",
+    "ProfitLoss": "ProfitLossCurrent",
     "CashAndCashEquivalents": "CashAndCashEquivalentsCurrent",
 }
 HISTORICAL_DERIVED_METRIC_KEYS = {
+    "EstimatedNetIncome": "EstimatedNetIncomeCurrent",
     "EPS": "EPSCurrent",
     "BPS": "BPSCurrent",
     "TheoreticalSharePrice": "TheoreticalSharePriceCurrent",

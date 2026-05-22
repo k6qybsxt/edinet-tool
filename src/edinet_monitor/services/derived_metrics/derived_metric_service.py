@@ -883,6 +883,7 @@ def _append_growth_rows(
     document_display_unit: str,
     rule_version: str,
     require_positive_denominator: bool = True,
+    historical_growth_values: dict[str, dict[int, dict[str, Any]]] | None = None,
 ) -> None:
     for current_suffix in GROWTH_SUFFIXES:
         current_offset = SUFFIX_TO_PERIOD_OFFSET[current_suffix]
@@ -890,7 +891,19 @@ def _append_growth_rows(
         current_key = _build_metric_key(source_metric_base, current_suffix)
         prior_key = _build_metric_key(source_metric_base, prior_suffix)
         current_value = _metric_value(metric_rows, current_key)
-        prior_value = _metric_value(metric_rows, prior_key)
+        prior_detail_extra = None
+        historical_prior = ((historical_growth_values or {}).get(source_metric_base) or {}).get(1)
+        if current_suffix == "Current" and historical_prior is not None:
+            prior_value = historical_prior.get("value_num")
+            prior_key = f"{source_metric_base}PreviousDocCurrent"
+            prior_detail_extra = {
+                "base_doc_id": historical_prior.get("doc_id"),
+                "base_metric_key": historical_prior.get("metric_key"),
+                "base_period_end": historical_prior.get("period_end"),
+                "base_period_offset": 1,
+            }
+        else:
+            prior_value = _metric_value(metric_rows, prior_key)
         value_num, calc_status = _ratio_status(
             numerator=current_value,
             denominator=prior_value,
@@ -920,6 +933,7 @@ def _append_growth_rows(
                     stored_formula="current / prior",
                     calc_status=calc_status,
                     document_display_unit=document_display_unit,
+                    extra={"prior_detail": prior_detail_extra} if prior_detail_extra else None,
                 ),
                 accounting_standard=accounting_standard,
                 document_display_unit=document_display_unit,
@@ -942,12 +956,32 @@ def _append_growth_rows_from_inputs(
     document_display_unit: str,
     rule_version: str,
     require_positive_denominator: bool = True,
+    source_metric_base: str | None = None,
+    historical_growth_values: dict[str, dict[int, dict[str, Any]]] | None = None,
 ) -> None:
     for current_suffix in GROWTH_SUFFIXES:
         current_offset = SUFFIX_TO_PERIOD_OFFSET[current_suffix]
         prior_suffix = f"Prior{current_offset + 1}"
         current_inputs = input_builder(metric_rows, current_suffix)
-        prior_inputs = input_builder(metric_rows, prior_suffix)
+        historical_prior = (
+            ((historical_growth_values or {}).get(source_metric_base) or {}).get(1)
+            if source_metric_base and current_suffix == "Current"
+            else None
+        )
+        if historical_prior is not None:
+            prior_inputs = {
+                "value_num": historical_prior.get("value_num"),
+                "detail_inputs": {f"{source_metric_base}PreviousDocCurrent": historical_prior.get("value_num")},
+                "reference_keys": [],
+                "detail_extra": {
+                    "base_doc_id": historical_prior.get("doc_id"),
+                    "base_metric_key": historical_prior.get("metric_key"),
+                    "base_period_end": historical_prior.get("period_end"),
+                    "base_period_offset": 1,
+                },
+            }
+        else:
+            prior_inputs = input_builder(metric_rows, prior_suffix)
         source_detail_extra: dict[str, Any] = {}
         if current_inputs.get("detail_extra"):
             source_detail_extra["current_detail"] = current_inputs["detail_extra"]
@@ -2250,6 +2284,18 @@ def calculate_derived_metrics(
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
+        historical_growth_values=historical_growth_values,
+    )
+    _append_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="OperatingIncome",
+        derived_metric_base="OperatingIncomeGrowthRate",
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+        historical_growth_values=historical_growth_values,
     )
     _append_growth_rows(
         out_rows,
@@ -2260,6 +2306,33 @@ def calculate_derived_metrics(
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
+        historical_growth_values=historical_growth_values,
+    )
+    _append_growth_rows(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        source_metric_base="ProfitLoss",
+        derived_metric_base="ProfitLossGrowthRate",
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+        historical_growth_values=historical_growth_values,
+    )
+    _append_growth_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="EstimatedNetIncomeGrowthRate",
+        metric_group="growth",
+        formula_name="estimated_net_income_growth_rate",
+        display_formula="current_estimated_net_income / prior_estimated_net_income * 100",
+        input_builder=_estimated_net_income_input,
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+        source_metric_base="EstimatedNetIncome",
+        historical_growth_values=historical_growth_values,
     )
     if period_scope == "annual":
         _append_growth_rows(
@@ -2271,6 +2344,7 @@ def calculate_derived_metrics(
             accounting_standard=accounting_standard,
             document_display_unit=document_display_unit,
             rule_version=rule_version,
+            historical_growth_values=historical_growth_values,
         )
     for source_metric_base, derived_metric_base in [
         ("OperatingCash", "OperatingCashGrowthRate"),
@@ -2301,6 +2375,8 @@ def calculate_derived_metrics(
         document_display_unit=document_display_unit,
         rule_version=rule_version,
         require_positive_denominator=False,
+        source_metric_base="FCF",
+        historical_growth_values=historical_growth_values,
     )
     _append_fixed_period_growth_rows(
         out_rows,
@@ -2395,6 +2471,8 @@ def calculate_derived_metrics(
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
+        source_metric_base="EPS",
+        historical_growth_values=historical_growth_values,
     )
     _append_fixed_period_growth_rows(
         out_rows,
@@ -2422,6 +2500,8 @@ def calculate_derived_metrics(
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
+        source_metric_base="BPS",
+        historical_growth_values=historical_growth_values,
     )
     _append_fixed_period_growth_rows(
         out_rows,
@@ -2450,6 +2530,8 @@ def calculate_derived_metrics(
             accounting_standard=accounting_standard,
             document_display_unit=document_display_unit,
             rule_version=rule_version,
+            source_metric_base="OutstandingShares",
+            historical_growth_values=historical_growth_values,
         )
     if period_scope == "annual":
         _append_fixed_period_growth_rows(
