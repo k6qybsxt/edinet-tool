@@ -543,6 +543,7 @@ CONSOLIDATED_REPORTING_GUARD_METRIC_BASES = {
     "LeaseLiabilitiesCurrent",
     "LeaseLiabilitiesNonCurrent",
     "ShortTermLoansPayable",
+    "ShortTermLoansPayableToSubsidiariesAndAffiliates",
     "CurrentPortionOfLongTermLoansPayable",
     "LongTermLoansPayable",
     "BondsPayable",

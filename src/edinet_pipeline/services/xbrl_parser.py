@@ -318,6 +318,7 @@ METRICS = {
             "jpigp_cor:LeaseLiabilitiesCLIFRS",
             "jpigp_cor:LeaseLiabilitiesNCLIFRS",
             "jppfs_cor:ShortTermLoansPayable",
+            "jppfs_cor:ShortTermLoansPayableToSubsidiariesAndAffiliates",
             "jppfs_cor:CurrentPortionOfLongTermLoansPayable",
             "jppfs_cor:LongTermLoansPayable",
             "jppfs_cor:BondsPayable",

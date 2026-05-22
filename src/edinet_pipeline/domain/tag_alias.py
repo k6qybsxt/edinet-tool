@@ -248,6 +248,7 @@ TAG_ALIAS = {
     "LeaseLiabilitiesCLIFRS": "LeaseLiabilitiesCurrent",
     "LeaseLiabilitiesNCLIFRS": "LeaseLiabilitiesNonCurrent",
     "ShortTermLoansPayable": "ShortTermLoansPayable",
+    "ShortTermLoansPayableToSubsidiariesAndAffiliates": "ShortTermLoansPayableToSubsidiariesAndAffiliates",
     "CurrentPortionOfLongTermLoansPayable": "CurrentPortionOfLongTermLoansPayable",
     "LongTermLoansPayable": "LongTermLoansPayable",
     "BondsPayable": "BondsPayable",

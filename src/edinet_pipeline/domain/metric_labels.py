@@ -104,6 +104,7 @@ METRIC_BASE_LABELS = {
     "LeaseLiabilitiesCurrent": "\u30ea\u30fc\u30b9\u8ca0\u50b5(\u6d41\u52d5)",
     "LeaseLiabilitiesNonCurrent": "\u30ea\u30fc\u30b9\u8ca0\u50b5(\u56fa\u5b9a)",
     "ShortTermLoansPayable": "\u77ed\u671f\u501f\u5165\u91d1",
+    "ShortTermLoansPayableToSubsidiariesAndAffiliates": "\u95a2\u4fc2\u4f1a\u793e\u77ed\u671f\u501f\u5165\u91d1",
     "CurrentPortionOfLongTermLoansPayable": "1\u5e74\u5185\u8fd4\u6e08\u4e88\u5b9a\u9577\u671f\u501f\u5165\u91d1",
     "LongTermLoansPayable": "\u9577\u671f\u501f\u5165\u91d1",
     "BondsPayable": "\u793e\u50b5",

@@ -32,35 +32,47 @@ ROIC_EXCLUDED_INDUSTRIES = {
     "\u4fdd\u967a\u696d",
 }
 
+INTEREST_BEARING_LIABILITIES_TOTAL_BASES = [
+    "InterestBearingLiabilitiesCurrent",
+    "InterestBearingLiabilitiesNonCurrent",
+]
+INTEREST_BEARING_BONDS_AND_BORROWINGS_BASES = [
+    "BondsAndBorrowingsCurrent",
+    "BondsAndBorrowingsNonCurrent",
+]
+INTEREST_BEARING_NON_LEASE_COMPONENT_BASES = [
+    "BorrowingsCurrent",
+    "BorrowingsNonCurrent",
+    "ShortTermLoansPayable",
+    "ShortTermLoansPayableToSubsidiariesAndAffiliates",
+    "CurrentPortionOfLongTermLoansPayable",
+    "LongTermLoansPayable",
+    "CurrentPortionOfBonds",
+    "ShortTermBondsPayable",
+    "BondsPayable",
+    "CommercialPapersLiabilities",
+]
+INTEREST_BEARING_LEASE_COMPONENT_BASES = [
+    "LeaseLiabilitiesCurrent",
+    "LeaseLiabilitiesNonCurrent",
+]
 INTEREST_BEARING_DEBT_TIERS = [
     (
         "interest_bearing_liabilities_total",
-        [
-            "InterestBearingLiabilitiesCurrent",
-            "InterestBearingLiabilitiesNonCurrent",
-        ],
+        INTEREST_BEARING_LIABILITIES_TOTAL_BASES,
     ),
     (
         "bonds_and_borrowings_plus_lease_liabilities",
         [
-            "BondsAndBorrowingsCurrent",
-            "BondsAndBorrowingsNonCurrent",
-            "LeaseLiabilitiesCurrent",
-            "LeaseLiabilitiesNonCurrent",
+            *INTEREST_BEARING_BONDS_AND_BORROWINGS_BASES,
+            *INTEREST_BEARING_LEASE_COMPONENT_BASES,
         ],
     ),
     (
         "explicit_component_sum",
         [
-            "ShortTermLoansPayable",
-            "CurrentPortionOfLongTermLoansPayable",
-            "LongTermLoansPayable",
-            "CurrentPortionOfBonds",
-            "ShortTermBondsPayable",
-            "BondsPayable",
-            "CommercialPapersLiabilities",
-            "LeaseLiabilitiesCurrent",
-            "LeaseLiabilitiesNonCurrent",
+            *INTEREST_BEARING_NON_LEASE_COMPONENT_BASES,
+            *INTEREST_BEARING_LEASE_COMPONENT_BASES,
         ],
     ),
 ]
@@ -2075,26 +2087,80 @@ def calculate_derived_metrics(
             for _tier_name, tier_bases in INTEREST_BEARING_DEBT_TIERS
             for metric_base in tier_bases
         }
-        for tier_name, tier_bases in INTEREST_BEARING_DEBT_TIERS:
-            tier_inputs = _optional_sum_input(metric_rows, tier_bases, suffix)
-            if tier_inputs["value_num"] is None:
-                continue
-            included_bases = [
+
+        def _included(metric_bases: list[str]) -> list[str]:
+            return [
                 metric_base
-                for metric_base in tier_bases
+                for metric_base in metric_bases
                 if _metric_value(metric_rows, _build_metric_key(metric_base, suffix)) is not None
             ]
+
+        def _selected_input(tier_name: str, tier_bases: list[str], *, required_non_lease_component: bool) -> dict[str, Any]:
+            tier_inputs = _optional_sum_input(metric_rows, tier_bases, suffix)
             excluded_bases = sorted(all_tier_bases - set(tier_bases))
             return {
                 **tier_inputs,
                 "detail_extra": {
                     "selected_tier": tier_name,
-                    "included_bases": included_bases,
+                    "included_bases": _included(tier_bases),
                     "excluded_bases_due_to_precedence": excluded_bases,
+                    "lease_only_rejected": False,
+                    "required_non_lease_component": required_non_lease_component,
                 },
                 "display_formula": f"{tier_name} component sum",
                 "stored_formula": "interest_bearing_debt_whitelist_precedence",
             }
+
+        total_inputs = _optional_sum_input(metric_rows, INTEREST_BEARING_LIABILITIES_TOTAL_BASES, suffix)
+        if total_inputs["value_num"] is not None:
+            return _selected_input(
+                "interest_bearing_liabilities_total",
+                INTEREST_BEARING_LIABILITIES_TOTAL_BASES,
+                required_non_lease_component=False,
+            )
+
+        bonds_and_borrowings_present = bool(_included(INTEREST_BEARING_BONDS_AND_BORROWINGS_BASES))
+        if bonds_and_borrowings_present:
+            return _selected_input(
+                "bonds_and_borrowings_plus_lease_liabilities",
+                [
+                    *INTEREST_BEARING_BONDS_AND_BORROWINGS_BASES,
+                    *INTEREST_BEARING_LEASE_COMPONENT_BASES,
+                ],
+                required_non_lease_component=True,
+            )
+
+        explicit_component_bases = [
+            *INTEREST_BEARING_NON_LEASE_COMPONENT_BASES,
+            *INTEREST_BEARING_LEASE_COMPONENT_BASES,
+        ]
+        non_lease_component_present = bool(_included(INTEREST_BEARING_NON_LEASE_COMPONENT_BASES))
+        if non_lease_component_present:
+            return _selected_input(
+                "explicit_component_sum",
+                explicit_component_bases,
+                required_non_lease_component=True,
+            )
+
+        lease_component_inputs = _optional_sum_input(metric_rows, INTEREST_BEARING_LEASE_COMPONENT_BASES, suffix)
+        if lease_component_inputs["value_num"] is not None:
+            return {
+                **lease_component_inputs,
+                "value_num": None,
+                "calc_status": "missing_input",
+                "detail_extra": {
+                    "selected_tier": "",
+                    "included_bases": _included(INTEREST_BEARING_LEASE_COMPONENT_BASES),
+                    "excluded_bases_due_to_precedence": sorted(
+                        all_tier_bases - set(INTEREST_BEARING_LEASE_COMPONENT_BASES)
+                    ),
+                    "lease_only_rejected": True,
+                    "required_non_lease_component": True,
+                },
+                "display_formula": "interest_bearing_debt whitelist",
+                "stored_formula": "interest_bearing_debt_whitelist_precedence",
+            }
+
         detail_inputs = {
             _build_metric_key(metric_base, suffix): None
             for metric_base in sorted(all_tier_bases)
@@ -2104,7 +2170,13 @@ def calculate_derived_metrics(
             "calc_status": "missing_input",
             "detail_inputs": detail_inputs,
             "reference_keys": list(detail_inputs),
-            "detail_extra": {"selected_tier": ""},
+            "detail_extra": {
+                "selected_tier": "",
+                "included_bases": [],
+                "excluded_bases_due_to_precedence": [],
+                "lease_only_rejected": False,
+                "required_non_lease_component": True,
+            },
             "display_formula": "interest_bearing_debt whitelist",
             "stored_formula": "interest_bearing_debt_whitelist_precedence",
         }

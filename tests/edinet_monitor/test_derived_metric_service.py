@@ -610,6 +610,133 @@ class DerivedMetricServiceTest(unittest.TestCase):
             (100_000 * (1 - 0.3)) / (500_000 + 300_000 - 50_000),
         )
 
+    def test_interest_bearing_debt_adds_bonds_and_borrowings_and_leases(self) -> None:
+        normalized_rows = [
+            build_normalized_row("BondsAndBorrowingsCurrentCurrent", 100_000),
+            build_normalized_row("BondsAndBorrowingsNonCurrentCurrent", 200_000),
+            build_normalized_row("LeaseLiabilitiesCurrentCurrent", 10_000),
+            build_normalized_row("LeaseLiabilitiesNonCurrentCurrent", 20_000),
+            build_normalized_row("ShortTermLoansPayableCurrent", 999_999),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="化学",
+            accounting_standard="jpgaap",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["InterestBearingDebtCurrent"]["value_num"], 330_000)
+        detail = by_key["InterestBearingDebtCurrent"]["source_detail_json"]
+        self.assertEqual(detail["selected_tier"], "bonds_and_borrowings_plus_lease_liabilities")
+        self.assertFalse(detail["lease_only_rejected"])
+        self.assertEqual(
+            detail["included_bases"],
+            [
+                "BondsAndBorrowingsCurrent",
+                "BondsAndBorrowingsNonCurrent",
+                "LeaseLiabilitiesCurrent",
+                "LeaseLiabilitiesNonCurrent",
+            ],
+        )
+
+    def test_interest_bearing_debt_adds_ifrs_borrowings_and_leases(self) -> None:
+        normalized_rows = [
+            build_normalized_row("BorrowingsCurrentCurrent", 74_952),
+            build_normalized_row("BorrowingsNonCurrentCurrent", 3),
+            build_normalized_row("LeaseLiabilitiesCurrentCurrent", 5_046),
+            build_normalized_row("LeaseLiabilitiesNonCurrentCurrent", 13_502),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="電気機器",
+            accounting_standard="ifrs",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["InterestBearingDebtCurrent"]["value_num"], 93_503)
+        self.assertEqual(
+            by_key["InterestBearingDebtCurrent"]["source_detail_json"]["selected_tier"],
+            "explicit_component_sum",
+        )
+
+    def test_interest_bearing_debt_adds_jpgaap_debt_components_and_leases(self) -> None:
+        normalized_rows = [
+            build_normalized_row("ShortTermLoansPayableCurrent", 11_895),
+            build_normalized_row("ShortTermLoansPayableToSubsidiariesAndAffiliatesCurrent", 72),
+            build_normalized_row("CurrentPortionOfLongTermLoansPayableCurrent", 132),
+            build_normalized_row("LongTermLoansPayableCurrent", 7_595),
+            build_normalized_row("ShortTermBondsPayableCurrent", 31_985),
+            build_normalized_row("BondsPayableCurrent", 60_000),
+            build_normalized_row("LeaseLiabilitiesCurrentCurrent", 1_677),
+            build_normalized_row("LeaseLiabilitiesNonCurrentCurrent", 4_589),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="化学",
+            accounting_standard="jpgaap",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["InterestBearingDebtCurrent"]["value_num"], 117_945)
+        self.assertEqual(
+            by_key["InterestBearingDebtCurrent"]["source_detail_json"]["selected_tier"],
+            "explicit_component_sum",
+        )
+
+    def test_interest_bearing_debt_rejects_lease_only_value(self) -> None:
+        normalized_rows = [
+            build_normalized_row("LeaseLiabilitiesCurrentCurrent", 5_046),
+            build_normalized_row("LeaseLiabilitiesNonCurrentCurrent", 13_502),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="電気機器",
+            accounting_standard="ifrs",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertIsNone(by_key["InterestBearingDebtCurrent"]["value_num"])
+        self.assertEqual(by_key["InterestBearingDebtCurrent"]["calc_status"], "missing_input")
+        self.assertTrue(by_key["InterestBearingDebtCurrent"]["source_detail_json"]["lease_only_rejected"])
+
+    def test_roic_uses_borrowings_and_leases_for_interest_bearing_debt(self) -> None:
+        normalized_rows = [
+            build_normalized_row("OperatingIncomeCurrent", 100_000),
+            build_normalized_row("ProfitBeforeTaxCurrent", 80_000),
+            build_normalized_row("IncomeTaxesCurrent", 24_000),
+            build_normalized_row("NetAssetsCurrent", 500_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 50_000),
+            build_normalized_row("BorrowingsCurrentCurrent", 70_000),
+            build_normalized_row("LeaseLiabilitiesCurrentCurrent", 10_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            industry_33="化学",
+            accounting_standard="ifrs",
+            document_display_unit="百万円",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["InterestBearingDebtCurrent"]["value_num"], 80_000)
+        self.assertAlmostEqual(
+            by_key["ROICCurrent"]["value_num"],
+            (100_000 * (1 - 0.3)) / (500_000 + 80_000 - 50_000),
+        )
+
     def test_roic_is_not_generated_for_half_or_financial_industries(self) -> None:
         normalized_rows = [
             build_normalized_row("OperatingIncomeCurrent", 100_000),
