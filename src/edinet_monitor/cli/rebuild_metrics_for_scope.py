@@ -15,8 +15,10 @@ from edinet_monitor.services.collector.download_queue_service import (
     mark_derived_metrics_saved,
     mark_normalized_metrics_saved,
 )
+from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.derived_metrics.derived_metric_service import calculate_derived_metrics
 from edinet_monitor.services.derived_metrics.historical_growth_reference_service import (
+    fetch_half_progress_annual_values,
     fetch_historical_growth_values,
 )
 from edinet_monitor.services.derived_metrics.derived_metric_store_service import (
@@ -65,6 +67,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional hard limit after filtering.",
     )
     parser.add_argument(
+        "--form-codes",
+        default="",
+        help="Comma-separated form codes. Default is the configured target form codes.",
+    )
+    parser.add_argument(
         "--enable-period-fallback",
         action="store_true",
         help="Infer Current/Prior from period dates only when contextRef suffix is not standard.",
@@ -97,6 +104,7 @@ def fetch_scope_filings(
     security_codes: list[str],
     latest_only: bool,
     limit: int,
+    form_codes: tuple[str, ...] | list[str] | str | None = None,
 ) -> list[dict[str, Any]]:
     doc_ids = [str(doc_id).strip() for doc_id in (doc_ids or []) if str(doc_id).strip()]
     security_variants: list[str] = []
@@ -104,8 +112,10 @@ def fetch_scope_filings(
         security_variants.extend(_security_code_variants(code))
     security_variants = sorted(set(security_variants))
 
-    where_clauses = ["f.form_type = '030000'"]
-    params: list[Any] = []
+    target_form_codes = normalize_form_codes(form_codes)
+    placeholders = ",".join("?" for _ in target_form_codes)
+    where_clauses = [f"f.form_type IN ({placeholders})"]
+    params: list[Any] = list(target_form_codes)
 
     if doc_ids:
         placeholders = ",".join("?" for _ in doc_ids)
@@ -209,6 +219,7 @@ def rebuild_metrics_for_scope(
     security_codes: list[str],
     latest_only: bool,
     limit: int,
+    form_codes: tuple[str, ...] | None = None,
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
@@ -233,6 +244,7 @@ def rebuild_metrics_for_scope(
             security_codes=security_codes,
             latest_only=latest_only,
             limit=limit,
+            form_codes=form_codes,
         )
         summary["target_docs"] = len(filings)
         print(f"target_docs={len(filings)}")
@@ -250,6 +262,7 @@ def rebuild_metrics_for_scope(
                 xbrl_path=str(filing.get("xbrl_path") or ""),
                 zip_path=str(filing.get("zip_path") or ""),
                 filing_period_end=str(filing.get("period_end") or ""),
+                form_type=str(filing.get("form_type") or ""),
                 enable_period_fallback=enable_period_fallback,
                 enforce_candidate_validation=enforce_candidate_validation,
             )
@@ -262,6 +275,7 @@ def rebuild_metrics_for_scope(
             filing = ensure_filing_parse_metadata(conn, filing)
             normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
             historical_growth_values = fetch_historical_growth_values(conn, filing)
+            half_progress_annual_values = fetch_half_progress_annual_values(conn, filing)
             derived_rows = calculate_derived_metrics(
                 normalized_rows,
                 form_type=str(filing.get("form_type") or ""),
@@ -270,6 +284,7 @@ def rebuild_metrics_for_scope(
                 document_display_unit=str(filing.get("document_display_unit") or ""),
                 rule_version=rule_version,
                 historical_growth_values=historical_growth_values,
+                half_progress_annual_values=half_progress_annual_values,
             )
             delete_derived_metrics_by_doc_id(conn, doc_id)
             derived_saved_count = insert_derived_metrics(conn, derived_rows)
@@ -307,6 +322,7 @@ def main() -> None:
         security_codes=args.security_codes,
         latest_only=args.latest_only,
         limit=args.limit,
+        form_codes=normalize_form_codes(args.form_codes or None),
         enable_period_fallback=args.enable_period_fallback,
         enforce_candidate_validation=args.enforce_candidate_validation,
     )

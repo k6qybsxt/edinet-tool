@@ -28,6 +28,11 @@ TARGET_CONTEXT_SUFFIXES = {
 MAX_PERIOD_FALLBACK_OFFSET = 4
 CANDIDATE_VALIDATION_STATUS_OK = "OK"
 CANDIDATE_VALIDATION_STATUS_EXCLUDE = "EXCLUDE"
+HALF_DISABLED_NORMALIZED_BASES = {
+    "NumberOfEmployees",
+    "AverageAge",
+    "AverageAnnualSalary",
+}
 
 
 def _period_scope_from_form_type(form_type: str | None) -> str:
@@ -617,6 +622,8 @@ def normalize_raw_fact_row(
     context_ref = str(row.get("context_ref") or "")
     suffix_info = _get_suffix_and_period_kind(context_ref)
     period_scope = _period_scope_from_form_type(form_type)
+    if period_scope == "half" and metric_base in HALF_DISABLED_NORMALIZED_BASES:
+        return None
     period_source = "context_ref"
     if not suffix_info and enable_period_fallback:
         suffix_info = _infer_suffix_and_period_kind_from_dates(

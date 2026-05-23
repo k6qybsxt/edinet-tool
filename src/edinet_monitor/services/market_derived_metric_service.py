@@ -652,6 +652,42 @@ def _append_jquants_theoretical_rows(rows: list[dict[str, Any]], sources: list[M
             )
 
 
+def _append_jquants_stock_growth_rows(
+    rows: list[dict[str, Any]],
+    sources: list[MarketSourcePeriod],
+    price_by_source: dict[str, float | None],
+) -> None:
+    by_code_quarter: dict[tuple[str, str], list[MarketSourcePeriod]] = {}
+    for source in sources:
+        if source.quarter_type:
+            by_code_quarter.setdefault((source.security_code, source.quarter_type), []).append(source)
+
+    for source_list in by_code_quarter.values():
+        ordered = sorted(source_list, key=lambda item: item.period_end, reverse=True)
+        for index, source in enumerate(ordered):
+            prior = ordered[index + 1] if index + 1 < len(ordered) else None
+            current_price = price_by_source.get(source.source_id)
+            prior_price = price_by_source.get(prior.source_id) if prior is not None else None
+            value, status = _ratio(current_price, prior_price)
+            rows.append(
+                _build_row(
+                    source,
+                    metric_base="StockPriceGrowthRate",
+                    metric_group="growth",
+                    value_num=value,
+                    value_unit="ratio",
+                    calc_status=status,
+                    formula_name="quarter_stock_price_growth_rate",
+                    source_detail={
+                        "current_stock_price": current_price,
+                        "prior_stock_price": prior_price,
+                        "prior_source_id": prior.source_id if prior is not None else None,
+                        "prior_period_end": prior.period_end if prior is not None else None,
+                    },
+                )
+            )
+
+
 def build_market_derived_metrics(
     conn: sqlite3.Connection,
     *,
@@ -711,6 +747,7 @@ def build_market_derived_metrics(
 
     if "quarter" in period_scopes:
         jquants_sources = _fetch_jquants_sources(conn, date_from=date_from, date_to=date_to, codes=codes)
+        jquants_price_by_source: dict[str, float | None] = {}
         for source in jquants_sources:
             stock_price, quote_trade_date = _quote_on_or_before(
                 conn,
@@ -718,6 +755,7 @@ def build_market_derived_metrics(
                 source.period_end,
                 max_lookback_days=max_lookback_days,
             )
+            jquants_price_by_source[source.source_id] = stock_price
             if stock_price is None:
                 missing_quotes += 1
             _append_price_rows(
@@ -727,6 +765,7 @@ def build_market_derived_metrics(
                 quote_trade_date=quote_trade_date,
                 include_pcfr=False,
             )
+        _append_jquants_stock_growth_rows(rows, jquants_sources, jquants_price_by_source)
         _append_jquants_theoretical_rows(rows, jquants_sources)
 
     if missing_quotes:

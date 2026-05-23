@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from copy import copy
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import re
 import sqlite3
@@ -147,8 +148,11 @@ QUARTER_SUPPORTED_BASES = {
     "TreasuryShares",
     "OutstandingShares",
     "EquityRatio",
+    "EPSGrowthRate",
+    "BPSGrowthRate",
     "MarketCapitalization",
     "StockPrice",
+    "StockPriceGrowthRate",
     "PBR",
     "PER",
     "TheoreticalSharePrice",
@@ -162,6 +166,9 @@ QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE = {
     "OrdinaryIncomeGrowthRate": "OrdinaryIncome",
     "ProfitLossGrowthRate": "ProfitLoss",
     "EstimatedNetIncomeGrowthRate": "EstimatedNetIncome",
+    "EPSGrowthRate": "EPS",
+    "BPSGrowthRate": "BPS",
+    "StockPriceGrowthRate": "StockPrice",
 }
 FORECAST_SUPPORTED_BASES = {
     "NetSales",
@@ -215,8 +222,13 @@ HALF_DISABLED_BASES = {
     "BPSGrowthRate10Year",
     "OutstandingSharesGrowthRate5Year",
     "OutstandingSharesGrowthRate10Year",
+    "StockPriceGrowthRate5Year",
+    "StockPriceGrowthRate10Year",
     "TheoreticalSharePriceGrowthRate5Year",
     "TheoreticalSharePriceGrowthRate10Year",
+    "NumberOfEmployees",
+    "AverageAge",
+    "AverageAnnualSalary",
 }
 HALF_PREFIX = "\u534a\u671f "
 HALF_YOY_PREFIX = "\u534a\u671f\u524d\u5e74\u6bd4 "
@@ -418,24 +430,7 @@ GROWTH_RATIO_BASES = {
 
 INDUSTRY_AGGREGATE_VALUE_BASES = set(INDUSTRY_AGGREGATE_ROW_BASES)
 
-SPARSE_PERIOD_OFFSETS_BY_BASE = {
-    "NetSalesGrowthRate5Year": {5, 0},
-    "OrdinaryIncomeGrowthRate5Year": {5, 0},
-    "CashBalanceGrowthRate5Year": {5, 0},
-    "EPSGrowthRate5Year": {5, 0},
-    "BPSGrowthRate5Year": {5, 0},
-    "OutstandingSharesGrowthRate5Year": {5, 0},
-    "TheoreticalSharePriceGrowthRate5Year": {5, 0},
-    "StockPriceGrowthRate5Year": {5, 0},
-    "NetSalesGrowthRate10Year": {0},
-    "OrdinaryIncomeGrowthRate10Year": {0},
-    "CashBalanceGrowthRate10Year": {0},
-    "EPSGrowthRate10Year": {0},
-    "BPSGrowthRate10Year": {0},
-    "OutstandingSharesGrowthRate10Year": {0},
-    "TheoreticalSharePriceGrowthRate10Year": {0},
-    "StockPriceGrowthRate10Year": {0},
-}
+SPARSE_PERIOD_OFFSETS_BY_BASE: dict[str, set[int]] = {}
 
 FIXED_ROW_BASE_ORDER = [
     "NetSales",
@@ -548,7 +543,11 @@ EXCEL_METRIC_LABEL_OVERRIDES = {
     "InvestmentCashGrowthRate": "投資CF増加率(前期比)",
     "FinancingCashGrowthRate": "財務CF増加率(前期比)",
     "FCFGrowthRate": "FCF増加率(前期比)",
-    "EPSGrowthRate": "EPS増加率",
+    "EPSGrowthRate": "EPS増加率(前期比)",
+    "BPSGrowthRate": "BPS増加率(前期比)",
+    "OrdinaryIncomeGrowthRate": "経常利益増益率(前期比)",
+    "CashBalanceGrowthRate": "現金残高増加率(前期比)",
+    "StockPriceGrowthRate": "株価上昇率(前期比)",
     "TheoreticalSharePriceGrowthRate": "理論株価上昇率",
     "TheoreticalSharePriceGrowthRate5Year": "理論株価上昇率(５年)",
     "TheoreticalSharePriceGrowthRate10Year": "理論株価上昇率(10年)",
@@ -1485,6 +1484,10 @@ def _scale_value(metric_base: str, value: float | None) -> float | None:
     return _scale_value_for_document_unit(metric_base, value, "")
 
 
+def _round_half_up(value: float) -> int:
+    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def _scale_value_for_document_unit(
     metric_base: str,
     value: float | None,
@@ -1493,7 +1496,9 @@ def _scale_value_for_document_unit(
     if value is None:
         return None
     if metric_base == "MarketCapitalization":
-        return value / 1_000_000
+        return _round_half_up(value / 100_000_000)
+    if metric_base == "OutstandingShares":
+        return _round_half_up(value / 1_000)
     if metric_base in MONETARY_BASES:
         display_unit = str(document_display_unit or "").strip()
         if display_unit == "千円":
@@ -1511,7 +1516,7 @@ def _display_unit_for_metric(metric_base: str, document_display_unit: str | None
     if metric_base == "AverageAnnualSalary":
         return "\u5186"
     if metric_base == "MarketCapitalization":
-        return "\u767e\u4e07\u5186"
+        return "\u5104\u5186"
     if metric_base == "StockPrice":
         return "\u5186"
     if metric_base in MONETARY_BASES:
@@ -1520,7 +1525,7 @@ def _display_unit_for_metric(metric_base: str, document_display_unit: str | None
             return display_unit
         return "円"
     if metric_base == "OutstandingShares":
-        return "株"
+        return "\u5343\u682a"
     if metric_base in GROWTH_RATIO_BASES or metric_base in PERCENT_VALUE_BASES:
         return "%"
     if metric_base in RATIO_VALUE_BASES:
@@ -1653,6 +1658,10 @@ def _aggregate_period_display(period_scope: str, calendar_year: int | None) -> s
 def _scale_industry_aggregate_value(metric_base: str, value: float | None) -> tuple[float | None, str]:
     if value is None:
         return None, ""
+    if metric_base == "MarketCapitalization":
+        return _round_half_up(value / 100_000_000), "\u5104\u5186"
+    if metric_base == "OutstandingShares":
+        return _round_half_up(value / 1_000), "\u5343\u682a"
     if metric_base in MONETARY_BASES:
         return value / 100_000_000, "\u5104\u5186"
     if metric_base == "NumberOfEmployees":
@@ -2818,9 +2827,13 @@ def _jquants_period_display(row: sqlite3.Row | None, period_scope: str, metric_b
 def _scale_jquants_value(metric_base: str, value: float | None) -> tuple[float | None, str]:
     if value is None:
         return None, ""
+    if metric_base == "MarketCapitalization":
+        return _round_half_up(value / 100_000_000), "\u5104\u5186"
+    if metric_base == "OutstandingShares":
+        return _round_half_up(value / 1_000), "\u5343\u682a"
     if metric_base in MONETARY_BASES:
         return value / 1_000_000, "\u767e\u4e07\u5186"
-    if metric_base == "OutstandingShares" or metric_base in {"IssuedShares", "TreasuryShares"}:
+    if metric_base in {"IssuedShares", "TreasuryShares"}:
         return value, "\u682a"
     if metric_base in GROWTH_RATIO_BASES or metric_base in PERCENT_VALUE_BASES:
         return value, "%"

@@ -339,7 +339,9 @@ class MarketDerivedMetricServiceTest(unittest.TestCase):
         self.assertIn("PER", by_base)
         self.assertIn("TheoreticalSharePrice", by_base)
         self.assertIn("TheoreticalSharePriceGrowthRate", by_base)
+        self.assertIn("StockPriceGrowthRate", by_base)
         self.assertNotIn("PCFR", by_base)
+        self.assertEqual(by_base["StockPriceGrowthRate"]["value_num"], 1.5)
         self.assertGreater(by_base["TheoreticalSharePrice"]["value_num"], 0)
         self.assertEqual(by_base["TheoreticalSharePriceGrowthRate"]["calc_status"], "ok")
 

@@ -882,6 +882,81 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual([row.values_by_offset[0] for row in detail_rows], [55.0, None])
         self.assertEqual([row.values_by_offset[1] for row in detail_rows], [None, 100.0])
 
+    def test_half_rows_suppress_disabled_metrics(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', '043A00',
+                      '2026-09-30', '2026-11-14 12:00', 0, '0', '1',
+                      'Japan GAAP', '騾具ｽｾ闕ｳ繝ｻ繝ｻ', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', ?, 2026, '2026-09-30',
+                      ?, 'tag', 'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("NetSalesCurrent", 55.0),
+                ("NumberOfEmployeesCurrent", 1000.0),
+                ("AverageAgeCurrent", 42.5),
+                ("AverageAnnualSalaryCurrent", 8_448_000.0),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO market_derived_metrics (
+                source_type, source_id, edinet_code, security_code, period_scope,
+                period_key, quarter_type, fiscal_year, period_end, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                'edinet', 'E00001_HALF_0', 'E00001', '1111', 'quarter',
+                'actual:2Q', '2Q', 2026, '2026-09-30', ?,
+                ?, 'growth', 1.2, 'ratio', 'ok',
+                'fixture', '{}', 'v1', '2026-05-08', '2026-05-08'
+            )
+            """,
+            [
+                ("StockPriceGrowthRate5YearCurrent", "StockPriceGrowthRate5Year"),
+                ("StockPriceGrowthRate10YearCurrent", "StockPriceGrowthRate10Year"),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=[
+                "NetSales",
+                "StockPriceGrowthRate5Year",
+                "StockPriceGrowthRate10Year",
+                "NumberOfEmployees",
+                "AverageAge",
+                "AverageAnnualSalary",
+            ],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        quarter_bases = {
+            row.metric_base
+            for row in _detail_rows(rows)
+            if row.period_scope == "quarter:2Q"
+        }
+        self.assertEqual(quarter_bases, {"NetSales"})
+
     def test_build_rows_buckets_half_with_corresponding_annual_period(self) -> None:
         self.conn.executemany(
             """
@@ -1055,7 +1130,57 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(errors, [])
         detail_rows = _detail_rows(rows)
         self.assertEqual([row.metric_base for row in detail_rows], ["EPSGrowthRate"])
-        self.assertEqual(detail_rows[0].metric_label, "4Q EPS増加率")
+        self.assertEqual(detail_rows[0].metric_label, "4Q EPS増加率(前期比)")
+
+    def test_growth_metric_labels_use_prior_period_suffix_for_annual_and_half(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES ('E00001_HALF_0', 'E00001', '11110', '043A00',
+                      '2026-09-30', '2026-11-14 12:00', 0, '0', '1',
+                      'Japan GAAP', '騾具ｽｾ闕ｳ繝ｻ繝ｻ', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=[
+                "EPSGrowthRate",
+                "BPSGrowthRate",
+                "OrdinaryIncomeGrowthRate",
+                "CashBalanceGrowthRate",
+                "StockPriceGrowthRate",
+            ],
+            period_scopes=["annual", "quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, _warnings, _preview, _target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        self.assertEqual(errors, [])
+        labels = {
+            (row.period_scope, row.metric_base): row.metric_label
+            for row in _detail_rows(rows)
+        }
+        expected_base_labels = {
+            "EPSGrowthRate": "EPS増加率(前期比)",
+            "BPSGrowthRate": "BPS増加率(前期比)",
+            "OrdinaryIncomeGrowthRate": "経常利益増益率(前期比)",
+            "CashBalanceGrowthRate": "現金残高増加率(前期比)",
+            "StockPriceGrowthRate": "株価上昇率(前期比)",
+        }
+        for base, label in expected_base_labels.items():
+            self.assertEqual(labels[("annual", base)], f"4Q {label}")
+            self.assertEqual(labels[("quarter:2Q", base)], f"2Q {label}")
 
     def test_export_metric_excel_writes_percent_format(self) -> None:
         condition_path = self.tmp_path / "condition.xlsx"
@@ -1174,6 +1299,42 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(target_companies, 1)
         self.assertEqual({row.security_code for row in _detail_rows(rows)}, {"1111"})
+
+    def test_five_and_ten_year_growth_metrics_show_all_requested_periods(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO derived_metrics (
+                doc_id, edinet_code, security_code, metric_key, metric_base, metric_group,
+                fiscal_year, period_end, period_scope, period_offset, consolidation,
+                accounting_standard, document_display_unit, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, 'E00001', '11110', ?, ?, 'growth', 2025, ?, 'annual',
+                      0, 'consolidated', 'Japan GAAP', '百万円', ?, 'ratio',
+                      'ok', 'test', '{}', 'v1', '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("E00001_0", "NetSalesGrowthRate5YearCurrent", "NetSalesGrowthRate5Year", "2026-03-31", 1.5),
+                ("E00001_1", "NetSalesGrowthRate5YearCurrent", "NetSalesGrowthRate5Year", "2025-03-31", 1.4),
+                ("E00001_0", "NetSalesGrowthRate10YearCurrent", "NetSalesGrowthRate10Year", "2026-03-31", 2.5),
+                ("E00001_1", "NetSalesGrowthRate10YearCurrent", "NetSalesGrowthRate10Year", "2025-03-31", 2.4),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["NetSalesGrowthRate5Year", "NetSalesGrowthRate10Year"],
+            period_scopes=["annual"],
+            period_offsets=[2, 1],
+        )
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        by_base = {row.metric_base: row for row in _detail_rows(rows)}
+        self.assertEqual(by_base["NetSalesGrowthRate5Year"].values_by_offset[1], 1.5)
+        self.assertEqual(by_base["NetSalesGrowthRate5Year"].values_by_offset[2], 1.4)
+        self.assertEqual(by_base["NetSalesGrowthRate10Year"].values_by_offset[1], 2.5)
+        self.assertEqual(by_base["NetSalesGrowthRate10Year"].values_by_offset[2], 2.4)
 
     def test_percent_filter_period_requires_each_selected_period(self) -> None:
         self.conn.executemany(
@@ -1571,6 +1732,49 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(by_base["PCFR"].values_by_offset[1], 6.0)
         self.assertEqual(by_base["StockPrice"].periods_by_offset[1], "\u901a\u671f 2026-03-31\u6642\u70b9")
 
+    def test_market_capitalization_and_outstanding_shares_are_scaled_for_excel(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO market_derived_metrics (
+                source_type, source_id, edinet_code, security_code, period_scope,
+                period_key, quarter_type, fiscal_year, period_end, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                'edinet', 'E00001_0', 'E00001', '1111', 'annual',
+                'annual:FY', NULL, 2026, '2026-03-31', 'MarketCapitalizationCurrent',
+                'MarketCapitalization', 'market', 4775954000000.0, 'yen', 'ok',
+                'fixture', '{}', 'v1', '2026-05-08', '2026-05-08'
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES ('E00001_0', 'E00001', '11110', 'OutstandingSharesCurrent',
+                      2026, '2026-03-31', 2771561200.0, 'tag',
+                      'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["MarketCapitalization", "OutstandingShares"],
+            period_scopes=["annual"],
+            period_offsets=[1],
+        )
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        by_base = {row.metric_base: row for row in _detail_rows(rows)}
+        self.assertEqual(by_base["MarketCapitalization"].values_by_offset[1], 47760)
+        self.assertEqual(by_base["MarketCapitalization"].units_by_offset[1], "\u5104\u5186")
+        self.assertEqual(by_base["OutstandingShares"].values_by_offset[1], 2771561)
+        self.assertEqual(by_base["OutstandingShares"].units_by_offset[1], "\u5343\u682a")
+
     def test_jquants_market_derived_metrics_are_loaded_for_quarter(self) -> None:
         self.conn.execute(
             """
@@ -1700,6 +1904,72 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(row.metric_label, "1Q 売上高増収率(前期比)")
         self.assertAlmostEqual(row.values_by_offset[0], 1.2)
         self.assertEqual(row.units_by_offset[0], "%")
+
+    def test_jquants_quarter_eps_bps_and_stock_growth_use_prior_year_same_quarter(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, '11110', '1111', 'E00001', 'actual',
+                      'quarter', 'actual:1Q', '1Q', NULL, ?,
+                      '2025-04-01', ?, ?, '15:00', ?,
+                      ?, 'per_share', ?, 'yen', 'ok', 'field', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """,
+            [
+                ("current_eps", 2026, "2025-06-30", "2025-08-01", "EPSCurrent", "EPS", 120.0),
+                ("prior_eps", 2025, "2024-06-30", "2024-08-01", "EPSCurrent", "EPS", 100.0),
+                ("current_bps", 2026, "2025-06-30", "2025-08-01", "BPSCurrent", "BPS", 600.0),
+                ("prior_bps", 2025, "2024-06-30", "2024-08-01", "BPSCurrent", "BPS", 500.0),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO market_derived_metrics (
+                source_type, source_id, edinet_code, security_code, period_scope,
+                period_key, quarter_type, fiscal_year, period_end, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                formula_name, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                'jquants', ?, 'E00001', '1111', 'quarter',
+                'actual:1Q', '1Q', ?, ?, 'StockPriceCurrent',
+                'StockPrice', 'market', ?, 'yen_per_share', 'ok',
+                'fixture', '{}', 'v1', '2026-05-08', '2026-05-08'
+            )
+            """,
+            [
+                ("DISC2026Q1", 2026, "2025-06-30", 900.0),
+                ("DISC2025Q1", 2025, "2024-06-30", 600.0),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["EPSGrowthRate", "BPSGrowthRate", "StockPriceGrowthRate"],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("jquants_metrics_not_found", warnings)
+        by_base = {
+            row.metric_base: row
+            for row in _detail_rows(rows)
+            if row.period_scope == "quarter:1Q"
+        }
+        self.assertAlmostEqual(by_base["EPSGrowthRate"].values_by_offset[0], 1.2)
+        self.assertEqual(by_base["EPSGrowthRate"].metric_label, "1Q EPS増加率(前期比)")
+        self.assertAlmostEqual(by_base["BPSGrowthRate"].values_by_offset[0], 1.2)
+        self.assertEqual(by_base["BPSGrowthRate"].metric_label, "1Q BPS増加率(前期比)")
+        self.assertAlmostEqual(by_base["StockPriceGrowthRate"].values_by_offset[0], 1.5)
+        self.assertEqual(by_base["StockPriceGrowthRate"].metric_label, "1Q 株価上昇率(前期比)")
 
     def test_jquants_quarter_bps_falls_back_to_net_assets_per_share(self) -> None:
         self.conn.executemany(

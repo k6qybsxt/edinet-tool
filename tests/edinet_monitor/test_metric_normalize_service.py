@@ -348,6 +348,69 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(by_key["AverageLengthOfServiceCurrent"]["value_num"], 18.7)
         self.assertEqual(by_key["AverageAnnualSalaryCurrent"]["value_num"], 8448000.0)
 
+    def test_half_report_skips_disabled_employee_metrics(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NumberOfEmployees",
+                value_text="17414",
+                context_ref="CurrentYearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-09-30",
+                consolidation="Consolidated",
+                unit_ref="pure",
+            ),
+            build_raw_fact(
+                tag_name="AverageAgeYearsInformationAboutReportingCompanyInformationAboutEmployees",
+                value_text="42.5",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-09-30",
+                consolidation="NonConsolidated",
+                unit_ref="pure",
+            ),
+            build_raw_fact(
+                tag_name="AverageLengthOfServiceYearsInformationAboutReportingCompanyInformationAboutEmployees",
+                value_text="18.7",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-09-30",
+                consolidation="NonConsolidated",
+                unit_ref="pure",
+            ),
+            build_raw_fact(
+                tag_name="AverageAnnualSalaryInformationAboutReportingCompanyInformationAboutEmployees",
+                value_text="8448000",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-09-30",
+                consolidation="NonConsolidated",
+                unit_ref="JPY",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00893",
+            security_code="4613",
+            filing_period_end="2025-09-30",
+            form_type="043A00",
+            enforce_candidate_validation=True,
+        )
+        keys = {row["metric_key"] for row in normalized_rows}
+
+        self.assertNotIn("NumberOfEmployeesCurrent", keys)
+        self.assertNotIn("AverageAgeCurrent", keys)
+        self.assertNotIn("AverageAnnualSalaryCurrent", keys)
+        self.assertIn("AverageLengthOfServiceCurrent", keys)
+
     def test_gas_supply_and_sales_expenses_maps_to_selling_expenses_only(self) -> None:
         row = build_raw_fact(tag_name="SupplyAndSalesExpensesGAS")
 
