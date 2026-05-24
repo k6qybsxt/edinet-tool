@@ -43,6 +43,11 @@ from edinet_monitor.services.segment_metric_service import (
     SEGMENT_EXCEL_METRIC_LABELS,
     segment_metrics_table_exists,
 )
+from edinet_monitor.services.segment_name_normalize_service import (
+    SegmentNameCandidate,
+    canonical_segment_key,
+    preferred_segment_name_map,
+)
 
 
 GENERAL_SHEET = "一般企業"
@@ -1911,10 +1916,21 @@ def _build_segment_metric_excel_rows(
         _append_warning_once(warnings, "segment_metrics_empty")
         return []
 
+    preferred_segment_names = preferred_segment_name_map(
+        SegmentNameCandidate(
+            edinet_code=str(raw["edinet_code"] or ""),
+            segment_kind=str(raw["segment_kind"] or ""),
+            member_qname=str(raw["member_qname"] or ""),
+            segment_name=_normalize_segment_name_for_excel(raw["segment_name"]),
+            period_end=_date_text(raw["period_end"]),
+        )
+        for raw in raw_rows
+    )
     max_year_by_scope: dict[tuple[str, str, str, str], int] = {}
     current_period_end_by_scope: dict[tuple[str, str, str, str], str] = {}
     grouped: dict[tuple[str, str, str, str, str, str, str], dict[int, sqlite3.Row]] = {}
     segment_order_by_key: dict[tuple[str, str, str, str, str, str, str], int] = {}
+    segment_name_by_key: dict[tuple[str, str, str, str, str, str, str], str] = {}
     for raw in raw_rows:
         fiscal_year = raw["fiscal_year"]
         if fiscal_year is None:
@@ -1944,10 +1960,19 @@ def _build_segment_metric_excel_rows(
             period_scope,
             quarter_type,
             str(raw["segment_kind"] or ""),
-            _normalize_segment_name_for_excel(raw["segment_name"]),
+            canonical_segment_key(str(raw["member_qname"] or ""), str(raw["segment_name"] or "")),
             str(raw["metric_base"] or ""),
             edinet_code,
         )
+        preferred_name = preferred_segment_names.get(
+            (
+                edinet_code,
+                str(raw["segment_kind"] or ""),
+                key[4],
+            ),
+            _normalize_segment_name_for_excel(raw["segment_name"]),
+        )
+        segment_name_by_key[key] = preferred_name
         segment_order = _segment_order_from_row(raw)
         if segment_order is not None:
             segment_order_by_key[key] = min(segment_order_by_key.get(key, segment_order), segment_order)
@@ -1958,7 +1983,8 @@ def _build_segment_metric_excel_rows(
 
     rows: list[MetricExcelRow] = []
     for key, by_year in grouped.items():
-        security_code, period_scope, quarter_type, segment_kind, segment_name, metric_base, edinet_code = key
+        security_code, period_scope, quarter_type, segment_kind, _segment_key, metric_base, edinet_code = key
+        segment_name = segment_name_by_key.get(key, _segment_key)
         scope_key = (security_code, period_scope, quarter_type, edinet_code)
         max_year = max_year_by_scope.get(scope_key, max(by_year))
         periods_by_offset: dict[int, str] = {}

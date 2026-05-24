@@ -207,6 +207,7 @@ METRICS = {
         "tags": [
             "jpcrp_cor:NetAssetsSummaryOfBusinessResults",
             "jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+            "jpcrp_cor:EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults",
             "jpigp_cor:EquityAttributableToOwnersOfParentIFRS",
             "jpigp_cor:EquityIFRS",
         ],

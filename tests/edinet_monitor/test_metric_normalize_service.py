@@ -96,6 +96,66 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "EquityRatioCurrent")
         self.assertEqual(normalized["value_num"], 0.425)
 
+    def test_usgaap_parent_equity_summary_maps_to_net_assets(self) -> None:
+        row = build_raw_fact(
+            tag_name="EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults",
+            value_text="3380273000000",
+            context_ref="CurrentYearInstant",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2024-12-31",
+            unit_ref="JPY",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="7751",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "NetAssetsCurrent")
+        self.assertEqual(normalized["value_num"], 3380273000000.0)
+
+    def test_issued_shares_prefers_summary_tag_over_voting_rights_candidate(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NumberOfSharesIssuedSharesVotingRights",
+                value_text="39783000",
+                context_ref="CurrentYearInstant_ConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-03-31",
+                consolidation="Consolidated",
+                unit_ref="shares",
+            ),
+            build_raw_fact(
+                tag_name="TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+                value_text="1261232000",
+                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-03-31",
+                consolidation="NonConsolidated",
+                unit_ref="shares",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="6758",
+        )
+
+        issued = [row for row in normalized_rows if row["metric_key"] == "IssuedSharesCurrent"]
+        self.assertEqual(len(issued), 1)
+        self.assertEqual(issued[0]["value_num"], 1261232000.0)
+        self.assertEqual(issued[0]["source_tag"], "TotalNumberOfIssuedSharesSummaryOfBusinessResults")
+
     def test_operating_cost_maps_to_cost_of_sales(self) -> None:
         row = build_raw_fact(tag_name="OperatingCost")
 

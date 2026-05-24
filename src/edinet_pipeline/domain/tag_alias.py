@@ -197,6 +197,7 @@ TAG_ALIAS = {
     "NetAssets": "NetAssets",
     "NetAssetsSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "NetAssets",
+    "EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults": "NetAssets",
     "EquityAttributableToOwnersOfParentIFRS": "NetAssets",
     "EquityIFRS": "NetAssets",
     "EquityToAssetRatioSummaryOfBusinessResults": "EquityRatio",

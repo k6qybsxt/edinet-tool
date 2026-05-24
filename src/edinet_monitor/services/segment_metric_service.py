@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 import json
@@ -11,6 +11,11 @@ from typing import Any
 from lxml import html as lxml_html
 
 from edinet_pipeline.services.linkbase_analyzer import analyze_linkbase_structure
+from edinet_monitor.services.segment_name_normalize_service import (
+    SegmentNameCandidate,
+    canonical_segment_key,
+    preferred_segment_name_map,
+)
 
 
 SEGMENT_RULE_VERSION = "segment-metrics-2026-05-15-v1"
@@ -868,6 +873,29 @@ def _labels_from_structure(structure: dict[str, dict[str, Any]]) -> dict[str, st
     }
 
 
+def _apply_preferred_segment_names(rows: list[SegmentMetricRow]) -> list[SegmentMetricRow]:
+    preferred = preferred_segment_name_map(
+        SegmentNameCandidate(
+            edinet_code=row.edinet_code,
+            segment_kind=row.segment_kind,
+            member_qname=row.member_qname,
+            segment_name=row.segment_name,
+            period_end=row.period_end,
+        )
+        for row in rows
+    )
+    out: list[SegmentMetricRow] = []
+    for row in rows:
+        key = (
+            row.edinet_code,
+            row.segment_kind,
+            canonical_segment_key(row.member_qname, row.segment_name),
+        )
+        segment_name = preferred.get(key, row.segment_name)
+        out.append(replace(row, segment_name=segment_name) if segment_name != row.segment_name else row)
+    return out
+
+
 def build_segment_metric_rows(
     conn: sqlite3.Connection,
     *,
@@ -1205,6 +1233,7 @@ def build_segment_metric_rows(
             )
 
     rows = _add_segment_profit_fallback_rows([item[2] for item in selected.values()])
+    rows = _apply_preferred_segment_names(rows)
     rows.sort(
         key=lambda row: (
             row.security_code,

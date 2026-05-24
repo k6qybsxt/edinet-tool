@@ -122,6 +122,7 @@ class TagAliasTest(unittest.TestCase):
             "CashFlowsFromUsedInInvestingActivitiesUSGAAPSummaryOfBusinessResults": "InvestmentCash",
             "CashFlowsFromUsedInFinancingActivitiesUSGAAPSummaryOfBusinessResults": "FinancingCash",
             "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults": "CashAndCashEquivalents",
+            "EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults": "NetAssets",
         }
 
         for tag_name, metric_name in cases.items():

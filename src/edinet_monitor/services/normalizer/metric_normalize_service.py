@@ -33,6 +33,10 @@ HALF_DISABLED_NORMALIZED_BASES = {
     "AverageAge",
     "AverageAnnualSalary",
 }
+SHARE_COUNT_METRIC_BASES = {
+    "IssuedShares",
+    "TreasuryShares",
+}
 
 
 def _period_scope_from_form_type(form_type: str | None) -> str:
@@ -737,6 +741,14 @@ def _dedupe_group_key(row: dict[str, Any]) -> tuple:
 
 
 def _dedupe_sort_key(row: dict[str, Any]) -> tuple:
+    if str(row.get("_metric_base") or "") in SHARE_COUNT_METRIC_BASES:
+        return (
+            row.get("_tag_priority", 9999),
+            row.get("_structure_priority", 9999),
+            row.get("_manual_override_priority", 9999),
+            row.get("_consolidation_rank", 9999),
+            str(row.get("source_tag") or ""),
+        )
     return (
         row.get("_consolidation_rank", 9999),
         row.get("_tag_priority", 9999),
