@@ -11,6 +11,11 @@ from edinet_monitor.services.jquants.mapper import (
     JQuantsStatementMetric,
     JQuantsStatementRaw,
 )
+from edinet_monitor.services.jquants.audit_mapper import (
+    JQuantsFsDetailItem,
+    JQuantsFsDetailsRaw,
+    JQuantsListedInfoRaw,
+)
 
 
 @dataclass(frozen=True)
@@ -228,6 +233,132 @@ def upsert_quote(conn: sqlite3.Connection, quote: JQuantsQuote) -> None:
             now,
         ),
     )
+
+
+def upsert_listed_info_raw(conn: sqlite3.Connection, rows: list[JQuantsListedInfoRaw]) -> int:
+    if not rows:
+        return 0
+    now = _now()
+    conn.executemany(
+        """
+        INSERT INTO jquants_listed_info_raw (
+            listing_date, local_code, security_code, company_name, company_name_en,
+            sector_17_code, sector_17_name, sector_33_code, sector_33_name,
+            scale_category, market_code, market_name, margin_code, margin_name,
+            raw_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(local_code, listing_date) DO UPDATE SET
+            security_code = excluded.security_code,
+            company_name = excluded.company_name,
+            company_name_en = excluded.company_name_en,
+            sector_17_code = excluded.sector_17_code,
+            sector_17_name = excluded.sector_17_name,
+            sector_33_code = excluded.sector_33_code,
+            sector_33_name = excluded.sector_33_name,
+            scale_category = excluded.scale_category,
+            market_code = excluded.market_code,
+            market_name = excluded.market_name,
+            margin_code = excluded.margin_code,
+            margin_name = excluded.margin_name,
+            raw_json = excluded.raw_json,
+            updated_at = excluded.updated_at
+        """,
+        [
+            (
+                row.listing_date,
+                row.local_code,
+                row.security_code,
+                row.company_name,
+                row.company_name_en,
+                row.sector_17_code,
+                row.sector_17_name,
+                row.sector_33_code,
+                row.sector_33_name,
+                row.scale_category,
+                row.market_code,
+                row.market_name,
+                row.margin_code,
+                row.margin_name,
+                row.raw_json,
+                now,
+                now,
+            )
+            for row in rows
+        ],
+    )
+    return len(rows)
+
+
+def upsert_fs_details_raw(conn: sqlite3.Connection, raw: JQuantsFsDetailsRaw) -> None:
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO jquants_fs_details_raw (
+            disclosure_number, disclosed_date, disclosed_time, local_code,
+            security_code, type_of_document, raw_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(disclosure_number) DO UPDATE SET
+            disclosed_date = excluded.disclosed_date,
+            disclosed_time = excluded.disclosed_time,
+            local_code = excluded.local_code,
+            security_code = excluded.security_code,
+            type_of_document = excluded.type_of_document,
+            raw_json = excluded.raw_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            raw.disclosure_number,
+            raw.disclosed_date,
+            raw.disclosed_time,
+            raw.local_code,
+            raw.security_code,
+            raw.type_of_document,
+            raw.raw_json,
+            now,
+            now,
+        ),
+    )
+
+
+def replace_fs_detail_items(
+    conn: sqlite3.Connection,
+    disclosure_number: str,
+    items: list[JQuantsFsDetailItem],
+) -> int:
+    conn.execute(
+        "DELETE FROM jquants_fs_detail_items WHERE disclosure_number = ?",
+        (disclosure_number,),
+    )
+    if not items:
+        return 0
+    now = _now()
+    conn.executemany(
+        """
+        INSERT INTO jquants_fs_detail_items (
+            disclosure_number, local_code, security_code, disclosed_date, item_key,
+            metric_hint, detail_label, value_num, value_text, source_path,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                item.disclosure_number,
+                item.local_code,
+                item.security_code,
+                item.disclosed_date,
+                item.item_key,
+                item.metric_hint,
+                item.detail_label,
+                item.value_num,
+                item.value_text,
+                item.source_path,
+                now,
+                now,
+            )
+            for item in items
+        ],
+    )
+    return len(items)
 
 
 def record_ingest_run(

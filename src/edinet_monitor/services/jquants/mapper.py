@@ -6,9 +6,9 @@ import json
 from typing import Any
 
 
-JQUANTS_RULE_VERSION = "jquants-2026-05-06-v2"
+JQUANTS_RULE_VERSION = "jquants-2026-05-24-v3"
 ACTUAL_PERIODS = {"1Q", "2Q", "3Q"}
-FORECAST_TARGETS = {"FY"}
+FORECAST_TARGETS = ("FY", "2Q")
 _UNSET = object()
 FORECAST_STAGE_BY_PERIOD = {
     "FY": "initial",
@@ -98,6 +98,12 @@ ACTUAL_FIELD_MAP = [
     ("ShOutFY", "IssuedShares", "shares", "shares"),
     ("TrShFY", "TreasuryShares", "shares", "shares"),
 ]
+ACTUAL_OFFICIAL_FIELD_MAP = [
+    ("EPS", "OfficialEPS", "per_share", "yen_per_share"),
+    ("BPS", "OfficialBPS", "per_share", "yen_per_share"),
+    ("DEPS", "OfficialDilutedEPS", "per_share", "yen_per_share"),
+    ("AvgSh", "AverageShares", "shares", "shares"),
+]
 ORDINARY_INCOME_ACTUAL_FIELDS = (
     "OdP",
     "ProfitBeforeTax",
@@ -109,19 +115,31 @@ ORDINARY_INCOME_ACTUAL_FIELDS = (
 
 FORECAST_FIELD_MAP = {
     "FY": [
-        ("FSales", "NetSales", "sales", "yen"),
-        ("FOP", "OperatingIncome", "profit", "yen"),
-        ("FOdP", "OrdinaryIncome", "profit", "yen"),
-        ("FNP", "ProfitLoss", "profit", "yen"),
+        (("FSales", "FNCSales"), "NetSales", "sales", "yen"),
+        (("FOP", "FNCOP"), "OperatingIncome", "profit", "yen"),
+        (("FOdP", "FNCOdP"), "OrdinaryIncome", "profit", "yen"),
+        (("FNP", "FNCNP"), "ProfitLoss", "profit", "yen"),
+    ],
+    "2Q": [
+        (("FSales2Q", "FNCSales2Q"), "NetSales", "sales", "yen"),
+        (("FOP2Q", "FNCOP2Q"), "OperatingIncome", "profit", "yen"),
+        (("FOdP2Q", "FNCOdP2Q"), "OrdinaryIncome", "profit", "yen"),
+        (("FNP2Q", "FNCNP2Q"), "ProfitLoss", "profit", "yen"),
     ],
 }
 
 INITIAL_FORECAST_FIELD_MAP = {
     "FY": [
-        ("NxFSales", "NetSales", "sales", "yen"),
-        ("NxFOP", "OperatingIncome", "profit", "yen"),
-        ("NxFOdP", "OrdinaryIncome", "profit", "yen"),
-        ("NxFNp", "ProfitLoss", "profit", "yen"),
+        (("NxFSales", "NxFNCSales"), "NetSales", "sales", "yen"),
+        (("NxFOP", "NxFNCOP"), "OperatingIncome", "profit", "yen"),
+        (("NxFOdP", "NxFNCOdP"), "OrdinaryIncome", "profit", "yen"),
+        (("NxFNp", "NxFNCNP"), "ProfitLoss", "profit", "yen"),
+    ],
+    "2Q": [
+        (("NxFSales2Q", "NxFNCSales2Q"), "NetSales", "sales", "yen"),
+        (("NxFOP2Q", "NxFNCOP2Q"), "OperatingIncome", "profit", "yen"),
+        (("NxFOdP2Q", "NxFNCOdP2Q"), "OrdinaryIncome", "profit", "yen"),
+        (("NxFNp2Q", "NxFNCNP2Q"), "ProfitLoss", "profit", "yen"),
     ],
 }
 
@@ -291,6 +309,11 @@ def _metric_from_first_available_field(
     quarter_type: str | None,
     forecast_target: str | None,
     forecast_stage: str | None,
+    fiscal_year: int | None | object = _UNSET,
+    period_start: str | None = None,
+    period_end: str | None = None,
+    rule: str = "first available field",
+    direct_fields: set[str] | None = None,
 ) -> JQuantsStatementMetric:
     selected_field = field_names[0]
     selected_value: Decimal | None = None
@@ -303,8 +326,32 @@ def _metric_from_first_available_field(
 
     raw = build_statement_raw(row)
     calc_status = "ok" if selected_value is not None else "missing"
-    period_start = raw.current_period_start_date
-    period_end = raw.current_period_end_date or raw.current_fiscal_year_end_date
+    metric_period_start = (
+        period_start
+        if period_start is not None
+        else (
+            raw.current_fiscal_year_start_date
+            if metric_kind == "forecast"
+            else raw.current_period_start_date
+        )
+    )
+    metric_period_end = (
+        period_end
+        if period_end is not None
+        else (
+            raw.current_fiscal_year_end_date
+            if metric_kind == "forecast"
+            else raw.current_period_end_date or raw.current_fiscal_year_end_date
+        )
+    )
+    selected_field_text = selected_field if selected_value is not None else None
+    semantic_status = None
+    if selected_field_text is not None:
+        semantic_status = (
+            "direct"
+            if direct_fields is None or selected_field_text in direct_fields
+            else "proxy"
+        )
     return JQuantsStatementMetric(
         disclosure_number=raw.disclosure_number,
         local_code=raw.local_code,
@@ -315,9 +362,9 @@ def _metric_from_first_available_field(
         quarter_type=quarter_type,
         forecast_target=forecast_target,
         forecast_stage=forecast_stage,
-        fiscal_year=raw.fiscal_year,
-        period_start=period_start,
-        period_end=period_end,
+        fiscal_year=raw.fiscal_year if fiscal_year is _UNSET else fiscal_year,
+        period_start=metric_period_start,
+        period_end=metric_period_end,
         disclosed_date=raw.disclosed_date,
         disclosed_time=raw.disclosed_time,
         metric_key=f"{metric_base}Current",
@@ -326,16 +373,22 @@ def _metric_from_first_available_field(
         value_num=_to_float(selected_value),
         value_unit=value_unit,
         calc_status=calc_status,
-        source_field=selected_field if selected_value is not None else "|".join(field_names),
+        source_field=selected_field_text if selected_field_text is not None else "|".join(field_names),
         source_detail_json=_json_dumps(
             {
                 "source": "jquants",
                 "api_version": "v2",
-                "field": selected_field if selected_value is not None else None,
-                "fallback_fields": list(field_names),
-                "period_start": period_start,
-                "period_end": period_end,
-                "rule": "first available ordinary income / profit before tax field",
+                "field": selected_field_text,
+                "candidate_fields": list(field_names),
+                "candidate_raw_values": {
+                    field_name: row.get(field_name) for field_name in field_names
+                },
+                "semantic_status": semantic_status,
+                "forecast_stage": forecast_stage,
+                "forecast_target": forecast_target,
+                "period_start": metric_period_start,
+                "period_end": metric_period_end,
+                "rule": rule,
             }
         ),
     )
@@ -392,6 +445,22 @@ def statement_metrics_from_row(
                     forecast_stage=None,
                 )
             )
+        for field_name, metric_base, metric_group, value_unit in ACTUAL_OFFICIAL_FIELD_MAP:
+            metrics.append(
+                _metric_from_field(
+                    row,
+                    field_name=field_name,
+                    metric_base=metric_base,
+                    metric_group=metric_group,
+                    value_unit=value_unit,
+                    metric_kind="actual",
+                    period_scope="quarter",
+                    period_key=f"actual:{period}",
+                    quarter_type=period,
+                    forecast_target=None,
+                    forecast_stage=None,
+                )
+            )
         metrics.append(
             _metric_from_first_available_field(
                 row,
@@ -405,6 +474,8 @@ def statement_metrics_from_row(
                 quarter_type=period,
                 forecast_target=None,
                 forecast_stage=None,
+                rule="first available ordinary income field; profit before tax is a proxy for IFRS/USGAAP rows",
+                direct_fields={"OdP"},
             )
         )
         metrics.append(_outstanding_shares_metric(row, period))
@@ -420,11 +491,11 @@ def statement_metrics_from_row(
                     forecast_stage,
                     forecast_target,
                 )
-                for field_name, metric_base, metric_group, value_unit in fields:
+                for field_names, metric_base, metric_group, value_unit in fields:
                     metrics.append(
-                        _metric_from_field(
+                        _metric_from_first_available_field(
                             row,
-                            field_name=field_name,
+                            field_names=field_names,
                             metric_base=metric_base,
                             metric_group=metric_group,
                             value_unit=value_unit,
@@ -437,6 +508,8 @@ def statement_metrics_from_row(
                             fiscal_year=fiscal_year,
                             period_start=period_start,
                             period_end=period_end,
+                            rule="prefer consolidated forecast field; fall back to non-consolidated forecast field when consolidated is blank",
+                            direct_fields={field_names[0]},
                         )
                     )
 
@@ -459,7 +532,10 @@ def _outstanding_shares_value(row: dict[str, Any]) -> tuple[Decimal | None, str]
     treasury_value = treasury or Decimal("0")
     if Decimal("0") <= treasury_value < Decimal("1000"):
         treasury_value = Decimal("0")
-    return issued - treasury_value, "ok"
+    outstanding = issued - treasury_value
+    if outstanding <= 0:
+        return None, "invalid_input"
+    return outstanding, "ok"
 
 
 def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
@@ -495,6 +571,9 @@ def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsState
                 "api_version": "v2",
                 "issued_field": issued_field,
                 "treasury_field": treasury_field,
+                "issued_raw_value": row.get(issued_field),
+                "treasury_raw_value": row.get(treasury_field),
+                "rule": "OutstandingShares = ShOutFY - TrShFY; blank or less-than-1000 treasury shares are treated as zero",
             }
         ),
     )

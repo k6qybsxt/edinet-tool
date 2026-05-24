@@ -182,14 +182,22 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def _insert_quote(conn: sqlite3.Connection, code: str, trade_date: str, close: float) -> None:
+def _insert_quote(
+    conn: sqlite3.Connection,
+    code: str,
+    trade_date: str,
+    close: float,
+    *,
+    adjustment_close: float | None = None,
+) -> None:
+    adjusted = close if adjustment_close is None else adjustment_close
     conn.execute(
         """
         INSERT INTO jquants_daily_quotes (
-            local_code, security_code, trade_date, adjustment_close_rounded, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, '2026-05-08', '2026-05-08')
+            local_code, security_code, trade_date, close, adjustment_close_rounded, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, '2026-05-08', '2026-05-08')
         """,
-        (f"{code}0", code, trade_date, close),
+        (f"{code}0", code, trade_date, close, adjusted),
     )
 
 
@@ -310,6 +318,32 @@ class MarketDerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_base["PER"]["value_num"], 12)
         self.assertEqual(by_base["PCFR"]["value_num"], 6)
         self.assertEqual(by_base["StockPriceGrowthRate"]["value_num"], 1.2)
+
+    def test_uses_raw_close_for_valuation_and_adjusted_close_for_growth(self) -> None:
+        _insert_filing(self.conn, "DOC2026", "2026-03-31")
+        _insert_filing(self.conn, "DOC2025", "2025-03-31")
+        for doc_id, eps, bps, shares in (
+            ("DOC2026", 100, 1000, 1_000_000),
+            ("DOC2025", 80, 800, 1_000_000),
+        ):
+            _insert_derived(self.conn, doc_id, "EPS", eps)
+            _insert_derived(self.conn, doc_id, "BPS", bps)
+            _insert_derived(self.conn, doc_id, "OperatingCashPerShare", 200)
+            _insert_derived(self.conn, doc_id, "OutstandingShares", shares)
+        _insert_quote(self.conn, "1111", "2026-03-31", 1200, adjustment_close=600)
+        _insert_quote(self.conn, "1111", "2025-03-31", 1000, adjustment_close=300)
+
+        rows, _, _ = build_market_derived_metrics(
+            self.conn,
+            date_from="2026-01-01",
+            date_to="2026-12-31",
+        )
+
+        by_base = {row["metric_base"]: row for row in rows if row["source_id"] == "DOC2026"}
+        self.assertEqual(by_base["StockPrice"]["value_num"], 1200)
+        self.assertEqual(by_base["MarketCapitalization"]["value_num"], 1_200_000_000)
+        self.assertEqual(by_base["PBR"]["value_num"], 1.2)
+        self.assertEqual(by_base["StockPriceGrowthRate"]["value_num"], 2.0)
 
     def test_jquants_quarter_excludes_pcfr_and_builds_theoretical_metrics(self) -> None:
         for disclosure, fiscal_year, period_end, ordinary_income in (

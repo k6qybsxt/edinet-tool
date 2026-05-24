@@ -346,6 +346,61 @@ def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_listed_info_raw (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        listing_date TEXT NOT NULL,
+        local_code TEXT NOT NULL,
+        security_code TEXT,
+        company_name TEXT,
+        company_name_en TEXT,
+        sector_17_code TEXT,
+        sector_17_name TEXT,
+        sector_33_code TEXT,
+        sector_33_name TEXT,
+        scale_category TEXT,
+        market_code TEXT,
+        market_name TEXT,
+        margin_code TEXT,
+        margin_name TEXT,
+        raw_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_fs_details_raw (
+        disclosure_number TEXT PRIMARY KEY,
+        disclosed_date TEXT,
+        disclosed_time TEXT,
+        local_code TEXT,
+        security_code TEXT,
+        type_of_document TEXT,
+        raw_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jquants_fs_detail_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        disclosure_number TEXT NOT NULL,
+        local_code TEXT,
+        security_code TEXT,
+        disclosed_date TEXT,
+        item_key TEXT NOT NULL,
+        metric_hint TEXT NOT NULL,
+        detail_label TEXT NOT NULL,
+        value_num REAL,
+        value_text TEXT,
+        source_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS jquants_ingest_runs (
         run_id TEXT PRIMARY KEY,
         run_type TEXT NOT NULL,
@@ -686,6 +741,45 @@ def ensure_summary_views(conn: sqlite3.Connection) -> None:
             ON ddc.doc_id = f.doc_id
         WHERE f.parse_status = 'derived_metrics_saved'
           AND COALESCE(ddc.ok_row_count, 0) = 0;
+
+        DROP VIEW IF EXISTS active_latest_jquants_metrics;
+        CREATE VIEW active_latest_jquants_metrics AS
+        WITH ranked AS (
+            SELECT
+                m.*,
+                CASE
+                    WHEN COALESCE(m.security_code, '') <> '' THEN m.security_code
+                    WHEN length(COALESCE(m.local_code, '')) = 5
+                         AND substr(m.local_code, 5, 1) = '0'
+                    THEN substr(m.local_code, 1, 4)
+                    ELSE COALESCE(m.local_code, '')
+                END AS normalized_security_code,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        CASE
+                            WHEN COALESCE(m.security_code, '') <> '' THEN m.security_code
+                            WHEN length(COALESCE(m.local_code, '')) = 5
+                                 AND substr(m.local_code, 5, 1) = '0'
+                            THEN substr(m.local_code, 1, 4)
+                            ELSE COALESCE(m.local_code, '')
+                        END,
+                        COALESCE(m.metric_kind, ''),
+                        COALESCE(m.period_key, ''),
+                        COALESCE(m.forecast_target, ''),
+                        COALESCE(m.forecast_stage, ''),
+                        COALESCE(m.fiscal_year, -1),
+                        COALESCE(m.metric_base, '')
+                    ORDER BY
+                        COALESCE(m.disclosed_date, '') DESC,
+                        COALESCE(m.disclosed_time, '') DESC,
+                        COALESCE(m.disclosure_number, '') DESC,
+                        m.id DESC
+                ) AS row_num
+            FROM jquants_financial_metrics m
+        )
+        SELECT *
+        FROM ranked
+        WHERE row_num = 1;
         """
     )
 
@@ -1117,6 +1211,36 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_jquants_daily_quotes_security_date
     ON jquants_daily_quotes(security_code, trade_date)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_jquants_listed_info_raw_code_date
+    ON jquants_listed_info_raw(local_code, listing_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_listed_info_raw_security_date
+    ON jquants_listed_info_raw(security_code, listing_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_fs_details_raw_date
+    ON jquants_fs_details_raw(disclosed_date)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_fs_details_raw_code
+    ON jquants_fs_details_raw(local_code, disclosed_date)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_jquants_fs_detail_items_scope
+    ON jquants_fs_detail_items(disclosure_number, item_key)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_jquants_fs_detail_items_hint
+    ON jquants_fs_detail_items(metric_hint, security_code, disclosed_date)
     """)
 
     cur.execute("""

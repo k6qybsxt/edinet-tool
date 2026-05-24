@@ -6,6 +6,10 @@ from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.jquants.client import JQuantsClient
 from edinet_monitor.services.jquants.coverage_service import export_jquants_coverage
+from edinet_monitor.services.jquants.audit_ingestion_service import (
+    save_jquants_fs_details,
+    save_jquants_listed_info,
+)
 from edinet_monitor.services.jquants.ingestion_service import (
     save_jquants_daily_quotes,
     save_jquants_statements,
@@ -27,6 +31,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--statement-periods", default="1Q,3Q")
     parser.add_argument("--skip-statements", action="store_true")
     parser.add_argument("--skip-quotes", action="store_true")
+    parser.add_argument("--include-listed-info", action="store_true")
+    parser.add_argument("--include-fs-details", action="store_true")
     parser.add_argument("--save-raw-json", action="store_true")
     parser.add_argument("--raw-json-root", default=None)
     parser.add_argument("--request-interval-sec", type=float, default=None)
@@ -71,6 +77,27 @@ def main() -> None:
                 output_dir=args.output_dir,
             )
             print(f"quotes_saved={quote_result.saved_total}")
+        if args.include_listed_info:
+            listed_result = save_jquants_listed_info(
+                conn,
+                client=client,
+                date_value=args.date_to,
+                codes=codes,
+                output_dir=args.output_dir,
+            )
+            print(f"listed_info_saved={listed_result.saved_total}")
+            print(f"listed_info_warnings={len(listed_result.warnings)}")
+        if args.include_fs_details:
+            fs_result = save_jquants_fs_details(
+                conn,
+                client=client,
+                date_from=args.date_from,
+                date_to=args.date_to,
+                codes=codes,
+                output_dir=args.output_dir,
+            )
+            print(f"fs_details_raw_saved={fs_result.raw_saved_total}")
+            print(f"fs_details_items_saved={fs_result.item_saved_total}")
         coverage = export_jquants_coverage(
             conn,
             date_from=args.date_from,

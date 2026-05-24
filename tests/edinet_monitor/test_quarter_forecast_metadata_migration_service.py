@@ -96,7 +96,7 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         self.assertEqual(result.annual_derived_candidates, 1)
         self.assertEqual(result.q2_derived_candidates, 1)
         self.assertEqual(result.forecast_stage_candidates, 4)
-        self.assertEqual(result.obsolete_forecast_candidates, 3)
+        self.assertEqual(result.obsolete_forecast_candidates, 2)
         self.assertEqual(
             self.conn.execute("SELECT period_scope FROM derived_metrics WHERE doc_id = 'DOC_HALF'").fetchone()[0],
             "half",
@@ -109,7 +109,7 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         self.assertEqual(result.annual_derived_updated, 1)
         self.assertEqual(result.q2_derived_updated, 1)
         self.assertEqual(result.forecast_stage_updated, 4)
-        self.assertEqual(result.obsolete_forecast_deleted, 3)
+        self.assertEqual(result.obsolete_forecast_deleted, 2)
         half_row = self.conn.execute(
             "SELECT period_scope, period_key, quarter_type FROM derived_metrics WHERE doc_id = 'DOC_HALF'"
         ).fetchone()
@@ -117,9 +117,10 @@ class QuarterForecastMetadataMigrationServiceTest(unittest.TestCase):
         forecast_rows = self.conn.execute(
             "SELECT metric_base, period_key, forecast_stage FROM jquants_financial_metrics"
         ).fetchall()
-        self.assertEqual(len(forecast_rows), 2)
+        self.assertEqual(len(forecast_rows), 3)
         self.assertEqual(tuple(forecast_rows[0]), ("NetSales", "forecast:FY", "1Q"))
-        self.assertEqual(tuple(forecast_rows[1]), ("ProfitLoss", "forecast:FY", "initial"))
+        self.assertEqual(tuple(forecast_rows[1]), ("NetSales", "forecast:2Q", "1Q"))
+        self.assertEqual(tuple(forecast_rows[2]), ("ProfitLoss", "forecast:FY", "initial"))
 
 
 if __name__ == "__main__":

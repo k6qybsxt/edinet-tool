@@ -6,7 +6,8 @@ from pathlib import Path
 import sqlite3
 
 
-FORECAST_BASES_TO_KEEP = {"NetSales", "OrdinaryIncome", "ProfitLoss"}
+FORECAST_BASES_TO_KEEP = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
+FORECAST_TARGETS_TO_KEEP = {"FY", "2Q"}
 SUPPORTED_FORECAST_PERIODS = ("FY", "4Q", "1Q", "2Q", "3Q")
 
 
@@ -126,12 +127,12 @@ def migrate_quarter_forecast_metadata(
               ON r.disclosure_number = m.disclosure_number
             WHERE m.metric_kind = 'forecast'
               AND (
-                COALESCE(m.forecast_target, '') <> 'FY'
+                COALESCE(m.forecast_target, '') NOT IN ({",".join("?" for _ in FORECAST_TARGETS_TO_KEEP)})
                 OR m.metric_base NOT IN ({keep_placeholders})
                 OR COALESCE(r.type_of_current_period, '') NOT IN ({period_placeholders})
               )
             """,
-            (*tuple(sorted(FORECAST_BASES_TO_KEEP)), *SUPPORTED_FORECAST_PERIODS),
+            (*tuple(sorted(FORECAST_TARGETS_TO_KEEP)), *tuple(sorted(FORECAST_BASES_TO_KEEP)), *SUPPORTED_FORECAST_PERIODS),
         )
 
     annual_updated = 0
@@ -208,13 +209,13 @@ def migrate_quarter_forecast_metadata(
                     ON r.disclosure_number = m.disclosure_number
                   WHERE m.metric_kind = 'forecast'
                   AND (
-                    COALESCE(m.forecast_target, '') <> 'FY'
+                    COALESCE(m.forecast_target, '') NOT IN ({",".join("?" for _ in FORECAST_TARGETS_TO_KEEP)})
                     OR m.metric_base NOT IN ({keep_placeholders})
                     OR COALESCE(r.type_of_current_period, '') NOT IN ({period_placeholders})
                   )
                 )
                 """,
-                (*tuple(sorted(FORECAST_BASES_TO_KEEP)), *SUPPORTED_FORECAST_PERIODS),
+                (*tuple(sorted(FORECAST_TARGETS_TO_KEEP)), *tuple(sorted(FORECAST_BASES_TO_KEEP)), *SUPPORTED_FORECAST_PERIODS),
             )
             obsolete_forecast_deleted = int(delete_cursor.rowcount or 0)
         conn.commit()

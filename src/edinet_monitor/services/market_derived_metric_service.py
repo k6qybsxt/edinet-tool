@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any
 
 
-MARKET_DERIVED_RULE_VERSION = "market-derived-2026-05-08-v1"
+MARKET_DERIVED_RULE_VERSION = "market-derived-2026-05-24-v2"
 MARKET_METRIC_BASES = {
     "StockPrice",
     "MarketCapitalization",
@@ -131,27 +131,47 @@ def _quote_on_or_before(
     period_end: str,
     *,
     max_lookback_days: int,
-) -> tuple[float | None, str | None]:
+    price_kind: str = "adjusted",
+) -> tuple[float | None, str | None, str | None]:
     period_date = _parse_date(period_end)
     if period_date is None or not security_code:
-        return None, None
+        return None, None, None
     start_date = period_date - timedelta(days=max_lookback_days)
+    if price_kind == "raw":
+        price_columns = "close, adjustment_close_rounded"
+        price_filter = "(close IS NOT NULL OR adjustment_close_rounded IS NOT NULL)"
+    else:
+        price_columns = "adjustment_close_rounded"
+        price_filter = "adjustment_close_rounded IS NOT NULL"
     row = conn.execute(
-        """
-        SELECT trade_date, adjustment_close_rounded
+        f"""
+        SELECT trade_date, {price_columns}
         FROM jquants_daily_quotes
         WHERE security_code = ?
           AND trade_date <= ?
           AND trade_date >= ?
-          AND adjustment_close_rounded IS NOT NULL
+          AND {price_filter}
         ORDER BY trade_date DESC
         LIMIT 1
         """,
         (security_code, period_date.isoformat(), start_date.isoformat()),
     ).fetchone()
     if row is None:
-        return None, None
-    return _to_float(row["adjustment_close_rounded"]), str(row["trade_date"])
+        return None, None, None
+    if price_kind == "raw":
+        close_value = _to_float(row["close"])
+        if close_value is not None:
+            return close_value, str(row["trade_date"]), "jquants_daily_quotes.close"
+        return (
+            _to_float(row["adjustment_close_rounded"]),
+            str(row["trade_date"]),
+            "jquants_daily_quotes.adjustment_close_rounded",
+        )
+    return (
+        _to_float(row["adjustment_close_rounded"]),
+        str(row["trade_date"]),
+        "jquants_daily_quotes.adjustment_close_rounded",
+    )
 
 
 def _metric_key(metric_base: str) -> str:
@@ -471,13 +491,14 @@ def _append_price_rows(
     *,
     stock_price: float | None,
     quote_trade_date: str | None,
+    price_source: str | None,
     include_pcfr: bool,
 ) -> None:
     stock_status = "ok" if stock_price is not None else "missing_input"
     detail = {
         "period_end": source.period_end,
         "quote_trade_date": quote_trade_date,
-        "price_source": "jquants_daily_quotes.adjustment_close_rounded",
+        "price_source": price_source,
     }
     rows.append(
         _build_row(
@@ -580,6 +601,7 @@ def _append_stock_growth_rows(
                         source_detail={
                             "current_stock_price": current_price,
                             "prior_stock_price": prior_price,
+                            "price_source": "jquants_daily_quotes.adjustment_close_rounded",
                             "prior_source_id": prior.source_id if prior is not None else None,
                             "prior_period_end": prior.period_end if prior is not None else None,
                         },
@@ -681,6 +703,7 @@ def _append_jquants_stock_growth_rows(
                     source_detail={
                         "current_stock_price": current_price,
                         "prior_stock_price": prior_price,
+                        "price_source": "jquants_daily_quotes.adjustment_close_rounded",
                         "prior_source_id": prior.source_id if prior is not None else None,
                         "prior_period_end": prior.period_end if prior is not None else None,
                     },
@@ -711,11 +734,12 @@ def build_market_derived_metrics(
     if "quarter" not in period_scopes:
         edinet_sources = [source for source in edinet_sources if source.period_scope != "quarter"]
     for source in edinet_sources:
-        stock_price, quote_trade_date = _quote_on_or_before(
+        stock_price, quote_trade_date, price_source = _quote_on_or_before(
             conn,
             source.security_code,
             source.period_end,
             max_lookback_days=max_lookback_days,
+            price_kind="raw",
         )
         if stock_price is None:
             missing_quotes += 1
@@ -724,6 +748,7 @@ def build_market_derived_metrics(
             source,
             stock_price=stock_price,
             quote_trade_date=quote_trade_date,
+            price_source=price_source,
             include_pcfr=True,
         )
     annual_reference_sources = [
@@ -735,6 +760,7 @@ def build_market_derived_metrics(
             source.security_code,
             source.period_end,
             max_lookback_days=max_lookback_days,
+            price_kind="adjusted",
         )[0]
         for source in annual_reference_sources
     }
@@ -749,13 +775,21 @@ def build_market_derived_metrics(
         jquants_sources = _fetch_jquants_sources(conn, date_from=date_from, date_to=date_to, codes=codes)
         jquants_price_by_source: dict[str, float | None] = {}
         for source in jquants_sources:
-            stock_price, quote_trade_date = _quote_on_or_before(
+            stock_price, quote_trade_date, price_source = _quote_on_or_before(
                 conn,
                 source.security_code,
                 source.period_end,
                 max_lookback_days=max_lookback_days,
+                price_kind="raw",
             )
-            jquants_price_by_source[source.source_id] = stock_price
+            adjusted_price, _, _ = _quote_on_or_before(
+                conn,
+                source.security_code,
+                source.period_end,
+                max_lookback_days=max_lookback_days,
+                price_kind="adjusted",
+            )
+            jquants_price_by_source[source.source_id] = adjusted_price
             if stock_price is None:
                 missing_quotes += 1
             _append_price_rows(
@@ -763,6 +797,7 @@ def build_market_derived_metrics(
                 source,
                 stock_price=stock_price,
                 quote_trade_date=quote_trade_date,
+                price_source=price_source,
                 include_pcfr=False,
             )
         _append_jquants_stock_growth_rows(rows, jquants_sources, jquants_price_by_source)

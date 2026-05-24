@@ -172,11 +172,15 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].calc_status, "missing")
         self.assertEqual(by_key[("actual:1Q", None, "OutstandingShares")].value_num, 1000000.0)
         self.assertEqual(by_key[("actual:1Q", None, "BPS")].value_num, 400.0)
+        self.assertEqual(by_key[("actual:1Q", None, "OfficialBPS")].value_num, 500.12)
+        self.assertEqual(by_key[("actual:1Q", None, "OfficialEPS")].value_num, 12.34)
+        self.assertEqual(by_key[("actual:1Q", None, "AverageShares")].calc_status, "missing")
         self.assertEqual(by_key[("actual:1Q", None, "EPS")].calc_status, "missing")
         self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].value_num, 400000000.0)
         self.assertEqual(by_key[("forecast:FY", "1Q", "OperatingIncome")].value_num, 50000000.0)
+        self.assertEqual(by_key[("forecast:2Q", "1Q", "NetSales")].value_num, 220000000.0)
         self.assertNotIn(("forecast:FY", "1Q", "EPS"), by_key)
-        self.assertNotIn(("forecast:2Q", "1Q", "NetSales"), by_key)
+        self.assertNotIn(("forecast:2Q", "1Q", "EPS"), by_key)
 
     def test_statement_mapper_uses_profit_before_tax_as_ordinary_income_fallback(self) -> None:
         row = _statement_row("1Q")
@@ -212,8 +216,8 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(by_key[("forecast:FY", "2Q", "OperatingIncome")].value_num, 50000000.0)
         self.assertEqual(by_key[("forecast:FY", "2Q", "OrdinaryIncome")].value_num, 48000000.0)
         self.assertEqual(by_key[("forecast:FY", "2Q", "ProfitLoss")].value_num, 30000000.0)
+        self.assertEqual(by_key[("forecast:2Q", "2Q", "NetSales")].value_num, 220000000.0)
         self.assertNotIn(("forecast:FY", "2Q", "EPS"), by_key)
-        self.assertNotIn(("forecast:2Q", "2Q", "NetSales"), by_key)
 
     def test_statement_mapper_treats_4q_forecast_as_initial(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("4Q"), include_forecasts=True)
@@ -221,10 +225,22 @@ class JQuantsServicesTest(unittest.TestCase):
 
         self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].value_num, 450000000.0)
         self.assertEqual(by_key[("forecast:FY", "initial", "ProfitLoss")].value_num, 33000000.0)
+        self.assertNotIn(("forecast:FY", "initial", "EPS"), by_key)
         self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].fiscal_year, 2027)
         self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].period_start, "2026-04-01")
         self.assertEqual(by_key[("forecast:FY", "initial", "NetSales")].period_end, "2027-03-31")
         self.assertNotIn(("actual:4Q", None, "NetSales"), by_key)
+
+    def test_statement_mapper_uses_non_consolidated_forecast_fallback(self) -> None:
+        row = _statement_row("1Q")
+        row["FSales"] = ""
+        row["FNCSales"] = "123000000"
+
+        metrics = statement_metrics_from_row(row, include_forecasts=True)
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
+
+        self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].value_num, 123000000.0)
+        self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].source_field, "FNCSales")
 
     def test_statement_mapper_ignores_unsupported_period_forecasts(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("5Q"), include_forecasts=True)

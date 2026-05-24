@@ -519,16 +519,22 @@ def _fetch_quote_on_or_before(conn: sqlite3.Connection, security_code: str, peri
     code = normalize_security_code(security_code)
     row = conn.execute(
         """
-        SELECT adjustment_close_rounded
+        SELECT close, adjustment_close_rounded
         FROM jquants_daily_quotes
         WHERE (security_code = ? OR local_code = ?)
           AND trade_date <= ?
+          AND (close IS NOT NULL OR adjustment_close_rounded IS NOT NULL)
         ORDER BY trade_date DESC
         LIMIT 1
         """,
         (code, code, period_end),
     ).fetchone()
-    return _to_float(row["adjustment_close_rounded"]) if row is not None else None
+    if row is None:
+        return None
+    close_value = _to_float(row["close"])
+    if close_value is not None:
+        return close_value
+    return _to_float(row["adjustment_close_rounded"])
 
 
 def _fetch_stock_price(conn: sqlite3.Connection, source_type: str, source_id: str, security_code: str, period_end: str) -> float | None:
@@ -590,6 +596,8 @@ def _fetch_forecast_values(conn: sqlite3.Connection, security_code: str, fiscal_
         FROM jquants_financial_metrics
         WHERE metric_kind = 'forecast'
           AND forecast_stage = ?
+          AND forecast_target = 'FY'
+          AND period_key = 'forecast:FY'
           AND fiscal_year = ?
           AND (security_code = ? OR local_code = ?)
           AND metric_base IN ('NetSales', 'OrdinaryIncome', 'ProfitLoss')

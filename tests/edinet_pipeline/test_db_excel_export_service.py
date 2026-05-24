@@ -89,6 +89,7 @@ class DbExcelExportServiceTest(unittest.TestCase):
                 security_code TEXT,
                 metric_kind TEXT,
                 period_key TEXT,
+                forecast_target TEXT,
                 forecast_stage TEXT,
                 fiscal_year INTEGER,
                 period_end TEXT,
@@ -139,14 +140,14 @@ class DbExcelExportServiceTest(unittest.TestCase):
         self.conn.execute(
             """
             INSERT INTO jquants_financial_metrics
-            VALUES ('DISC1Q', '4613', '4613', 'actual', 'actual:1Q', NULL, 2026,
+            VALUES ('DISC1Q', '4613', '4613', 'actual', 'actual:1Q', NULL, NULL, 2026,
                     '2025-06-30', '2025-08-01', '15:00', 'NetSales', 20_000_000, 'ok')
             """
         )
         self.conn.execute(
             """
             INSERT INTO jquants_financial_metrics
-            VALUES ('DISC3Q', '4613', '4613', 'actual', 'actual:3Q', NULL, 2026,
+            VALUES ('DISC3Q', '4613', '4613', 'actual', 'actual:3Q', NULL, NULL, 2026,
                     '2025-12-31', '2026-02-01', '15:00', 'NetSales', 75_000_000, 'ok')
             """
         )
@@ -154,11 +155,18 @@ class DbExcelExportServiceTest(unittest.TestCase):
             self.conn.execute(
                 """
                 INSERT INTO jquants_financial_metrics
-                VALUES (?, '4613', '4613', 'forecast', 'forecast:FY', ?, 2026,
+                VALUES (?, '4613', '4613', 'forecast', 'forecast:FY', 'FY', ?, 2026,
                         '2026-03-31', '2025-05-01', '15:00', 'NetSales', ?, 'ok')
                 """,
                 (f"FC_{stage}", stage, value),
             )
+        self.conn.execute(
+            """
+            INSERT INTO jquants_financial_metrics
+            VALUES ('FC_2Q_TARGET', '4613', '4613', 'forecast', 'forecast:2Q', '2Q', '2Q', 2026,
+                    '2025-09-30', '2025-05-01', '15:00', 'NetSales', 999_000_000, 'ok')
+            """
+        )
         self.conn.commit()
 
     def _create_template(self, path: Path) -> None:
