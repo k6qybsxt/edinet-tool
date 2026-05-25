@@ -1,488 +1,519 @@
 # AI_README.md
 
-## このファイルの目的
-このファイルは、将来 AI にこのプロジェクトの修正や調査を依頼するときに、  
-**短時間で全体像・運用ルール・重要仕様・確認ポイントを理解させるための引継ぎファイル**です。
+最終更新: 2026-05-25
 
----
+このファイルは、人間向けの通常READMEではなく、将来のAIまたは作業者がこの環境を復旧し、`edinet_pipeline` / `edinet_monitor` / DB運用を安全に再開するためのランブックです。
 
-# 1. プロジェクト概要
+バックアップ対象:
 
-## プロジェクト名
-EDINET Pipeline
-
-## 目的
-EDINET の XBRL（有価証券報告書・半期報告書）を解析し、  
-決算分析テンプレート Excel に自動入力する Python バッチシステム。
-
-## 主な処理
-1. ZIP から対象 XBRL を抽出
-2. 会社ごとに file1 / file2 / file3 を自動選定
-3. XBRL を解析して指標を抽出
-4. Excel テンプレートへ NamedRange ベースで書き込み
-5. raw_edinet シートへ監査用データを書き込み
-6. 株価データを書き込み
-7. 実行結果を reports 配下に CSV 出力
-
----
-
-# 2. 現在の開発・運用場所
-
-## 開発場所
 - `C:\Users\silve\EDINET_Pipeline`
+- `E:\EDINET_Data`
 
-## 実データ
-- `D:\EDINET_Data`
-
-## バックアップ先
-- `D:\EDINET_Backup`
-
-## 入力ZIPフォルダ
-- `D:\EDINET_Data\input\zip`
-
-## 出力先
-- `D:\EDINET_Data\output\実行日時\`
+重要: APIキー、Windows環境変数、仮想環境 `.venv` の完全な再現、`D:\作業用\DB反映まち`、`D:\EDINET_Backup` は上記バックアップに含まれない可能性があります。復旧時はこのファイルの「復旧手順」と「バックアップ対象外」を先に確認してください。
 
 ---
 
-# 3. Git / ブランチ運用ルール
+## 1. 全体像
 
-## 現在の基本ルール
-- `main` では直接作業しない
-- `main` を常に最新の安定版とする
-- 新しい作業を始めるときは、毎回 `main` を基準に新しい作業ブランチを切る
-- 作業完了後は `main` にマージする
-- 終わった作業ブランチは不要なら削除してよい
+このプロジェクトは、EDINETとJ-Quantsから取得した企業データをSQLite DBに保存し、正規化・派生指標計算・Excel出力・スクリーニングを行うPythonプロジェクトです。
 
-## ブランチ作成ルール
-- 新しい作業ブランチは `main` から作る
-- 継続ブランチを固定で使い続けない
-- 作業内容ごとにブランチを分ける
+大きく2系統があります。
 
-## ブランチ名の例
-- `feature/user-guide-update`
-- `feature/ifrs-operatingincome-fix`
-- `feature/log-debug-improve`
-- `feature/raw-edinet-check`
+- `edinet_monitor`: 現在の中心。DBファーストの取得、保存、正規化、派生指標、J-Quants、Excel出力、スクリーニングを担当。
+- `edinet_pipeline`: 旧来または補助的なExcel/XBRL処理系。XBRL解析、テンプレートExcel出力、DBから分析ワークブックを作る処理などを持つ。
 
-## 毎回使うブランチ作成コマンド
-新しい作業を始めるときは、毎回この流れでブランチを切る。
-
-```bash
-git switch main
-git pull origin main
-git switch -c feature/作業名
-```
-
-### 例
-```bash
-git switch main
-git pull origin main
-git switch -c feature/ifrs-operatingincome-fix
-```
-
-## 作業後の基本コマンド
-```bash
-git add .
-git commit -m "作業内容"
-git push -u origin feature/作業名
-```
-
-### 例
-```bash
-git add .
-git commit -m "Fix IFRS operating income handling"
-git push -u origin feature/ifrs-operatingincome-fix
-```
-
-## main に取り込むときの基本コマンド
-```bash
-git switch main
-git pull origin main
-git merge feature/作業名
-git push origin main
-```
-
-### 例
-```bash
-git switch main
-git pull origin main
-git merge feature/ifrs-operatingincome-fix
-git push origin main
-```
-
-## 取り込み後にブランチを削除するとき
-```bash
-git branch -d feature/作業名
-git push origin --delete feature/作業名
-```
-
-### 例
-```bash
-git branch -d feature/ifrs-operatingincome-fix
-git push origin --delete feature/ifrs-operatingincome-fix
-```
-
-## 重要
-AI は以下の前提で指示すること。
-- `main` で直接作業させない
-- 既存の継続ブランチを前提にしない
-- 必要なら `main` から新しい作業ブランチを切るよう指示する
-
-## main の扱い
-- `main` は安定版として扱う
-- `main` で直接作業しない
-- 新しい修正は毎回 `main` から新しい作業ブランチを切って進める
-- 作業完了後に `main` へマージする
-- 継続ブランチを固定運用しない
-
----
-
-# 4. ユーザーへの回答ルール
-
-## 最重要
-- 指示のみでよい
-- 解説は原則不要
-- 必要な情報が欲しければ言う
-- 修正指示は初心者向けに具体的に出す
-- 「○行目〜○行目を置き換えてください」または「○○関数を丸ごと置き換えてください」の形で指示する
-- ファイル名を必ず明示する
-- あいまいな指示をしない
-- 必要なファイル内容が足りないときは、先にそのファイルを貼ってもらう
-
-## ログ調査ルール
-- 通常は `NORMAL`
-- 原因調査時だけ `DEBUG`
-- **NORMAL ログだけで原因が分からない場合は、DEBUG に切り替えるよう指示する**
-
----
-
-# 5. 現在のフォルダ構成
+基本データフロー:
 
 ```text
-EDINET_Pipeline/
-├─ docs/
-├─ scripts/
-│  ├─ backup_checkpoint.bat
-│  └─ run_KANPE.bat
-├─ src/
-│  ├─ edinet_pipeline/
-│  │  ├─ cli/
-│  │  ├─ config/
-│  │  │  ├─ runtime.py
-│  │  │  └─ settings.py
-│  │  ├─ domain/
-│  │  │  ├─ dedupe.py
-│  │  │  ├─ filters.py
-│  │  │  ├─ output_buffer.py
-│  │  │  ├─ raw_builder.py
-│  │  │  ├─ run_checks.py
-│  │  │  ├─ security_code.py
-│  │  │  ├─ skip.py
-│  │  │  ├─ tag_alias.py
-│  │  │  └─ year_shift.py
-│  │  ├─ logging_utils/
-│  │  │  └─ logger.py
-│  │  └─ services/
-│  │     ├─ batch_input_service.py
-│  │     ├─ cleanup_service.py
-│  │     ├─ company_execution_service.py
-│  │     ├─ company_runner.py
-│  │     ├─ company_runner_worker.py
-│  │     ├─ company_task_result.py
-│  │     ├─ excel_service.py
-│  │     ├─ file_indexer.py
-│  │     ├─ loop_builder.py
-│  │     ├─ loop_processor.py
-│  │     ├─ main_setup_service.py
-│  │     ├─ parse_cache.py
-│  │     ├─ parse_service.py
-│  │     ├─ raw_service.py
-│  │     ├─ stock_service.py
-│  │     ├─ stock_write_service.py
-│  │     ├─ summary_service.py
-│  │     ├─ workbook_service.py
-│  │     ├─ xbrl_parser.py
-│  │     ├─ xbrl_zip_reader.py
-│  │     └─ zip_loader.py
-│  └─ main.py
-├─ templates/
-│  └─ 決算分析シート_1.xlsm
-├─ tests/
-├─ .gitignore
-├─ AI_README.md
-├─ print_tree.py
-└─ requirements.txt
+EDINET API
+  -> document list
+  -> filing ZIP
+  -> XBRL展開
+  -> raw_facts
+  -> normalized_metrics
+  -> derived_metrics / quarter_standalone_metrics / segment_metrics
+  -> Excel出力 / screening
+
+J-Quants API
+  -> jquants_statement_raw / jquants_daily_quotes / jquants_listed_info_raw
+  -> jquants_financial_metrics
+  -> market_derived_metrics
+  -> Excel出力 / audit
 ```
 
 ---
 
-# 6. このプログラムの処理の流れ
+## 2. 重要パス
 
-## 全体フロー
-1. `main.py` 実行
-2. `main_setup_service.py` で出力先や展開先を準備
-3. `batch_input_service.py` で ZIP 内 XBRL を会社ごとに整理
-4. `build_all_company_jobs()` で会社単位の job を作る
-5. `run_company_jobs()` で会社ごとに処理
-6. `loop_processor.py` で 1社分の主処理を実行
-7. Excel 書込 / raw_edinet 書込 / 株価書込
-8. `summary_service.py` で CSV レポート出力
-9. 一時展開フォルダ削除
+リポジトリ:
 
-## 1社分の主処理
-`loop_processor.py` の `process_one_loop()` が中心。
+- `C:\Users\silve\EDINET_Pipeline`
 
-中で主に以下を実行する。
-- `prepare_workbook()`
-- `parse_half_doc()`
-- `parse_latest_annual_doc()`
-- `parse_old_annual_doc()`
-- `finalize_half_buffer()`
-- `build_raw_rows_all_docs()`
-- `write_data_to_workbook_namedranges()`
-- `write_rows_to_raw_sheet_workbook()`
-- `write_stock_data_to_workbook()`
-- 最終 Excel を `output\...\excel\` へ移動
+主DB:
 
----
+- `E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db`
+- 設定元: `src\edinet_monitor\config\settings.py`
+- 環境変数で上書き可能: `EDINET_MONITOR_DB_ROOT`
 
-# 7. file1 / file2 / file3 の仕様
+edinet_monitor保存領域:
 
-## 基本
-会社ごとに `file1 / file2 / file3` を自動選定する。
+- root: `E:\EDINET_Data\edinet_monitor`
+- ZIP: `E:\EDINET_Data\edinet_monitor\raw\zip`
+- XBRL: `E:\EDINET_Data\edinet_monitor\raw\xbrl`
+- manifest: `E:\EDINET_Data\edinet_monitor\raw\manifests`
+- logs: `E:\EDINET_Data\edinet_monitor\logs`
+- J-Quants保存領域: `E:\EDINET_Data\edinet_monitor\jquants`
 
-## 半期あり会社
-- `file1` = 半期報告書の最新1本
-- `file2` = 有価証券報告書の最新1本
-- `file3` = 有価証券報告書の次に新しい1本
+マスタ:
 
-## 半期なし会社
-- `file1` = 有価証券報告書の最新1本
-- `file2` = 有価証券報告書の次に新しい1本
-- `file3` = 有価証券報告書のその次に新しい1本
+- `E:\EDINET_Data\master\tse_issuer_master_latest.csv`
+- 設定元: `EDINET_TSE_MASTER_CSV`
 
-## 注意
-- 必ずしも「1期前」「2期前」とは限らない
-- 入力 ZIP 内の対象 XBRL を新しい順に並べて選ぶ
-- 必要本数が足りない会社は job が作られない
+反映待ちメモ:
 
-## 見分け方
-- 半期報告書: `jpcrp040300`
-- 有価証券報告書: `jpcrp030000-asr`
+- `D:\作業用\DB反映まち\db_reflection_ready_items_20260430_212147.txt`
+- 注意: `C:\Users\silve\EDINET_Pipeline` と `E:\EDINET_Data` だけをバックアップする場合、このファイルは含まれない。
+
+J-Quants公式CLI:
+
+- `C:\Users\silve\EDINET_Pipeline\tools\jquants-cli\jquants.exe`
+- Skill: `C:\Users\silve\.codex\skills\jquants-cli-usage\SKILL.md`
+
+運用メモ:
+
+- `docs\troubleshooting.md`
 
 ---
 
-# 8. 出力物の意味
+## 3. 復旧手順
 
-## Excel
-- 出力先: `D:\EDINET_Data\output\実行日時\excel\`
-- ファイル名: `証券コード_会社名_期末日.xlsm`
+SSD故障などから復旧する場合は、この順番で確認します。
 
-## reports
-- `batch_summary.csv`
-  - 全会社の結果一覧
-- `company_jobs.csv`
-  - file1 / file2 / file3 の割当確認
-- `failed_jobs.csv`
-  - failed / partial_success / skipped のみ
+1. `C:\Users\silve\EDINET_Pipeline` を復元する。
+2. `E:\EDINET_Data` を復元する。
+3. DBが存在することを確認する。
 
-## work
-- テンプレートの作業コピーを置く場所
-- `_work_` 付きファイル
-- 最終成果物ではない
+```powershell
+Test-Path "E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db"
+```
 
-## _zip_extracted
-- ZIP 内 XBRL の一時展開先
-- 処理後に削除される
+4. Python仮想環境を作り直す。`.venv` はバックアップされていても、復旧先では作り直す方が安全です。
 
-## logs
-- `run.log`
-  - 実行全体の流れ
-- `loop_summary.jsonl`
-  - 1社ごとの詳細サマリ
+```powershell
+cd C:\Users\silve\EDINET_Pipeline
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
----
+5. PowerShellで `PYTHONPATH` を設定する。
 
-# 9. raw_edinet シートの意味
+```powershell
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+```
 
-## 役割
-raw_edinet は、  
-**何のタグが採用されたか / 何が missing か / どの期間の値か** を確認するための監査用シート。
+6. 必要なWindows環境変数を再設定する。キー本体はこのファイルに書かない。
 
-## 主な列
-- `company_code`
-- `doc_id`
-- `doc_type`
-- `consolidation`
-- `metric_key`
-- `time_slot`
-- `period_start`
-- `period_end`
-- `period_kind`
-- `value`
-- `unit`
-- `tag_used`
-- `tag_rank`
-- `status`
-- `run_id`
-- `source_file`
+- `EDINET_API_KEY`
+- `JQUANTS_API_KEY`
+- 必要に応じて `EDINET_MONITOR_DB_ROOT`
+- 必要に応じて `EDINET_OPERATION_LOG_ROOT`
+- 必要に応じて `JQUANTS_API_BASE_URL`
 
-## 調査の基本
-数値が想定どおり入らないときは、まず raw_edinet を見る。
+7. DB疎通を確認する。
 
-## 注意
-- `annual` の `YTD / MISSING` は監査行として残ることがある
-- これだけで不具合とは限らない
+```powershell
+.\.venv\Scripts\python.exe -c "from edinet_monitor.config.settings import DB_PATH; print(DB_PATH)"
+.\.venv\Scripts\python.exe -c "import sqlite3; from edinet_monitor.config.settings import DB_PATH; c=sqlite3.connect(DB_PATH); print(c.execute('select count(*) from sqlite_master').fetchone()[0]); c.close()"
+```
+
+8. 代表テストを実行する。
+
+```powershell
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+.\.venv\Scripts\python.exe -m unittest `
+  tests.edinet_monitor.test_jquants_services `
+  tests.edinet_monitor.test_jquants_audit_services `
+  tests.edinet_monitor.test_jquants_official_cli_compare_service `
+  tests.edinet_monitor.test_market_derived_metric_service `
+  tests.edinet_monitor.test_metric_excel_export_service `
+  tests.edinet_pipeline.test_db_excel_export_service
+```
 
 ---
 
-# 10. 重要仕様（修正時に壊してはいけない）
+## 4. バックアップ対象外
 
-## IFRS営業利益
-- IFRS企業で連結営業利益タグが取れない場合でも、個別 `jppfs_cor:OperatingIncome` で補完しない
-- 空欄のままを正とする
+次のものは、復旧時に失われやすいです。
 
-## SellingExpenses
-- すでに SellingExpenses が取れている場合、FinancialBusinessCost を足して上書きしない
-- 二重加算は不具合
+- Windowsユーザー環境変数
+- EDINET APIキー
+- J-Quants APIキー
+- `D:\作業用\DB反映まち`
+- `D:\EDINET_Backup`
+- `.venv` の完全な実行環境
+- Codex Skill本体: `C:\Users\silve\.codex\skills`
+- PowerShellの現在セッション設定
 
-## annual YTD MISSING
-- raw_edinet の annual の YTD MISSING は監査行が中心
-- 実害がなければ不具合扱いしない
-
-## Excel書込
-- セル番地固定ではなく NamedRange ベース
-- テンプレート本体には直接書き込まない
-- `work` フォルダの作業コピー経由で書き込む
-
-## 数値変換
-- 財務数値は表示単位に応じて変換される
-- 株数は 1,000 株単位で丸める
+特に `D:\作業用\DB反映まち\db_reflection_ready_items_20260430_212147.txt` は、DB反映履歴と保留事項を含むため、必要なら別途バックアップ対象に追加してください。
 
 ---
 
-# 11. ログ設定
+## 5. DB構造
 
-## 設定箇所
-- `src/edinet_pipeline/config/settings.py`
+主要テーブル:
 
-## 使い分け
-- `LOG_MODE = "NORMAL"`  
-  通常運用
-- `LOG_MODE = "DEBUG"`  
-  原因調査
+- `issuer_master`: 銘柄・会社マスタ。
+- `filings`: EDINET提出書類一覧。
+- `raw_facts`: XBRLから抽出した生データ。
+- `normalized_metrics`: EDINET由来の正規化済み指標。
+- `derived_metrics`: EDINET由来の派生指標。
+- `quarter_standalone_metrics`: 四半期単独値、四半期単独成長率。
+- `segment_metrics`: セグメント、地域別などの部門別指標。
+- `industry_aggregate_metrics`: 業種集計。
+- `jquants_statement_raw`: J-Quants財務サマリーraw JSON。
+- `jquants_financial_metrics`: J-Quants財務値を正規化した指標。
+- `jquants_daily_quotes`: J-Quants株価日次raw JSONと正規化値。
+- `jquants_listed_info_raw`: J-Quants上場銘柄マスタraw。
+- `market_derived_metrics`: 株価、時価総額、PBR、PER、株価上昇率などの市場由来派生指標。
+- `pipeline_runs`, `pipeline_run_chunks`: 日次パイプライン実行履歴。
+- `screening_runs`, `screening_results`: スクリーニング結果。
 
-## AIへの指示ルール
-不具合時に NORMAL ログだけで原因が分からない場合は、  
-**DEBUG に切り替えるように指示すること。**
+ビュー:
 
----
+- `active_latest_jquants_metrics`: J-Quants財務指標について、Excel採用ロジックと同じく最新開示1件を返すビュー。最新が `missing` でも古い値には戻らない。
 
-# 12. 主要ファイルの役割
+DB初期化:
 
-## `src/main.py`
-エントリーポイント。全体実行。
-
-## `src/edinet_pipeline/services/main_setup_service.py`
-出力先、展開先、テンプレート場所、parse cache を準備。
-
-## `src/edinet_pipeline/services/batch_input_service.py`
-ZIP 内 XBRL の走査、会社単位の job 作成、file1 / file2 / file3 の決定。
-
-## `src/edinet_pipeline/services/loop_processor.py`
-1社分の主処理。
-
-## `src/edinet_pipeline/services/parse_service.py`
-half / annual の解析制御。
-
-## `src/edinet_pipeline/services/raw_service.py`
-raw_edinet 用行データ生成。
-
-## `src/edinet_pipeline/domain/raw_builder.py`
-raw_edinet 用列定義、行組立、MISSING 行追加、run_id 付与。
-
-## `src/edinet_pipeline/services/excel_service.py`
-NamedRange 書込、raw_edinet シート書込、ファイル名調整。
-
-## `src/edinet_pipeline/services/workbook_service.py`
-テンプレートから安全な作業コピー作成。
-
-## `src/edinet_pipeline/services/summary_service.py`
-batch_summary.csv / company_jobs.csv / failed_jobs.csv の出力。
+- `src\edinet_monitor\db\schema.py`
+- `create_tables()` がテーブル、インデックス、ビューを作成する。
+- 既存DBを破壊する処理ではないが、DB反映前には必ず目的を確認する。
 
 ---
 
-# 13. 回帰確認用の固定会社
+## 6. DB運用ルール
 
-## J-GAAP
-- 2206 江崎グリコ株式会社
-- 4613 関西ペイント株式会社
+DBへの反映前に作業内容が明確でない場合は、まず次のファイルへ追記する。
 
-## IFRS
-- 7203 トヨタ自動車株式会社
-- 6857 株式会社アドバンテスト
-- 8001 伊藤忠商事株式会社
-- 8473 ＳＢＩホールディングス株式会社
-- 9983 株式会社ファーストリテイリング
+```text
+D:\作業用\DB反映まち\db_reflection_ready_items_20260430_212147.txt
+```
 
----
+DB更新を行う場合は、原則として以下を満たす。
 
-# 14. AI が問題調査するときの基本順序
+- 対象テーブルと対象期間を明記する。
+- dry-runがあるCLIでは先にdry-runする。
+- 更新後に件数確認または代表銘柄確認を行う。
+- market系指標は、J-Quants財務値を入れ直した後に再計算する。
+- ユーザーが「DBへ反映」と明示するまでは、本番DBを更新しない。
 
-1. `batch_summary.csv` を確認
-2. `failed_jobs.csv` を確認
-3. `company_jobs.csv` を確認
-4. 出力Excelの `raw_edinet` を確認
-5. `run.log` を確認
-6. それでも原因不明なら `DEBUG` に切り替える
-7. 必要なファイル内容をユーザーに貼ってもらう
-8. 修正指示は、ファイル名つき・置換単位で具体的に出す
+本番DB更新に関わる代表CLI:
 
-## ブランチ前提
-- 調査や修正を始める前に、現在ブランチを確認する
-- `main` にいる場合は、そのまま修正せず新しい作業ブランチを切る前提で進める
-- 修正指示を出すときは、`main` を直接編集する前提で書かない
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_daily_pipeline --target-date YYYY-MM-DD
 
----
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.rebuild_jquants_metrics_from_raw `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --periods FY,1Q,2Q,3Q `
+  --codes all `
+  --apply
 
-# 15. ユーザー環境の前提
-
-## Python
-- ユーザーは Python 初心者
-- AI の提案コードをそのままコピペして使う前提
-
-## 指示の出し方
-以下の形を優先すること。
-- `○○.py の ○行目〜○行目を置き換えてください`
-- `○○関数を丸ごと置き換えてください`
-- `○行目の下に追加してください`
-
-## 避けること
-- 抽象的な説明だけで終わること
-- 「for文の前あたり」のような曖昧指示
-- main で直接作業させること
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_market_derived_metrics `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --codes all `
+  --period-scopes all `
+  --apply
+```
 
 ---
 
-# 16. 現在の到達点
+## 7. 指標計算ルール
 
-- `C:\Users\silve\EDINET_Pipeline` への移行完了
-- `.venv` 再構築完了
-- `run_KANPE.bat` 起動確認完了
-- GitHub追跡開始完了
-- `backup_checkpoint.bat` 作成・実行確認完了
-- `AI_README.md` に安全運用ルール追記済み
-- `main` 整理完了
-- `origin/main` と同期済み
-- `docs/初心者向け運用ガイド.md` 作成済み
+成長率:
+
+- 1Qから4Qの前期比成長率は、同一doc内の `Prior1` よりも「前年度docのCurrent値」を優先参照する。
+- J-Quants 1Q/3QのExcel表示は、当期同Q累計を前年度同Q累計で割って計算する。
+- 入力値が1つでも `MISSING` または欠損なら、Excel表示は空欄でよい。
+
+EPS/BPS:
+
+- 独自EPS: `推定純利益(経常利益 * 0.7) / 発行株数`
+- 独自BPS: `純資産 / 発行株数`
+- J-Quants actualの公式EPS/BPSは検算用指標として扱えるが、予想EPSは保存しない方針。
+- FEPS, FEPS2Q, NxFEPS, NxFEPS2Q などの予想EPSは保存対象にしない。
+
+推定純利益:
+
+- `推定純利益(経常利益*0.7)` を使う。
+
+market_derived_metrics:
+
+- 時価総額、PBR、PER、株価上昇率などは `market_derived_metrics` に保存する。
+- J-Quants財務値を再投入した後は、別途 `save_market_derived_metrics --apply` で再計算する。
+
+Excel表示単位:
+
+- 時価総額は「億円」表示。千万の位は四捨五入する。
+- 発行株数は「千株」表示。百の位は四捨五入する。
+
+削除済み・削除対象として扱った指標:
+
+- `2Q 株価上昇率(５年)`
+- `2Q 株価上昇率(10年)`
+- `2Q 従業員数`
+- `2Q 平均年齢`
+- `2Q 平均年間給与`
 
 ---
 
-# 17. AI への最後の注意
+## 8. EDINET取得・正規化の考え方
 
-このプロジェクトで AI がやるべきことは、  
-**原因調査 → 必要ファイル取得 → 具体的な修正指示** です。
+EDINET側は、XBRLタグを単純に1対1で採用しない。タグ候補、業種、連結/非連結、期間、構造、手動優先度を使って正規化する。
 
-このプロジェクトで AI がやってはいけないことは、  
-**曖昧な説明だけして終わること / main で直接作業させること / DEBUG 切替判断を忘れること** です。
+重要ファイル:
+
+- `src\edinet_monitor\services\normalizer\metric_normalize_service.py`
+- `src\edinet_monitor\services\normalizer\metric_catalog.py`
+- `src\edinet_monitor\services\normalizer\structure_classifier.py`
+- `src\edinet_pipeline\domain\tag_alias.py`
+
+`tag_alias.py` は、営業収益や売上高など、表記が違うが同じ指標として扱う候補を判断する時に確認する。
+
+ExcelやDB値が有報と違う疑いがある場合は、この順に切り分ける。
+
+1. 有報PDFまたはXBRL上の該当箇所。
+2. `raw_facts`
+3. `normalized_metrics`
+4. `derived_metrics` / `quarter_standalone_metrics` / `market_derived_metrics`
+5. Excel出力ロジック
+
+---
+
+## 9. J-Quants運用ルール
+
+現在の加入プラン:
+
+- Standard
+
+重要な制約:
+
+- `/v2/fins/details` はStandard対象外として扱う。
+- `fins details` のDB反映は行わない。
+- `/v2/fins/details` 用に実装した取得・保存・監査コードは削除済み。
+
+J-Quantsで怪しい挙動が出たら、まず公式 `jquants` CLIで同じ条件を叩く。
+
+```powershell
+jquants --output json fins summary --date 2026-05-07
+jquants --output json eq daily --date 2026-05-07 --code 72030
+```
+
+DB raw値との比較は専用CLIを使う。
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.compare_jquants_official_cli `
+  --endpoint fins.summary `
+  --date 2026-05-07 `
+  --output-dir "D:\作業用\DB反映まち"
+
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.compare_jquants_official_cli `
+  --endpoint eq.daily `
+  --date 2026-05-07 `
+  --code 72030 `
+  --output-dir "D:\作業用\DB反映まち"
+```
+
+切り分け基準:
+
+- 公式CLIも失敗する: APIキー、プラン、提供期間、J-Quants側仕様を疑う。
+- 公式CLIは成功し、DB rawが違う: 取得・保存処理を疑う。
+- DB rawは一致し、metricが違う: mapperまたは派生計算を疑う。
+- DB値は一致し、Excelだけ違う: Excel出力ロジックを疑う。
+
+仕様変更時:
+
+```powershell
+jquants schema
+jquants schema fins.summary
+jquants schema eq.daily
+```
+
+参照:
+
+- `docs\troubleshooting.md`
+- `C:\Users\silve\.codex\skills\jquants-cli-usage\SKILL.md`
+- `C:\Users\silve\.codex\skills\jquants-cli-usage\references\plans.md`
+- `C:\Users\silve\.codex\skills\jquants-cli-usage\references\commands-fins.md`
+- `C:\Users\silve\.codex\skills\jquants-cli-usage\references\commands-eq.md`
+
+---
+
+## 10. 代表CLI
+
+日次パイプライン:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_daily_pipeline --target-date YYYY-MM-DD
+```
+
+EDINET ZIPバックフィル:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_zip_backfill `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --download-profile auto `
+  --download-run-all
+```
+
+J-Quants財務・株価バックフィル:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.run_jquants_backfill `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --codes all `
+  --statement-periods 1Q,3Q `
+  --output-dir "D:\作業用\DB反映まち"
+```
+
+J-Quants rawからmetrics再構築:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.rebuild_jquants_metrics_from_raw `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --periods FY,1Q,2Q,3Q `
+  --codes all `
+  --apply `
+  --output-dir "D:\作業用\DB反映まち"
+```
+
+market_derived_metrics再計算:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.save_market_derived_metrics `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --codes all `
+  --period-scopes all `
+  --apply `
+  --output-dir "D:\作業用\DB反映まち"
+```
+
+Excel出力:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.export_metric_excel `
+  --condition-xlsx "D:\作業用\条件.xlsx" `
+  --output-dir "D:\作業用"
+```
+
+J-Quants品質監査:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.audit_jquants_quality `
+  --date-from YYYY-MM-DD `
+  --date-to YYYY-MM-DD `
+  --codes all `
+  --output-dir "D:\作業用\DB反映まち"
+```
+
+---
+
+## 11. テスト
+
+代表的な回帰テスト:
+
+```powershell
+$env:PYTHONPATH='C:\Users\silve\EDINET_Pipeline\src'
+.\.venv\Scripts\python.exe -m unittest `
+  tests.edinet_monitor.test_derived_metric_service `
+  tests.edinet_monitor.test_metric_excel_export_service `
+  tests.edinet_monitor.test_jquants_services `
+  tests.edinet_monitor.test_jquants_audit_services `
+  tests.edinet_monitor.test_jquants_official_cli_compare_service `
+  tests.edinet_monitor.test_quarter_standalone_metric_service `
+  tests.edinet_monitor.test_market_derived_metric_service `
+  tests.edinet_pipeline.test_db_excel_export_service
+```
+
+編集後の軽い確認:
+
+```powershell
+git diff --check
+```
+
+---
+
+## 12. 直近の修正状況
+
+2026-04末から2026-05にかけての重要変更:
+
+- 1Qから4Qの成長率は、同一docの `Prior1` ではなく前年度docの `Current` を優先参照するよう修正。
+- J-Quants 1Q/3Qの成長率は、当期同Q累計を前年度同Q累計で割る。
+- J-Quants EPS/BPSは、独自算出ルールを維持。
+- 予想EPSは保存しない方針を維持。
+- 1Q/3QのEPS増加率、BPS増加率、推定純利益、売上高増収率、営業利益増益率、経常利益増益率、純利益増益率、推定純利益増益率、株価上昇率などを追加。
+- 2Q/4Qの一部指標名に `(前期比)` を付与。
+- 時価総額のExcel表示を「億円」に変更。
+- 発行株数のExcel表示を「千株」に変更。
+- 4Qの5年/10年成長率系指標を、通期・四半期含め全期間表示できるよう変更。欠損があれば空欄。
+- 2Qの不要指標をDB・Excel出力対象から削除。
+- `active_latest_jquants_metrics` ビューを追加。
+- `jquants_listed_info_raw` 保存とissuer master照合を追加。
+- J-Quants異常値検知CLI `audit_jquants_quality` を追加。
+- Standardプランでは `/v2/fins/details` が使えないため、fs_detailsのDB反映を断念。
+- `/v2/fins/details` 用の取得、保存、DB作成、監査コードを削除。
+- 公式 `jquants` CLIとの比較用CLI `compare_jquants_official_cli` を追加。
+- J-Quantsトラブル時の運用メモ `docs\troubleshooting.md` を追加。
+
+---
+
+## 13. AI作業ルール
+
+AIがこのプロジェクトを触る時のルール:
+
+- ユーザーが明示しない限り、DB本体を更新しない。
+- DB反映前の内容は `D:\作業用\DB反映まち\db_reflection_ready_items_20260430_212147.txt` に記録する。
+- 既存のユーザー変更を勝手に戻さない。
+- 文字化けしている既存ファイルを見つけた場合、内容を推測して雑に修正しない。関連コードとテストで確認する。
+- Excelの不具合は、Excelだけを見て判断せず、DB raw、normalized、derived、exportの順で切り分ける。
+- J-Quantsの不具合は、まず公式CLIで同じ日付・同じ銘柄を叩く。
+- EDINET値が有報と違う疑いがある場合、タグ候補、連結/非連結、期間、業種ルール、`tag_alias.py` を確認する。
+- テストなしで広範囲のDB再構築や削除を提案しない。
+- destructiveなGit操作、DB削除、ファイル一括削除はユーザー確認なしで行わない。
+
+---
+
+## 14. 復旧後チェックリスト
+
+復旧直後は以下を確認する。
+
+- `C:\Users\silve\EDINET_Pipeline` が存在する。
+- `E:\EDINET_Data\edinet_monitor\db\edinet_monitor.db` が存在する。
+- `requirements.txt` から `.venv` を再作成済み。
+- `EDINET_API_KEY` が設定済み。
+- `JQUANTS_API_KEY` が設定済み。
+- `PYTHONPATH` が `C:\Users\silve\EDINET_Pipeline\src` を指している。
+- `python -m unittest ...` の代表テストが通る。
+- `jquants --output json fins summary --date 2026-05-07` が実行できる。
+- `compare_jquants_official_cli` が `--help` で起動する。
+- `D:\作業用\DB反映まち` が必要なら別途復元されている。
+
+---
+
+## 15. 最後に
+
+このプロジェクトで一番重要なのは、コードそのものよりも「どの値を正として扱うか」「DBをいつ更新してよいか」「J-QuantsとEDINETをどう切り分けるか」です。
+
+復旧後に迷った場合は、すぐに実装へ進まず、まずこの順で確認してください。
+
+1. `AI_README.md`
+2. `docs\troubleshooting.md`
+3. `src\edinet_monitor\config\settings.py`
+4. `src\edinet_monitor\db\schema.py`
+5. 関連テスト
+6. DB反映待ちファイル

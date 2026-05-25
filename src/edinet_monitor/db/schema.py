@@ -369,38 +369,6 @@ def _create_jquants_tables(cur: sqlite3.Cursor) -> None:
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS jquants_fs_details_raw (
-        disclosure_number TEXT PRIMARY KEY,
-        disclosed_date TEXT,
-        disclosed_time TEXT,
-        local_code TEXT,
-        security_code TEXT,
-        type_of_document TEXT,
-        raw_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS jquants_fs_detail_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        disclosure_number TEXT NOT NULL,
-        local_code TEXT,
-        security_code TEXT,
-        disclosed_date TEXT,
-        item_key TEXT NOT NULL,
-        metric_hint TEXT NOT NULL,
-        detail_label TEXT NOT NULL,
-        value_num REAL,
-        value_text TEXT,
-        source_path TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """)
-
-    cur.execute("""
     CREATE TABLE IF NOT EXISTS jquants_ingest_runs (
         run_id TEXT PRIMARY KEY,
         run_type TEXT NOT NULL,
@@ -1221,26 +1189,6 @@ def create_tables() -> None:
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_jquants_listed_info_raw_security_date
     ON jquants_listed_info_raw(security_code, listing_date)
-    """)
-
-    cur.execute("""
-    CREATE INDEX IF NOT EXISTS idx_jquants_fs_details_raw_date
-    ON jquants_fs_details_raw(disclosed_date)
-    """)
-
-    cur.execute("""
-    CREATE INDEX IF NOT EXISTS idx_jquants_fs_details_raw_code
-    ON jquants_fs_details_raw(local_code, disclosed_date)
-    """)
-
-    cur.execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_jquants_fs_detail_items_scope
-    ON jquants_fs_detail_items(disclosure_number, item_key)
-    """)
-
-    cur.execute("""
-    CREATE INDEX IF NOT EXISTS idx_jquants_fs_detail_items_hint
-    ON jquants_fs_detail_items(metric_hint, security_code, disclosed_date)
     """)
 
     cur.execute("""

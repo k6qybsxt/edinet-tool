@@ -1,0 +1,5 @@
+9750d0fc41bf25720eb33c404b4201eb7d08d45762f60ead21c4b92513296290  jquants-1.0.0-aarch64-apple-darwin.tar.gz
+e64f3fb5766d803b93116648fb15d028283c24aa91df4927ad8644086b2df4c1  jquants-1.0.0-aarch64-unknown-linux-musl.tar.gz
+e78015dad802f152853156b7b25a7563ef2b2e0bea8fa0adab1868e7345e1f3c  jquants-1.0.0-x86_64-apple-darwin.tar.gz
+e8499c1b6559a734f3312fc886a79dbda65cb793156e9be85441dcca9473a9d0  jquants-1.0.0-x86_64-unknown-linux-musl.tar.gz
+654f33fde4a09c7cfe76c55a38c7b7cddda2974bd73b4f4a126ca541e774ca66  jquants-1.0.0-x86_64-pc-windows-msvc.zip

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import sqlite3
 import shutil
+import sqlite3
 import sys
 import unittest
 from pathlib import Path
-
-import requests
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -15,10 +13,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from edinet_monitor.db.schema import ensure_summary_views  # noqa: E402
-from edinet_monitor.services.jquants.audit_ingestion_service import (  # noqa: E402
-    save_jquants_fs_details,
-    save_jquants_listed_info,
-)
+from edinet_monitor.services.jquants.audit_ingestion_service import save_jquants_listed_info  # noqa: E402
 from edinet_monitor.services.jquants.client import JQuantsClient  # noqa: E402
 from edinet_monitor.services.jquants_quality_audit_service import (  # noqa: E402
     build_jquants_quality_issues,
@@ -50,15 +45,11 @@ class _FakeSession:
 
 
 class _FakeAuditClient:
-    def __init__(self, *, listed_rows=None, fs_rows=None):
+    def __init__(self, *, listed_rows=None):
         self.listed_rows = listed_rows or []
-        self.fs_rows = fs_rows or []
 
     def iter_equities_master(self, *, date=None, code=None):
         yield from self.listed_rows
-
-    def iter_fins_details(self, *, date=None, code=None):
-        yield from self.fs_rows
 
 
 def _create_audit_schema(conn: sqlite3.Connection) -> None:
@@ -99,34 +90,6 @@ def _create_audit_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE UNIQUE INDEX uq_jquants_listed_info_raw_code_date
         ON jquants_listed_info_raw(local_code, listing_date);
-        CREATE TABLE jquants_fs_details_raw (
-            disclosure_number TEXT PRIMARY KEY,
-            disclosed_date TEXT,
-            disclosed_time TEXT,
-            local_code TEXT,
-            security_code TEXT,
-            type_of_document TEXT,
-            raw_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE jquants_fs_detail_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            disclosure_number TEXT NOT NULL,
-            local_code TEXT,
-            security_code TEXT,
-            disclosed_date TEXT,
-            item_key TEXT NOT NULL,
-            metric_hint TEXT NOT NULL,
-            detail_label TEXT NOT NULL,
-            value_num REAL,
-            value_text TEXT,
-            source_path TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX uq_jquants_fs_detail_items_scope
-        ON jquants_fs_detail_items(disclosure_number, item_key);
         CREATE TABLE jquants_financial_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             disclosure_number TEXT NOT NULL,
@@ -246,22 +209,18 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.conn.close()
         shutil.rmtree(self.tmp_path, ignore_errors=True)
 
-    def test_client_fetches_listed_info_and_fs_details_pages(self) -> None:
+    def test_client_fetches_listed_info_pages(self) -> None:
         session = _FakeSession(
             [
                 {"data": [{"Code": "11110"}], "pagination_key": None},
-                {"data": [{"DiscNo": "D1"}], "pagination_key": None},
             ]
         )
         client = JQuantsClient(api_key="KEY", session=session, request_interval_sec=0)
 
         listed = list(client.iter_equities_master(date="2026-05-24"))
-        details = list(client.iter_fins_details(code="1111"))
 
         self.assertEqual(listed[0]["Code"], "11110")
-        self.assertEqual(details[0]["DiscNo"], "D1")
         self.assertEqual(session.gets[0][0], "https://api.jquants.com/v2/equities/master")
-        self.assertEqual(session.gets[1][0], "https://api.jquants.com/v2/fins/details")
 
     def test_save_listed_info_is_idempotent_and_reports_master_diffs(self) -> None:
         self.conn.execute(
@@ -289,43 +248,6 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertEqual(result2.saved_total, 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM jquants_listed_info_raw").fetchone()[0], 1)
         self.assertTrue(any("company_name_diff" in warning for warning in result1.warnings))
-
-    def test_save_fs_details_stores_raw_and_major_items(self) -> None:
-        client = _FakeAuditClient(
-            fs_rows=[
-                {
-                    "DiscNo": "DISC1",
-                    "DiscDate": "2026-08-03",
-                    "DiscTime": "15:00",
-                    "Code": "11110",
-                    "DocType": "1Q",
-                    "FS": {
-                        "売上高": "1000",
-                        "親会社株主に帰属する四半期純利益": "80",
-                        "非支配株主に帰属する四半期純利益": "5",
-                        "短期借入金": "30",
-                    },
-                }
-            ]
-        )
-
-        result = save_jquants_fs_details(
-            self.conn,
-            client=client,
-            date_from="2026-08-03",
-            date_to="2026-08-03",
-        )
-
-        hints = {
-            row["metric_hint"]
-            for row in self.conn.execute("SELECT metric_hint FROM jquants_fs_detail_items").fetchall()
-        }
-        self.assertEqual(result.raw_saved_total, 1)
-        self.assertGreaterEqual(result.item_saved_total, 4)
-        self.assertIn("net_sales", hints)
-        self.assertIn("profit_attributable_to_owners", hints)
-        self.assertIn("non_controlling_interests", hints)
-        self.assertIn("interest_bearing_debt_candidate", hints)
 
     def test_active_latest_view_selects_latest_disclosure_even_when_missing(self) -> None:
         ensure_summary_views(self.conn)
@@ -369,17 +291,6 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         _insert_metric(self.conn, disclosure="DISC2026", fiscal_year=2026, metric_base="ProfitLoss", value=5)
         self.conn.execute(
             """
-            INSERT INTO jquants_fs_detail_items (
-                disclosure_number, local_code, security_code, disclosed_date, item_key,
-                metric_hint, detail_label, value_num, value_text, source_path,
-                created_at, updated_at
-            ) VALUES
-            ('DISC2026', '11110', '1111', '2026-08-01', 'parent', 'profit_attributable_to_owners', 'parent', 80, '80', 'FS.parent', 'now', 'now'),
-            ('DISC2026', '11110', '1111', '2026-08-01', 'nci', 'non_controlling_interests', 'nci', 5, '5', 'FS.nci', 'now', 'now')
-            """
-        )
-        self.conn.execute(
-            """
             INSERT INTO market_derived_metrics (
                 source_type, source_id, security_code, period_scope, period_key, fiscal_year,
                 period_end, metric_key, metric_base, metric_group, value_num, value_unit,
@@ -403,7 +314,6 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertIn("equity_ratio_scale_or_range", checks)
         self.assertIn("rapid_yoy_change", checks)
         self.assertIn("ordinary_income_proxy", checks)
-        self.assertIn("profit_loss_closer_to_non_controlling", checks)
         self.assertIn("market_metric_not_ok", checks)
 
         result = export_jquants_quality_audit(

@@ -272,34 +272,3 @@ class JQuantsClient:
             if not page.pagination_key:
                 break
             pagination_key = page.pagination_key
-
-    def get_fins_details_page(
-        self,
-        *,
-        date: str | None = None,
-        code: str | None = None,
-        pagination_key: str | None = None,
-    ) -> JQuantsPage:
-        payload = self._get(
-            "/fins/details",
-            {
-                "date": self._api_date(date),
-                "code": self._api_code(code),
-                "pagination_key": pagination_key,
-            },
-        )
-        return self._page_from_payload(payload, ("fins_details", "fs_details", "details", "data"))
-
-    def iter_fins_details(
-        self,
-        *,
-        date: str | None = None,
-        code: str | None = None,
-    ):
-        pagination_key: str | None = None
-        while True:
-            page = self.get_fins_details_page(date=date, code=code, pagination_key=pagination_key)
-            yield from page.items
-            if not page.pagination_key:
-                break
-            pagination_key = page.pagination_key

@@ -139,7 +139,6 @@ def build_jquants_quality_issues(
         issues.extend(_history_issues(key, history))
 
     issues.extend(_market_issues(conn, date_from=date_from, date_to=date_to, codes=normalized_codes))
-    issues.extend(_fs_detail_issues(conn, date_from=date_from, date_to=date_to, codes=normalized_codes))
     severity_order = {"critical": 0, "warning": 1, "info": 2}
     issues.sort(
         key=lambda item: (
@@ -281,53 +280,6 @@ def _market_issues(
     for row in rows:
         if str(row["calc_status"] or "") != "ok":
             issues.append(_issue(severity="warning", check_name="market_metric_not_ok", security_code=str(row["security_code"] or ""), fiscal_year=row["fiscal_year"], period_key=str(row["period_key"] or ""), metric_base=str(row["metric_base"] or ""), disclosure_number=str(row["source_id"] or ""), message=f"market_derived_metrics calc_status={row['calc_status']}"))
-    return issues
-
-
-def _fs_detail_issues(
-    conn: sqlite3.Connection,
-    *,
-    date_from: str,
-    date_to: str,
-    codes: list[str],
-) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "jquants_fs_detail_items"):
-        return []
-    where = ["i.disclosed_date BETWEEN ? AND ?"]
-    params: list[Any] = [date_from, date_to]
-    if codes:
-        placeholders = ",".join("?" for _ in codes)
-        where.append(f"i.security_code IN ({placeholders})")
-        params.extend(codes)
-    rows = conn.execute(
-        f"""
-        SELECT i.*, m.value_num AS profit_loss_value, m.fiscal_year, m.period_key
-        FROM jquants_fs_detail_items i
-        LEFT JOIN active_latest_jquants_metrics m
-          ON m.disclosure_number = i.disclosure_number
-         AND m.metric_base = 'ProfitLoss'
-         AND m.metric_kind = 'actual'
-        WHERE {" AND ".join(where)}
-        """,
-        params,
-    ).fetchall()
-    by_disc: dict[str, list[sqlite3.Row]] = {}
-    for row in rows:
-        by_disc.setdefault(str(row["disclosure_number"] or ""), []).append(row)
-    issues: list[dict[str, Any]] = []
-    for disclosure, items in by_disc.items():
-        parent_values = [_to_float(row["value_num"]) for row in items if row["metric_hint"] == "profit_attributable_to_owners"]
-        nci_values = [_to_float(row["value_num"]) for row in items if row["metric_hint"] == "non_controlling_interests"]
-        debt_values = [_to_float(row["value_num"]) for row in items if row["metric_hint"] == "interest_bearing_debt_candidate"]
-        sample = items[0]
-        profit_loss = _to_float(sample["profit_loss_value"])
-        if profit_loss is not None and parent_values and nci_values:
-            parent = next((value for value in parent_values if value is not None), None)
-            nci = next((value for value in nci_values if value is not None), None)
-            if parent is not None and nci is not None and abs(profit_loss - nci) < abs(profit_loss - parent):
-                issues.append(_issue(severity="critical", check_name="profit_loss_closer_to_non_controlling", security_code=str(sample["security_code"] or ""), fiscal_year=sample["fiscal_year"], period_key=str(sample["period_key"] or ""), metric_base="ProfitLoss", value_num=profit_loss, reference_value=parent, disclosure_number=disclosure, message="ProfitLoss is closer to non-controlling interests than parent-attributable profit in fs_details"))
-        if any(value not in (None, 0) for value in debt_values):
-            issues.append(_issue(severity="info", check_name="fs_interest_bearing_debt_candidate_present", security_code=str(sample["security_code"] or ""), fiscal_year=sample["fiscal_year"], period_key=str(sample["period_key"] or ""), metric_base="InterestBearingDebt", disclosure_number=disclosure, message="fs_details has interest-bearing debt candidate labels"))
     return issues
 
 
