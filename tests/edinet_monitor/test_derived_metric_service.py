@@ -54,6 +54,11 @@ class DerivedMetricServiceTest(unittest.TestCase):
             build_normalized_row("OrdinaryIncomePrior2", 160_000),
             build_normalized_row("OrdinaryIncomePrior3", 140_000),
             build_normalized_row("OrdinaryIncomePrior4", 120_000),
+            build_normalized_row("ProfitBeforeTaxCurrent", 240_000),
+            build_normalized_row("ProfitBeforeTaxPrior1", 200_000),
+            build_normalized_row("ProfitBeforeTaxPrior2", 160_000),
+            build_normalized_row("ProfitBeforeTaxPrior3", 140_000),
+            build_normalized_row("ProfitBeforeTaxPrior4", 120_000),
             build_normalized_row("CostOfSalesCurrent", 500_000, source_tag="CostOfSales"),
             build_normalized_row("CostOfSalesPrior1", 420_000, source_tag="CostOfSales"),
             build_normalized_row("CostOfSalesPrior2", 350_000, source_tag="CostOfSales"),
@@ -238,6 +243,32 @@ class DerivedMetricServiceTest(unittest.TestCase):
         )
         self.assertEqual(by_key["TheoreticalSharePriceCurrent"]["metric_group"], "valuation")
         self.assertEqual(by_key["GrossProfitCurrent"]["document_display_unit"], "百万円")
+
+    def test_ifrs_estimated_net_income_and_eps_use_profit_before_tax(self) -> None:
+        normalized_rows = [
+            build_normalized_row("ProfitBeforeTaxCurrent", 300_000),
+            build_normalized_row("IssuedSharesCurrent", 1_000_000),
+            build_normalized_row("TreasurySharesCurrent", 100_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="030000",
+            accounting_standard="IFRS",
+            document_display_unit="逋ｾ荳・・",
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["EstimatedNetIncomeCurrent"]["value_num"], 210_000)
+        self.assertAlmostEqual(by_key["EPSCurrent"]["value_num"], 210_000 / 900_000)
+        self.assertEqual(
+            by_key["EstimatedNetIncomeCurrent"]["source_detail_json"]["selected_profit_base"],
+            "ProfitBeforeTax",
+        )
+        self.assertEqual(
+            by_key["EPSCurrent"]["source_detail_json"]["numerator_detail"]["selected_profit_base"],
+            "ProfitBeforeTax",
+        )
 
     def test_financial_leverage_adjustment_matches_formula(self) -> None:
         normalized_rows = [

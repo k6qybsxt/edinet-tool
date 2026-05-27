@@ -23,6 +23,7 @@ from edinet_pipeline.domain.metric_labels import (
     SECURITIES_INDUSTRY_LABEL,
     metric_base_to_display_name,
 )
+from edinet_monitor.domain.accounting_standard import is_ifrs_or_us_gaap
 from edinet_monitor.domain.issuer_flags import tenbagger_learning_mark
 from edinet_monitor.services.industry_aggregate_metric_service import (
     INDUSTRY_AGGREGATE_PERIOD_SCOPE,
@@ -532,7 +533,7 @@ ROW_BASE_ORDER_INDEX = {
 }
 
 EXCEL_METRIC_LABEL_OVERRIDES = {
-    "ProfitBeforeTax": "経常利益",
+    "ProfitBeforeTax": "\u7a0e\u5f15\u524d\u5229\u76ca",
     "CostOfSales": "├売上原価",
     "SellingExpenses": "└販管費",
     "GeneralAndAdministrativeExpenses": "　├ 一般管理費",
@@ -806,6 +807,7 @@ class MetricExcelRow:
     segment_kind: str = ""
     segment_name: str = ""
     segment_order: int | None = None
+    accounting_standard: str = ""
 
 
 @dataclass(frozen=True)
@@ -1113,6 +1115,12 @@ def _base_metric_label_for_excel(metric_base: str, industry_33: str | None = Non
     )
 
 
+def _display_base_for_accounting_standard(metric_base: str, accounting_standard: str | None) -> str:
+    if metric_base == "OrdinaryIncome" and is_ifrs_or_us_gaap(accounting_standard):
+        return "ProfitBeforeTax"
+    return metric_base
+
+
 def _quarter_standalone_label(metric_base: str, industry_33: str | None, quarter: str) -> str:
     reverse_growth_map = {
         growth_base: source_base
@@ -1137,8 +1145,10 @@ def _metric_label_for_excel(
     industry_33: str | None = None,
     *,
     period_scope: str = "annual",
+    accounting_standard: str | None = None,
 ) -> str:
-    label = _base_metric_label_for_excel(metric_base, industry_33)
+    display_base = _display_base_for_accounting_standard(metric_base, accounting_standard)
+    label = _base_metric_label_for_excel(display_base, industry_33)
     if period_scope == "annual":
         return f"4Q {label}"
     if period_scope.startswith("quarter:"):
@@ -1146,7 +1156,7 @@ def _metric_label_for_excel(
         return f"{quarter} {label}"
     if period_scope.startswith("quarter_standalone:"):
         quarter = period_scope.split(":", 1)[1]
-        return _quarter_standalone_label(metric_base, industry_33, quarter)
+        return _quarter_standalone_label(display_base, industry_33, quarter)
     if period_scope.startswith("forecast:"):
         stage = period_scope.split(":", 1)[1]
         stage_label = JQUANTS_FORECAST_STAGE_LABELS.get(stage, stage)
@@ -1296,6 +1306,7 @@ def _fetch_ranked_filings(
         f.form_type,
         f.period_end,
         f.submit_date,
+        f.accounting_standard,
         f.document_display_unit,
         im.company_name,
         im.industry_33,
@@ -2247,7 +2258,12 @@ def _passes_percent_filters(
             if filing is None:
                 return False
             doc_id = str(filing["doc_id"])
-            value = _metric_value(metric_values, doc_id, base)
+            value = _metric_value(
+                metric_values,
+                doc_id,
+                base,
+                str(filing["accounting_standard"] or "") if "accounting_standard" in filing.keys() else "",
+            )
             if value is None:
                 return False
             numeric_value = float(value)
@@ -2262,9 +2278,11 @@ def _metric_value(
     metric_values: dict[tuple[str, str], float | None],
     doc_id: str,
     metric_base: str,
+    accounting_standard: str | None = None,
 ) -> float | None:
-    value = metric_values.get((doc_id, _metric_key(metric_base)))
-    if value is None and metric_base == "OrdinaryIncome":
+    value_base = _display_base_for_accounting_standard(metric_base, accounting_standard)
+    value = metric_values.get((doc_id, _metric_key(value_base)))
+    if value is None and metric_base == "OrdinaryIncome" and not accounting_standard:
         return metric_values.get((doc_id, _metric_key("ProfitBeforeTax")))
     return value
 
@@ -2540,7 +2558,16 @@ def _fetch_jquants_companies(
           im.security_code,
           im.company_name,
           im.industry_33,
-          im.market
+          im.market,
+          (
+            SELECT f.accounting_standard
+            FROM filings f
+            WHERE f.edinet_code = im.edinet_code
+              AND f.accounting_standard IS NOT NULL
+              AND f.accounting_standard <> ''
+            ORDER BY f.period_end DESC, f.submit_date DESC
+            LIMIT 1
+          ) AS accounting_standard
         FROM issuer_master im
         WHERE {" AND ".join(where)}
         ORDER BY im.security_code, im.edinet_code
@@ -2875,8 +2902,8 @@ def _jquants_metric_fetch_bases(requested_bases: set[str]) -> set[str]:
     for growth_base, source_base in QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE.items():
         if growth_base in fetch_bases:
             fetch_bases.add(source_base)
-    if "EstimatedNetIncome" in fetch_bases:
-        fetch_bases.add("OrdinaryIncome")
+    if {"OrdinaryIncome", "OrdinaryIncomeGrowthRate", "EstimatedNetIncome"} & fetch_bases:
+        fetch_bases.update({"OrdinaryIncome", "ProfitBeforeTax"})
     if "FCF" in fetch_bases:
         fetch_bases.update({"OperatingCash", "InvestmentCash"})
     if "BPS" in fetch_bases:
@@ -2929,6 +2956,7 @@ def _jquants_display_row_and_value(
     fiscal_year: int,
     period_key: str,
     forecast_stage: str | None,
+    accounting_standard: str | None = None,
 ) -> tuple[sqlite3.Row | None, float | None]:
     if metric_base in QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE and period_scope.startswith("quarter"):
         source_base = QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE[metric_base]
@@ -2940,6 +2968,7 @@ def _jquants_display_row_and_value(
             fiscal_year=fiscal_year,
             period_key=period_key,
             forecast_stage=forecast_stage,
+            accounting_standard=accounting_standard,
         )
         prior_row, prior_value = _jquants_display_row_and_value(
             latest,
@@ -2949,6 +2978,7 @@ def _jquants_display_row_and_value(
             fiscal_year=fiscal_year - 1,
             period_key=period_key,
             forecast_stage=forecast_stage,
+            accounting_standard=accounting_standard,
         )
         value = (
             current_value / prior_value
@@ -2957,11 +2987,12 @@ def _jquants_display_row_and_value(
         )
         return current_row or prior_row, value
     if metric_base == "EstimatedNetIncome" and period_scope.startswith("quarter"):
+        profit_base = _display_base_for_accounting_standard("OrdinaryIncome", accounting_standard)
         ordinary_row = _jquants_latest_row(
             latest,
             security_code=security_code,
             period_scope=period_scope,
-            metric_base="OrdinaryIncome",
+            metric_base=profit_base,
             fiscal_year=fiscal_year,
             period_key=period_key,
             forecast_stage=forecast_stage,
@@ -3063,11 +3094,12 @@ def _jquants_display_row_and_value(
             else None
         )
         return row or net_assets_row or shares_row, value
+    lookup_base = _display_base_for_accounting_standard(metric_base, accounting_standard)
     row = _jquants_latest_row(
         latest,
         security_code=security_code,
         period_scope=period_scope,
-        metric_base=metric_base,
+        metric_base=lookup_base,
         fiscal_year=fiscal_year,
         period_key=period_key,
         forecast_stage=forecast_stage,
@@ -3169,10 +3201,15 @@ def _append_jquants_rows(
         if not needs_quarter_standalone:
             return
     latest = _latest_jquants_metric_rows(all_metric_rows)
+    standalone_metric_bases = {
+        base for base in requested_bases if base in QUARTER_STANDALONE_SUPPORTED_BASES
+    }
+    if "OrdinaryIncome" in standalone_metric_bases:
+        standalone_metric_bases.add("ProfitBeforeTax")
     standalone_metric_rows = _fetch_quarter_standalone_metric_rows(
         conn,
         security_codes=security_codes,
-        metric_bases=[base for base in requested_bases if base in QUARTER_STANDALONE_SUPPORTED_BASES],
+        metric_bases=sorted(standalone_metric_bases),
     )
     standalone_latest = _latest_quarter_standalone_metric_rows(standalone_metric_rows)
     if needs_quarter_standalone and not standalone_metric_rows:
@@ -3269,7 +3306,11 @@ def _append_quarter_standalone_period_rows(
                 fiscal_year = max_fiscal_year - offset
                 if fiscal_year < min_year:
                     continue
-                row = latest.get((security_code, quarter, base, fiscal_year))
+                lookup_base = _display_base_for_accounting_standard(
+                    base,
+                    str(company["accounting_standard"] or ""),
+                )
+                row = latest.get((security_code, quarter, lookup_base, fiscal_year))
                 raw_value = (
                     float(row["value_num"])
                     if row is not None
@@ -3307,12 +3348,14 @@ def _append_quarter_standalone_period_rows(
                         base,
                         company["industry_33"],
                         period_scope=period_scope,
+                        accounting_standard=str(company["accounting_standard"] or ""),
                     ),
                     periods_by_offset=periods_by_offset,
                     values_by_offset=values_by_offset,
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                     raw_values_by_offset=raw_values_by_offset,
+                    accounting_standard=str(company["accounting_standard"] or ""),
                 )
             )
 
@@ -3364,6 +3407,7 @@ def _append_jquants_period_rows(
                 fiscal_year=fiscal_year,
                 period_key=period_key,
                 forecast_stage=forecast_stage,
+                accounting_standard=str(company["accounting_standard"] or ""),
             )
             display_value, display_unit = _scale_jquants_value(base, raw_value)
             periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
@@ -3429,20 +3473,22 @@ def _append_jquants_period_rows(
                 row_kind=ROW_KIND_DETAIL,
                 current_period_end=current_period_end,
                 metric_base=base,
-                metric_label=_metric_label_for_excel(
-                    base,
-                    company["industry_33"],
-                    period_scope=period_scope,
-                ),
+                    metric_label=_metric_label_for_excel(
+                        base,
+                        company["industry_33"],
+                        period_scope=period_scope,
+                        accounting_standard=str(company["accounting_standard"] or ""),
+                    ),
                 periods_by_offset=periods_by_offset,
                 values_by_offset=values_by_offset,
                 units_by_offset=units_by_offset,
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
                 ratio_kinds_by_offset=ratio_kinds_by_offset,
-                value_kinds_by_offset=value_kinds_by_offset,
+                    value_kinds_by_offset=value_kinds_by_offset,
+                    accounting_standard=str(company["accounting_standard"] or ""),
+                )
             )
-        )
 
 
 def _latest_forecast_value_as_of(
@@ -3624,7 +3670,12 @@ def build_metric_excel_rows(
                     filing = by_offset.get(source_offset) if source_offset is not None else None
                     value = None
                     if filing is not None:
-                        value = _metric_value(metric_values, str(filing["doc_id"]), trend_base)
+                        value = _metric_value(
+                            metric_values,
+                            str(filing["doc_id"]),
+                            trend_base,
+                            str(filing["accounting_standard"] or ""),
+                        )
                     trend_values.append(value)
                 if not _passes_trend(trend_values, condition.trend):
                     trend_ok = False
@@ -3673,7 +3724,12 @@ def build_metric_excel_rows(
                     if base in DATE_POINT_PERIOD_BASES
                     else _period_display_for_filing(filing)
                 )
-                raw_value = _metric_value(metric_values, doc_id, base)
+                raw_value = _metric_value(
+                    metric_values,
+                    doc_id,
+                    base,
+                    str(filing["accounting_standard"] or ""),
+                )
                 raw_values_by_offset[offset] = raw_value
                 values_by_offset[offset] = _scale_value_for_document_unit(
                     base,
@@ -3689,7 +3745,12 @@ def build_metric_excel_rows(
                 if base in CONSTANT_RATIO_BY_ROW_BASE:
                     ratios_by_offset[offset] = CONSTANT_RATIO_BY_ROW_BASE[base]
                 elif ratio_base:
-                    ratios_by_offset[offset] = _metric_value(metric_values, doc_id, ratio_base)
+                    ratios_by_offset[offset] = _metric_value(
+                        metric_values,
+                        doc_id,
+                        ratio_base,
+                        str(filing["accounting_standard"] or ""),
+                    )
                 else:
                     ratios_by_offset[offset] = None
 
@@ -3711,12 +3772,14 @@ def build_metric_excel_rows(
                         base,
                         current["industry_33"],
                         period_scope=current_period_scope,
+                        accounting_standard=str(current["accounting_standard"] or ""),
                     ),
                     periods_by_offset=periods_by_offset,
                     values_by_offset=values_by_offset,
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                     raw_values_by_offset=raw_values_by_offset,
+                    accounting_standard=str(current["accounting_standard"] or ""),
                 )
             )
 

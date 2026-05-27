@@ -478,6 +478,63 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
         self.assertEqual(ws.cell(2, headers.index("\u6c7a\u7b97\u7a2e\u5225") + 1).value, "\u5730\u57df\u5225")
 
+    def test_ordinary_income_row_uses_profit_before_tax_for_ifrs(self) -> None:
+        self.conn.execute("UPDATE filings SET accounting_standard = 'IFRS' WHERE edinet_code = 'E00002'")
+        self.conn.executemany(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 2026, '2026-03-31', ?, 'tag', 'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """,
+            [
+                ("E00001_0", "E00001", "11110", "OrdinaryIncomeCurrent", 100_000_000.0),
+                ("E00002_0", "E00002", "22220", "ProfitBeforeTaxCurrent", 200_000_000.0),
+            ],
+        )
+        self.conn.commit()
+
+        rows, errors, _warnings, preview, _target_companies = build_metric_excel_rows(
+            self.conn,
+            MetricExcelCondition(
+                security_codes=["1111", "2222"],
+                metric_labels=["\u7d4c\u5e38\u5229\u76ca"],
+                period_scopes=["annual"],
+                period_offsets=[1],
+            ),
+        )
+
+        self.assertEqual(errors, [])
+        detail_rows = {
+            row.security_code: row
+            for row in _detail_rows(rows)
+            if row.metric_base == "OrdinaryIncome"
+        }
+        self.assertEqual(detail_rows["1111"].metric_label, "4Q \u7d4c\u5e38\u5229\u76ca")
+        self.assertEqual(detail_rows["1111"].raw_values_by_offset[1], 100_000_000.0)
+        self.assertEqual(detail_rows["2222"].metric_label, "4Q \u7a0e\u5f15\u524d\u5229\u76ca")
+        self.assertEqual(detail_rows["2222"].raw_values_by_offset[1], 200_000_000.0)
+        preview_by_code = {row["security_code"]: row for row in preview}
+        self.assertEqual(preview_by_code["2222"]["metric"], "4Q \u7a0e\u5f15\u524d\u5229\u76ca")
+
+        filtered_rows, filtered_errors, _filtered_warnings, _filtered_preview, _filtered_target = build_metric_excel_rows(
+            self.conn,
+            MetricExcelCondition(
+                security_codes=["1111", "2222"],
+                metric_labels=["\u7d4c\u5e38\u5229\u76ca"],
+                period_scopes=["annual"],
+                period_offsets=[1],
+                percent_filter_metric_labels=["\u7d4c\u5e38\u5229\u76ca"],
+                percent_filter_period_offsets=[1],
+                percent_filter_min=150_000_000,
+            ),
+        )
+        self.assertEqual(filtered_errors, [])
+        self.assertEqual(
+            {row.security_code for row in _detail_rows(filtered_rows)},
+            {"2222"},
+        )
+
     def test_segment_rows_align_offsets_to_company_latest_period(self) -> None:
         long_other = (
             "Operating Segments Not Included In Reportable Segments "

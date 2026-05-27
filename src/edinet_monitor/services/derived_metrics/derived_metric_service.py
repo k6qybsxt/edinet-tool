@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from edinet_monitor.config.settings import DEFAULT_DERIVED_METRICS_RULE_VERSION
+from edinet_monitor.domain.accounting_standard import is_ifrs_or_us_gaap
 from edinet_monitor.services.collector.document_filter_service import is_half_form_type
 
 
@@ -1521,6 +1522,7 @@ def _append_scaled_rows(
     accounting_standard: str,
     document_display_unit: str,
     rule_version: str,
+    source_detail_extra: dict[str, Any] | None = None,
 ) -> None:
     for suffix in FULL_SUFFIXES:
         source_key = _build_metric_key(source_metric_base, suffix)
@@ -1550,6 +1552,7 @@ def _append_scaled_rows(
                     stored_formula=f"{source_key} * {scale}",
                     calc_status=calc_status,
                     document_display_unit=document_display_unit,
+                    extra=source_detail_extra,
                 ),
                 accounting_standard=accounting_standard,
                 document_display_unit=document_display_unit,
@@ -1687,8 +1690,12 @@ def calculate_derived_metrics(
     def _single_metric(metric_base: str, suffix: str) -> dict[str, Any]:
         return _single_metric_input(metric_rows, metric_base, suffix)
 
+    estimated_profit_base = (
+        "ProfitBeforeTax" if is_ifrs_or_us_gaap(accounting_standard) else "OrdinaryIncome"
+    )
+
     def _estimated_net_income_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
-        source_key = _build_metric_key("OrdinaryIncome", suffix)
+        source_key = _build_metric_key(estimated_profit_base, suffix)
         source_value = _metric_value(metric_rows, source_key)
         value_num, calc_status = _scaled_status(value_num=source_value, scale=0.7)
         return {
@@ -1696,6 +1703,10 @@ def calculate_derived_metrics(
             "calc_status": calc_status,
             "detail_inputs": {source_key: source_value},
             "reference_keys": [source_key],
+            "detail_extra": {
+                "selected_profit_base": estimated_profit_base,
+                "profit_base_role": "ordinary_income_equivalent",
+            },
         }
 
     def _eps_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
@@ -2776,7 +2787,7 @@ def calculate_derived_metrics(
         out_rows,
         metric_rows=metric_rows,
         sample_row=sample_row,
-        source_metric_base="OrdinaryIncome",
+        source_metric_base=estimated_profit_base,
         derived_metric_base="EstimatedNetIncome",
         metric_group="profitability",
         formula_name="estimated_net_income",
@@ -2785,6 +2796,10 @@ def calculate_derived_metrics(
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
+        source_detail_extra={
+            "selected_profit_base": estimated_profit_base,
+            "profit_base_role": "ordinary_income_equivalent",
+        },
     )
     _append_ratio_rows(
         out_rows,

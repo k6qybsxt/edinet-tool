@@ -310,7 +310,7 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "SellingExpensesCurrent")
         self.assertEqual(normalized["source_tag"], "SellingGeneralAndAdministrativeExpensesGAS")
 
-    def test_profit_before_tax_tag_is_saved_for_ordinary_income_and_profit_before_tax(self) -> None:
+    def test_profit_before_tax_tag_is_saved_as_profit_before_tax_only(self) -> None:
         row = build_raw_fact(tag_name="IncomeBeforeIncomeTaxes", value_text="1000")
 
         candidates = build_normalization_candidates(
@@ -320,8 +320,8 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         )
         by_key = {candidate["metric_key"]: candidate for candidate in candidates}
 
-        self.assertIn("OrdinaryIncomeCurrent", by_key)
         self.assertIn("ProfitBeforeTaxCurrent", by_key)
+        self.assertNotIn("OrdinaryIncomeCurrent", by_key)
         self.assertEqual(by_key["ProfitBeforeTaxCurrent"]["value_num"], 1000.0)
 
     def test_average_age_months_are_converted_to_years(self) -> None:

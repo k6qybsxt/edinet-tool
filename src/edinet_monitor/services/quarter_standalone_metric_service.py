@@ -16,6 +16,7 @@ FLOW_BASES = (
     "NetSales",
     "OperatingIncome",
     "OrdinaryIncome",
+    "ProfitBeforeTax",
     "ProfitLoss",
     "EstimatedNetIncome",
     "OperatingCash",
@@ -495,9 +496,12 @@ def _derive_cumulative_values(cumulative: dict[tuple[str, int, str], dict[str, A
                 sources["FCF"] = "derived:OperatingCash+InvestmentCash"
         if "EstimatedNetIncome" not in values:
             ordinary_income = _to_float(values.get("OrdinaryIncome"))
-            if ordinary_income is not None:
-                values["EstimatedNetIncome"] = ordinary_income * 0.7
-                sources["EstimatedNetIncome"] = "derived:OrdinaryIncome*0.7"
+            profit_before_tax = _to_float(values.get("ProfitBeforeTax"))
+            profit_base = ordinary_income if ordinary_income is not None else profit_before_tax
+            if profit_base is not None:
+                values["EstimatedNetIncome"] = profit_base * 0.7
+                source_base = "OrdinaryIncome" if ordinary_income is not None else "ProfitBeforeTax"
+                sources["EstimatedNetIncome"] = f"derived:{source_base}*0.7"
 
 
 def _build_rows_from_cumulative(

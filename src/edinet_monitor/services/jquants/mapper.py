@@ -104,8 +104,8 @@ ACTUAL_OFFICIAL_FIELD_MAP = [
     ("DEPS", "OfficialDilutedEPS", "per_share", "yen_per_share"),
     ("AvgSh", "AverageShares", "shares", "shares"),
 ]
-ORDINARY_INCOME_ACTUAL_FIELDS = (
-    "OdP",
+ORDINARY_INCOME_ACTUAL_FIELDS = ("OdP",)
+PROFIT_BEFORE_TAX_ACTUAL_FIELDS = (
     "ProfitBeforeTax",
     "ProfitLossBeforeTax",
     "IncomeBeforeIncomeTaxes",
@@ -474,8 +474,24 @@ def statement_metrics_from_row(
                 quarter_type=period,
                 forecast_target=None,
                 forecast_stage=None,
-                rule="first available ordinary income field; profit before tax is a proxy for IFRS/USGAAP rows",
+                rule="ordinary income field only",
                 direct_fields={"OdP"},
+            )
+        )
+        metrics.append(
+            _metric_from_first_available_field(
+                row,
+                field_names=PROFIT_BEFORE_TAX_ACTUAL_FIELDS,
+                metric_base="ProfitBeforeTax",
+                metric_group="profit",
+                value_unit="yen",
+                metric_kind="actual",
+                period_scope="quarter",
+                period_key=f"actual:{period}",
+                quarter_type=period,
+                forecast_target=None,
+                forecast_stage=None,
+                rule="first available profit before tax field",
             )
         )
         metrics.append(_outstanding_shares_metric(row, period))
@@ -516,12 +532,16 @@ def statement_metrics_from_row(
     return metrics
 
 
-def _ordinary_income_value(row: dict[str, Any]) -> tuple[Decimal | None, str | None]:
+def _eps_profit_base_value(row: dict[str, Any]) -> tuple[Decimal | None, str | None, str | None]:
     for field_name in ORDINARY_INCOME_ACTUAL_FIELDS:
         value = _parse_decimal(row.get(field_name))
         if value is not None:
-            return value, field_name
-    return None, None
+            return value, field_name, "OrdinaryIncome"
+    for field_name in PROFIT_BEFORE_TAX_ACTUAL_FIELDS:
+        value = _parse_decimal(row.get(field_name))
+        if value is not None:
+            return value, field_name, "ProfitBeforeTax"
+    return None, None, None
 
 
 def _outstanding_shares_value(row: dict[str, Any]) -> tuple[Decimal | None, str]:
@@ -580,16 +600,16 @@ def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsState
 
 
 def _calculated_eps_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
-    ordinary_income, ordinary_source_field = _ordinary_income_value(row)
+    profit_base_value, profit_source_field, selected_profit_base = _eps_profit_base_value(row)
     outstanding_shares, shares_status = _outstanding_shares_value(row)
     value: Decimal | None = None
     calc_status = "missing"
     if (
-        ordinary_income is not None
+        profit_base_value is not None
         and outstanding_shares is not None
         and outstanding_shares > 0
     ):
-        value = ordinary_income * Decimal("0.7") / outstanding_shares
+        value = profit_base_value * Decimal("0.7") / outstanding_shares
         calc_status = "ok"
     raw = build_statement_raw(row)
     return JQuantsStatementMetric(
@@ -613,12 +633,14 @@ def _calculated_eps_metric(row: dict[str, Any], period: str) -> JQuantsStatement
         value_num=_to_float(value),
         value_unit="yen_per_share",
         calc_status=calc_status,
-        source_field="calculated:OrdinaryIncome*0.7/OutstandingShares",
+        source_field=f"calculated:{selected_profit_base or 'OrdinaryIncome'}*0.7/OutstandingShares",
         source_detail_json=_json_dumps(
             {
                 "source": "jquants",
                 "api_version": "v2",
-                "ordinary_income_field": ordinary_source_field,
+                "selected_profit_base": selected_profit_base,
+                "profit_base_role": "ordinary_income_equivalent",
+                "profit_base_field": profit_source_field,
                 "shares_status": shares_status,
                 "rule": "EPS = OrdinaryIncome * 0.7 / OutstandingShares",
             }

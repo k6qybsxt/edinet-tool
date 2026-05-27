@@ -90,6 +90,18 @@ class TagAliasTest(unittest.TestCase):
             with self.subTest(tag_name=tag_name):
                 self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
 
+    def test_profit_before_tax_tags_map_to_profit_before_tax(self) -> None:
+        cases = [
+            "ProfitBeforeTax",
+            "ProfitBeforeTaxIFRS",
+            "IncomeBeforeIncomeTaxes",
+            "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults",
+        ]
+
+        for tag_name in cases:
+            with self.subTest(tag_name=tag_name):
+                self.assertEqual(normalize_tag_to_metric(tag_name), "ProfitBeforeTax")
+
     def test_sga_component_tags_map_to_expected_metrics(self) -> None:
         cases = {
             "SellingGeneralAndAdministrativeExpensesGAS": "SellingExpenses",

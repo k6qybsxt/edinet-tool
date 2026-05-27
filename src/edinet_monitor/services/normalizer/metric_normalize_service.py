@@ -846,6 +846,8 @@ def build_normalization_candidates(
             tag_name = str(normalized.get("source_tag") or "")
             structure_info = structure_map.get(tag_name)
             for secondary_metric_base in SECONDARY_METRIC_BASES_BY_TAG.get(tag_name, ()):
+                if secondary_metric_base == str(normalized.get("_metric_base") or ""):
+                    continue
                 candidates.append(
                     _clone_normalized_candidate_for_metric_base(
                         normalized,
