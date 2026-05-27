@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
 import sqlite3
 
 from edinet_monitor.config.settings import DB_PATH, ensure_data_dirs
+from edinet_monitor.db.migrations import apply_schema_migrations
 
 
-def get_connection() -> sqlite3.Connection:
-    ensure_data_dirs()
-    conn = sqlite3.connect(DB_PATH)
+def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
+    if db_path is None:
+        ensure_data_dirs()
+        resolved_db_path = DB_PATH
+    else:
+        resolved_db_path = Path(db_path)
+        if str(resolved_db_path) != ":memory:":
+            resolved_db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(resolved_db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -751,8 +759,8 @@ def ensure_summary_views(conn: sqlite3.Connection) -> None:
         """
     )
 
-def create_tables() -> None:
-    conn = get_connection()
+def create_tables(db_path: str | Path | None = None) -> None:
+    conn = get_connection(db_path)
     cur = conn.cursor()
 
     _rebuild_screening_results_if_needed(cur)
@@ -1237,6 +1245,7 @@ def create_tables() -> None:
     """)
 
     ensure_summary_views(conn)
+    apply_schema_migrations(conn)
 
     conn.commit()
     conn.close()
