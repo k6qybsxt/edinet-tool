@@ -29,6 +29,7 @@ from edinet_monitor.services.derived_metrics.derived_metric_store_service import
     insert_derived_metrics,
 )
 from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
+from edinet_monitor.services.performance_log_service import PerformanceLog
 
 
 def fetch_normalized_metric_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
@@ -104,20 +105,33 @@ def run_save_derived_metrics(
 
     conn = get_connection()
     target_form_codes = normalize_form_codes(form_codes)
+    perf_log = PerformanceLog(
+        command_name="save_derived_metrics",
+        workers=1,
+        batch_size=batch_size,
+        parameters={
+            "batch_size": batch_size,
+            "run_all": bool(run_all),
+            "form_codes": list(target_form_codes),
+            "rule_version": rule_version,
+        },
+    )
     total_target = 0
     total_saved_docs = 0
     total_saved_rows = 0
     total_errors = 0
     loop_count = 0
+    unhandled_error: Exception | None = None
 
     try:
         while True:
-            filings = fetch_derived_metrics_target_filings(
-                conn,
-                rule_version=rule_version,
-                limit=batch_size,
-                form_codes=target_form_codes,
-            )
+            with perf_log.measure("db_read", "fetch_derived_metrics_target_filings"):
+                filings = fetch_derived_metrics_target_filings(
+                    conn,
+                    rule_version=rule_version,
+                    limit=batch_size,
+                    form_codes=target_form_codes,
+                )
             print(f"derived_metrics_target_rows={len(filings)}")
 
             if not filings:
@@ -133,46 +147,71 @@ def run_save_derived_metrics(
                 print(f"[DEBUG] target_doc_id={doc_id}")
 
                 try:
-                    filing = ensure_filing_parse_metadata(conn, filing)
-                    normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
-                    historical_growth_values = fetch_historical_growth_values(conn, filing)
-                    half_progress_annual_values = fetch_half_progress_annual_values(conn, filing)
-                    derived_rows = calculate_derived_metrics(
-                        normalized_rows,
-                        form_type=str(filing.get("form_type") or ""),
-                        industry_33=str(filing.get("industry_33") or ""),
-                        accounting_standard=str(filing.get("accounting_standard") or ""),
-                        document_display_unit=str(filing.get("document_display_unit") or ""),
-                        rule_version=rule_version,
-                        historical_growth_values=historical_growth_values,
-                        half_progress_annual_values=half_progress_annual_values,
-                    )
+                    with perf_log.measure("parse", "ensure_filing_parse_metadata"):
+                        filing = ensure_filing_parse_metadata(conn, filing)
+                    with perf_log.measure("db_read", "fetch_derived_metric_inputs"):
+                        normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
+                        historical_growth_values = fetch_historical_growth_values(conn, filing)
+                        half_progress_annual_values = fetch_half_progress_annual_values(conn, filing)
+                    with perf_log.measure("compute", "calculate_derived_metrics"):
+                        derived_rows = calculate_derived_metrics(
+                            normalized_rows,
+                            form_type=str(filing.get("form_type") or ""),
+                            industry_33=str(filing.get("industry_33") or ""),
+                            accounting_standard=str(filing.get("accounting_standard") or ""),
+                            document_display_unit=str(filing.get("document_display_unit") or ""),
+                            rule_version=rule_version,
+                            historical_growth_values=historical_growth_values,
+                            half_progress_annual_values=half_progress_annual_values,
+                        )
 
                     print(
                         f"[DEBUG] doc_id={doc_id} normalized_row_count={len(normalized_rows)} derived_row_count={len(derived_rows)}"
                     )
 
-                    delete_derived_metrics_by_doc_id(conn, doc_id)
-                    saved_count = insert_derived_metrics(conn, derived_rows)
+                    with perf_log.measure("db_write", "save_derived_metrics_doc"):
+                        delete_derived_metrics_by_doc_id(conn, doc_id)
+                        saved_count = insert_derived_metrics(conn, derived_rows)
 
                     if saved_count <= 0:
-                        mark_derived_metrics_error(conn, doc_id)
+                        with perf_log.measure("db_write", "mark_derived_metrics_error"):
+                            mark_derived_metrics_error(conn, doc_id)
                         total_errors += 1
                         print(f"derived_metrics_error doc_id={doc_id} error='saved_count=0'")
                         continue
 
-                    mark_derived_metrics_saved(conn, doc_id)
+                    with perf_log.measure("db_write", "mark_derived_metrics_saved"):
+                        mark_derived_metrics_saved(conn, doc_id)
                     total_saved_docs += 1
                     total_saved_rows += saved_count
                     print(f"saved_derived_metrics doc_id={doc_id} count={saved_count}")
                 except Exception as e:
-                    mark_derived_metrics_error(conn, doc_id)
+                    with perf_log.measure("db_write", "mark_derived_metrics_error"):
+                        mark_derived_metrics_error(conn, doc_id)
                     total_errors += 1
                     print(f"derived_metrics_error doc_id={doc_id} error={repr(e)}")
 
             if not run_all:
                 break
+    except Exception as e:
+        unhandled_error = e
+        raise
     finally:
+        status = "error" if unhandled_error else ("completed_with_errors" if total_errors else "success")
+        perf_log.finish(
+            conn,
+            status=status,
+            target_total=total_target,
+            success_total=total_saved_docs,
+            error_total=total_errors,
+            output_rows_total=total_saved_rows,
+            error_summary={"unhandled_error": repr(unhandled_error)} if unhandled_error else {},
+            summary={
+                "loop_count": loop_count,
+                "saved_rows_total": total_saved_rows,
+                "rule_version": rule_version,
+            },
+        )
         conn.close()
 
     print(f"derived_metrics_target_total={total_target}")

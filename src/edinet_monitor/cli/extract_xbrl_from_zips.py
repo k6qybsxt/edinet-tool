@@ -19,6 +19,7 @@ from edinet_monitor.services.storage.zip_extract_service import (
     extract_preferred_xbrl,
     find_xbrl_member_names,
 )
+from edinet_monitor.services.performance_log_service import PerformanceLog
 
 
 def run_extract_xbrl_from_zips(
@@ -32,19 +33,34 @@ def run_extract_xbrl_from_zips(
 ) -> dict[str, Any]:
     conn = get_connection()
     target_form_codes = normalize_form_codes(form_codes)
+    perf_log = PerformanceLog(
+        command_name="extract_xbrl_from_zips",
+        workers=1,
+        batch_size=batch_size,
+        parameters={
+            "batch_size": batch_size,
+            "run_all": bool(run_all),
+            "form_codes": list(target_form_codes),
+            "period_ranks": period_ranks or "",
+            "codes": list(codes or ()),
+            "force": bool(force),
+        },
+    )
     total_target = 0
     total_extracted = 0
     total_errors = 0
     loop_count = 0
+    unhandled_error: Exception | None = None
 
     try:
         if period_ranks:
-            rows = fetch_segment_scope_filings(
-                conn,
-                form_codes=target_form_codes,
-                period_ranks=period_ranks,
-                codes=list(codes or ()),
-            )
+            with perf_log.measure("db_read", "fetch_segment_scope_filings"):
+                rows = fetch_segment_scope_filings(
+                    conn,
+                    form_codes=target_form_codes,
+                    period_ranks=period_ranks,
+                    codes=list(codes or ()),
+                )
             print(f"period_rank_scope_rows={len(rows)}")
             total_target = len(rows)
             for row in rows:
@@ -63,31 +79,33 @@ def run_extract_xbrl_from_zips(
                     print(f"existing_xbrl doc_id={doc_id} xbrl_path={current_xbrl}")
                     continue
                 try:
-                    member_names = find_xbrl_member_names(zip_path)
+                    with perf_log.measure("file_io", "inspect_and_extract_xbrl"):
+                        member_names = find_xbrl_member_names(zip_path)
+                        xbrl_path = build_xbrl_save_path(submit_date, doc_id)
+                        extracted = extract_preferred_xbrl(zip_path, xbrl_path, form_type=form_type)
                     print(f"[DEBUG] target_doc_id={doc_id}")
                     print(f"[DEBUG] zip_path={zip_path}")
                     print(f"[DEBUG] xbrl_members={member_names[:5]}")
-                    xbrl_path = build_xbrl_save_path(submit_date, doc_id)
-                    extracted = extract_preferred_xbrl(zip_path, xbrl_path, form_type=form_type)
-                    conn.execute(
-                        """
-                        UPDATE filings
-                        SET zip_path = ?,
-                            xbrl_path = ?,
-                            xbrl_member_name = ?,
-                            period_end = CASE WHEN ? <> '' THEN ? ELSE period_end END
-                        WHERE doc_id = ?
-                        """,
-                        (
-                            str(zip_path),
-                            str(extracted.output_path),
-                            extracted.member_name,
-                            extract_period_end_from_xbrl_member_name(extracted.member_name),
-                            extract_period_end_from_xbrl_member_name(extracted.member_name),
-                            doc_id,
-                        ),
-                    )
-                    conn.commit()
+                    with perf_log.measure("db_write", "update_xbrl_extract_success_period_scope"):
+                        conn.execute(
+                            """
+                            UPDATE filings
+                            SET zip_path = ?,
+                                xbrl_path = ?,
+                                xbrl_member_name = ?,
+                                period_end = CASE WHEN ? <> '' THEN ? ELSE period_end END
+                            WHERE doc_id = ?
+                            """,
+                            (
+                                str(zip_path),
+                                str(extracted.output_path),
+                                extracted.member_name,
+                                extract_period_end_from_xbrl_member_name(extracted.member_name),
+                                extract_period_end_from_xbrl_member_name(extracted.member_name),
+                                doc_id,
+                            ),
+                        )
+                        conn.commit()
                     total_extracted += 1
                     print(
                         f"extracted doc_id={doc_id} "
@@ -108,11 +126,12 @@ def run_extract_xbrl_from_zips(
             }
 
         while True:
-            rows = fetch_downloaded_filings_without_xbrl(
-                conn,
-                limit=batch_size,
-                form_codes=target_form_codes,
-            )
+            with perf_log.measure("db_read", "fetch_downloaded_filings_without_xbrl"):
+                rows = fetch_downloaded_filings_without_xbrl(
+                    conn,
+                    limit=batch_size,
+                    form_codes=target_form_codes,
+                )
             print(f"downloaded_rows_without_xbrl={len(rows)}")
 
             if not rows:
@@ -131,19 +150,20 @@ def run_extract_xbrl_from_zips(
                 print(f"[DEBUG] zip_path={zip_path}")
 
                 try:
-                    member_names = find_xbrl_member_names(zip_path)
+                    with perf_log.measure("file_io", "inspect_and_extract_xbrl"):
+                        member_names = find_xbrl_member_names(zip_path)
+                        xbrl_path = build_xbrl_save_path(submit_date, doc_id)
+                        extracted = extract_preferred_xbrl(zip_path, xbrl_path, form_type=form_type)
                     print(f"[DEBUG] xbrl_members={member_names[:5]}")
 
-                    xbrl_path = build_xbrl_save_path(submit_date, doc_id)
-                    extracted = extract_preferred_xbrl(zip_path, xbrl_path, form_type=form_type)
-
-                    mark_xbrl_extract_success(
-                        conn,
-                        doc_id,
-                        str(extracted.output_path),
-                        extracted.member_name,
-                        period_end=extract_period_end_from_xbrl_member_name(extracted.member_name),
-                    )
+                    with perf_log.measure("db_write", "mark_xbrl_extract_success"):
+                        mark_xbrl_extract_success(
+                            conn,
+                            doc_id,
+                            str(extracted.output_path),
+                            extracted.member_name,
+                            period_end=extract_period_end_from_xbrl_member_name(extracted.member_name),
+                        )
                     total_extracted += 1
                     print(
                         f"extracted doc_id={doc_id} "
@@ -151,13 +171,28 @@ def run_extract_xbrl_from_zips(
                         f"xbrl_member_name={extracted.member_name}"
                     )
                 except Exception as e:
-                    mark_xbrl_extract_error(conn, doc_id)
+                    with perf_log.measure("db_write", "mark_xbrl_extract_error"):
+                        mark_xbrl_extract_error(conn, doc_id)
                     total_errors += 1
                     print(f"extract_error doc_id={doc_id} error={repr(e)}")
 
             if not run_all:
                 break
+    except Exception as e:
+        unhandled_error = e
+        raise
     finally:
+        status = "error" if unhandled_error else ("completed_with_errors" if total_errors else "success")
+        perf_log.finish(
+            conn,
+            status=status,
+            target_total=total_target,
+            success_total=total_extracted,
+            skipped_total=max(total_target - total_extracted - total_errors, 0),
+            error_total=total_errors,
+            error_summary={"unhandled_error": repr(unhandled_error)} if unhandled_error else {},
+            summary={"loop_count": loop_count},
+        )
         conn.close()
 
     print(f"xbrl_extract_target_total={total_target}")
