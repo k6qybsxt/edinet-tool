@@ -60,6 +60,8 @@ def fetch_normalized_metric_rows(conn: sqlite3.Connection, doc_id: str) -> list[
 def ensure_filing_parse_metadata(
     conn: sqlite3.Connection,
     filing: dict[str, Any],
+    *,
+    commit: bool = True,
 ) -> dict[str, Any]:
     accounting_standard = str(filing.get("accounting_standard") or "")
     document_display_unit = str(filing.get("document_display_unit") or "")
@@ -88,6 +90,7 @@ def ensure_filing_parse_metadata(
         str(filing["doc_id"]),
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
+        commit=commit,
     )
     filing["accounting_standard"] = accounting_standard
     filing["document_display_unit"] = document_display_unit
@@ -148,7 +151,7 @@ def run_save_derived_metrics(
 
                 try:
                     with perf_log.measure("parse", "ensure_filing_parse_metadata"):
-                        filing = ensure_filing_parse_metadata(conn, filing)
+                        filing = ensure_filing_parse_metadata(conn, filing, commit=False)
                     with perf_log.measure("db_read", "fetch_derived_metric_inputs"):
                         normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
                         historical_growth_values = fetch_historical_growth_values(conn, filing)
@@ -170,22 +173,25 @@ def run_save_derived_metrics(
                     )
 
                     with perf_log.measure("db_write", "save_derived_metrics_doc"):
-                        delete_derived_metrics_by_doc_id(conn, doc_id)
-                        saved_count = insert_derived_metrics(conn, derived_rows)
+                        delete_derived_metrics_by_doc_id(conn, doc_id, commit=False)
+                        saved_count = insert_derived_metrics(conn, derived_rows, commit=False)
+                        if saved_count > 0:
+                            mark_derived_metrics_saved(conn, doc_id, commit=False)
+                            conn.commit()
 
                     if saved_count <= 0:
+                        conn.rollback()
                         with perf_log.measure("db_write", "mark_derived_metrics_error"):
                             mark_derived_metrics_error(conn, doc_id)
                         total_errors += 1
                         print(f"derived_metrics_error doc_id={doc_id} error='saved_count=0'")
                         continue
 
-                    with perf_log.measure("db_write", "mark_derived_metrics_saved"):
-                        mark_derived_metrics_saved(conn, doc_id)
                     total_saved_docs += 1
                     total_saved_rows += saved_count
                     print(f"saved_derived_metrics doc_id={doc_id} count={saved_count}")
                 except Exception as e:
+                    conn.rollback()
                     with perf_log.measure("db_write", "mark_derived_metrics_error"):
                         mark_derived_metrics_error(conn, doc_id)
                     total_errors += 1

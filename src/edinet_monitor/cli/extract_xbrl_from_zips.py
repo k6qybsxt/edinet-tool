@@ -71,6 +71,9 @@ def run_extract_xbrl_from_zips(
                 zip_path = resolved.zip_path
                 current_xbrl = resolved.xbrl_path
                 if zip_path is None:
+                    conn.rollback()
+                    with perf_log.measure("db_write", "mark_xbrl_extract_error"):
+                        mark_xbrl_extract_error(conn, doc_id)
                     total_errors += 1
                     print(f"extract_error doc_id={doc_id} error=zip_missing")
                     continue
@@ -105,6 +108,14 @@ def run_extract_xbrl_from_zips(
                                 doc_id,
                             ),
                         )
+                        mark_xbrl_extract_success(
+                            conn,
+                            doc_id,
+                            str(extracted.output_path),
+                            extracted.member_name,
+                            period_end=extract_period_end_from_xbrl_member_name(extracted.member_name),
+                            commit=False,
+                        )
                         conn.commit()
                     total_extracted += 1
                     print(
@@ -113,6 +124,9 @@ def run_extract_xbrl_from_zips(
                         f"xbrl_member_name={extracted.member_name}"
                     )
                 except Exception as e:
+                    conn.rollback()
+                    with perf_log.measure("db_write", "mark_xbrl_extract_error"):
+                        mark_xbrl_extract_error(conn, doc_id)
                     total_errors += 1
                     print(f"extract_error doc_id={doc_id} error={repr(e)}")
             print(f"xbrl_extract_target_total={total_target}")
@@ -163,7 +177,9 @@ def run_extract_xbrl_from_zips(
                             str(extracted.output_path),
                             extracted.member_name,
                             period_end=extract_period_end_from_xbrl_member_name(extracted.member_name),
+                            commit=False,
                         )
+                        conn.commit()
                     total_extracted += 1
                     print(
                         f"extracted doc_id={doc_id} "
@@ -171,6 +187,7 @@ def run_extract_xbrl_from_zips(
                         f"xbrl_member_name={extracted.member_name}"
                     )
                 except Exception as e:
+                    conn.rollback()
                     with perf_log.measure("db_write", "mark_xbrl_extract_error"):
                         mark_xbrl_extract_error(conn, doc_id)
                     total_errors += 1

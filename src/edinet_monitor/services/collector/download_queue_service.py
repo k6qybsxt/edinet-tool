@@ -75,7 +75,13 @@ def fetch_downloaded_filings_without_xbrl(
     )
     return cur.fetchall()
 
-def mark_download_success(conn: sqlite3.Connection, doc_id: str, zip_path: str) -> None:
+def mark_download_success(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    zip_path: str,
+    *,
+    commit: bool = True,
+) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -86,10 +92,11 @@ def mark_download_success(conn: sqlite3.Connection, doc_id: str, zip_path: str) 
         """,
         (zip_path, doc_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def mark_download_error(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_download_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -99,10 +106,11 @@ def mark_download_error(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def reset_download_to_pending(conn: sqlite3.Connection, doc_id: str) -> None:
+def reset_download_to_pending(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -114,7 +122,8 @@ def reset_download_to_pending(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -128,6 +137,7 @@ def mark_xbrl_extract_success(
     xbrl_path: str,
     xbrl_member_name: str | None = None,
     period_end: str | None = None,
+    commit: bool = True,
 ) -> None:
     period_end_text = str(period_end or "").strip()
     if _has_column(conn, "filings", "xbrl_member_name"):
@@ -143,7 +153,8 @@ def mark_xbrl_extract_success(
             """,
             (xbrl_path, xbrl_member_name or "", period_end_text, period_end_text, doc_id),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return
 
     conn.execute(
@@ -157,10 +168,11 @@ def mark_xbrl_extract_success(
         """,
         (xbrl_path, period_end_text, period_end_text, doc_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def mark_xbrl_extract_error(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_xbrl_extract_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -170,7 +182,8 @@ def mark_xbrl_extract_error(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def fetch_xbrl_ready_filings(
     conn: sqlite3.Connection,
@@ -206,7 +219,7 @@ def fetch_xbrl_ready_filings(
     )
     return cur.fetchall()
 
-def mark_raw_facts_saved(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_raw_facts_saved(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -216,7 +229,8 @@ def mark_raw_facts_saved(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def update_filing_parse_metadata(
@@ -225,6 +239,7 @@ def update_filing_parse_metadata(
     *,
     accounting_standard: str | None,
     document_display_unit: str | None,
+    commit: bool = True,
 ) -> None:
     conn.execute(
         """
@@ -240,10 +255,11 @@ def update_filing_parse_metadata(
             doc_id,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def mark_raw_facts_error(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_raw_facts_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -253,7 +269,8 @@ def mark_raw_facts_error(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def fetch_raw_facts_saved_filings(
     conn: sqlite3.Connection,
@@ -288,7 +305,7 @@ def fetch_raw_facts_saved_filings(
     )
     return cur.fetchall()
 
-def mark_normalized_metrics_saved(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_normalized_metrics_saved(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -298,10 +315,11 @@ def mark_normalized_metrics_saved(conn: sqlite3.Connection, doc_id: str) -> None
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def mark_normalized_metrics_error(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_normalized_metrics_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -311,7 +329,8 @@ def mark_normalized_metrics_error(conn: sqlite3.Connection, doc_id: str) -> None
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def fetch_derived_metrics_target_filings(
@@ -367,7 +386,7 @@ def fetch_derived_metrics_target_filings(
     return cur.fetchall()
 
 
-def mark_derived_metrics_saved(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_derived_metrics_saved(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -377,10 +396,11 @@ def mark_derived_metrics_saved(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def mark_derived_metrics_error(conn: sqlite3.Connection, doc_id: str) -> None:
+def mark_derived_metrics_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE filings
@@ -390,4 +410,5 @@ def mark_derived_metrics_error(conn: sqlite3.Connection, doc_id: str) -> None:
         """,
         (doc_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()

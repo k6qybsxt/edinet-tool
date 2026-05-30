@@ -114,20 +114,23 @@ def run_save_raw_facts(
                     )
 
                     with perf_log.measure("db_write", "save_raw_facts_doc"):
-                        delete_raw_facts_by_doc_id(conn, doc_id)
-                        saved_count = insert_raw_facts(conn, raw_rows)
+                        delete_raw_facts_by_doc_id(conn, doc_id, commit=False)
+                        saved_count = insert_raw_facts(conn, raw_rows, commit=False)
                         update_filing_parse_metadata(
                             conn,
                             doc_id,
                             accounting_standard=accounting_standard,
                             document_display_unit=document_display_unit,
+                            commit=False,
                         )
-                        mark_raw_facts_saved(conn, doc_id)
+                        mark_raw_facts_saved(conn, doc_id, commit=False)
+                        conn.commit()
 
                     total_saved_docs += 1
                     total_saved_rows += saved_count
                     print(f"saved_raw_facts doc_id={doc_id} count={saved_count}")
                 except Exception as e:
+                    conn.rollback()
                     with perf_log.measure("db_write", "mark_raw_facts_error"):
                         mark_raw_facts_error(conn, doc_id)
                     total_errors += 1

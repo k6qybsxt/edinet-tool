@@ -132,23 +132,26 @@ def run_save_normalized_metrics(
                     )
 
                     with perf_log.measure("db_write", "save_normalized_metrics_doc"):
-                        delete_normalized_metrics_by_doc_id(conn, doc_id)
-                        saved_count = insert_normalized_metrics(conn, normalized_rows)
+                        delete_normalized_metrics_by_doc_id(conn, doc_id, commit=False)
+                        saved_count = insert_normalized_metrics(conn, normalized_rows, commit=False)
+                        if saved_count > 0:
+                            mark_normalized_metrics_saved(conn, doc_id, commit=False)
+                            conn.commit()
 
                     if saved_count <= 0:
+                        conn.rollback()
                         with perf_log.measure("db_write", "mark_normalized_metrics_error"):
                             mark_normalized_metrics_error(conn, doc_id)
                         total_errors += 1
                         print(f"normalized_metrics_error doc_id={doc_id} error='saved_count=0'")
                         continue
 
-                    with perf_log.measure("db_write", "mark_normalized_metrics_saved"):
-                        mark_normalized_metrics_saved(conn, doc_id)
                     total_saved_docs += 1
                     total_saved_rows += saved_count
                     print(f"saved_normalized_metrics doc_id={doc_id} count={saved_count}")
 
                 except Exception as e:
+                    conn.rollback()
                     with perf_log.measure("db_write", "mark_normalized_metrics_error"):
                         mark_normalized_metrics_error(conn, doc_id)
                     total_errors += 1

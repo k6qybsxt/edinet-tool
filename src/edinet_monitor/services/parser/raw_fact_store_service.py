@@ -27,9 +27,10 @@ RAW_FACT_COLUMNS = [
 ]
 
 
-def delete_raw_facts_by_doc_id(conn: sqlite3.Connection, doc_id: str) -> None:
+def delete_raw_facts_by_doc_id(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute("DELETE FROM raw_facts WHERE doc_id = ?", (doc_id,))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -37,7 +38,7 @@ def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
-def insert_raw_facts(conn: sqlite3.Connection, rows: list[dict]) -> int:
+def insert_raw_facts(conn: sqlite3.Connection, rows: list[dict], *, commit: bool = True) -> int:
     if not rows:
         return 0
 
@@ -61,5 +62,6 @@ def insert_raw_facts(conn: sqlite3.Connection, rows: list[dict]) -> int:
         """,
         payloads,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(rows)

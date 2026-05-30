@@ -59,7 +59,7 @@ class SaveNormalizedMetricsCliTest(unittest.TestCase):
             self.assertEqual(result["saved_docs_total"], 1)
             self.assertEqual(result["saved_rows_total"], 1)
             self.assertEqual(result["error_total"], 0)
-            mark_saved.assert_called_once_with(conn, "S100TEST")
+            mark_saved.assert_called_once_with(conn, "S100TEST", commit=False)
             mark_error.assert_not_called()
         finally:
             conn.close()
