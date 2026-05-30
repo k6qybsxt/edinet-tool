@@ -115,6 +115,66 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             """,
         ),
     ),
+    SchemaMigration(
+        migration_id="004_add_pipeline_performance_logs",
+        description="Add generic CLI performance run and span log tables.",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_performance_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL UNIQUE,
+                command_name TEXT NOT NULL,
+                stage_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                elapsed_seconds REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                workers INTEGER NOT NULL DEFAULT 1,
+                batch_size INTEGER NOT NULL DEFAULT 0,
+                target_total INTEGER NOT NULL DEFAULT 0,
+                success_total INTEGER NOT NULL DEFAULT 0,
+                skipped_total INTEGER NOT NULL DEFAULT 0,
+                error_total INTEGER NOT NULL DEFAULT 0,
+                output_rows_total INTEGER NOT NULL DEFAULT 0,
+                processed_per_minute REAL NOT NULL DEFAULT 0,
+                db_read_elapsed_seconds REAL NOT NULL DEFAULT 0,
+                parse_elapsed_seconds REAL NOT NULL DEFAULT 0,
+                compute_elapsed_seconds REAL NOT NULL DEFAULT 0,
+                db_write_elapsed_seconds REAL NOT NULL DEFAULT 0,
+                file_io_elapsed_seconds REAL NOT NULL DEFAULT 0,
+                parameters_json TEXT NOT NULL,
+                error_summary_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_performance_spans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                span_category TEXT NOT NULL,
+                span_name TEXT NOT NULL,
+                elapsed_seconds REAL NOT NULL DEFAULT 0,
+                count_total INTEGER NOT NULL DEFAULT 0,
+                detail_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_pipeline_performance_runs_command_started
+            ON pipeline_performance_runs(command_name, started_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_pipeline_performance_runs_status
+            ON pipeline_performance_runs(status, command_name, started_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_pipeline_performance_spans_run
+            ON pipeline_performance_spans(run_id)
+            """,
+        ),
+    ),
 )
 
 

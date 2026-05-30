@@ -16,6 +16,7 @@ from edinet_monitor.services.normalizer.normalized_metric_store_service import (
     delete_normalized_metrics_by_doc_id,
     insert_normalized_metrics,
 )
+from edinet_monitor.services.performance_log_service import PerformanceLog
 
 
 def fetch_raw_fact_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict]:
@@ -67,15 +68,28 @@ def run_save_normalized_metrics(
 
     conn = get_connection()
     target_form_codes = normalize_form_codes(form_codes)
+    perf_log = PerformanceLog(
+        command_name="save_normalized_metrics",
+        workers=1,
+        batch_size=batch_size,
+        parameters={
+            "batch_size": batch_size,
+            "form_codes": list(target_form_codes),
+            "enable_period_fallback": bool(enable_period_fallback),
+            "enforce_candidate_validation": bool(enforce_candidate_validation),
+        },
+    )
     total_target = 0
     total_saved_docs = 0
     total_saved_rows = 0
     total_errors = 0
     loop_count = 0
+    unhandled_error: Exception | None = None
 
     try:
         while True:
-            filings = fetch_raw_facts_saved_filings(conn, limit=batch_size, form_codes=target_form_codes)
+            with perf_log.measure("db_read", "fetch_raw_facts_saved_filings"):
+                filings = fetch_raw_facts_saved_filings(conn, limit=batch_size, form_codes=target_form_codes)
             print(f"raw_facts_saved_rows={len(filings)}")
 
             if not filings:
@@ -97,43 +111,68 @@ def run_save_normalized_metrics(
                 print(f"[DEBUG] target_doc_id={doc_id}")
 
                 try:
-                    raw_rows = fetch_raw_fact_rows(conn, doc_id)
-                    normalized_rows = normalize_raw_fact_rows(
-                        raw_rows,
-                        edinet_code=edinet_code,
-                        security_code=security_code,
-                        industry_33=str(filing.get("industry_33") or ""),
-                        xbrl_path=xbrl_path,
-                        zip_path=zip_path,
-                        filing_period_end=filing_period_end,
-                        form_type=form_type,
-                        enable_period_fallback=enable_period_fallback,
-                        enforce_candidate_validation=enforce_candidate_validation,
-                    )
+                    with perf_log.measure("db_read", "fetch_raw_fact_rows"):
+                        raw_rows = fetch_raw_fact_rows(conn, doc_id)
+                    with perf_log.measure("compute", "normalize_raw_fact_rows"):
+                        normalized_rows = normalize_raw_fact_rows(
+                            raw_rows,
+                            edinet_code=edinet_code,
+                            security_code=security_code,
+                            industry_33=str(filing.get("industry_33") or ""),
+                            xbrl_path=xbrl_path,
+                            zip_path=zip_path,
+                            filing_period_end=filing_period_end,
+                            form_type=form_type,
+                            enable_period_fallback=enable_period_fallback,
+                            enforce_candidate_validation=enforce_candidate_validation,
+                        )
 
                     print(
                         f"[DEBUG] doc_id={doc_id} raw_row_count={len(raw_rows)} normalized_row_count={len(normalized_rows)}"
                     )
 
-                    delete_normalized_metrics_by_doc_id(conn, doc_id)
-                    saved_count = insert_normalized_metrics(conn, normalized_rows)
+                    with perf_log.measure("db_write", "save_normalized_metrics_doc"):
+                        delete_normalized_metrics_by_doc_id(conn, doc_id)
+                        saved_count = insert_normalized_metrics(conn, normalized_rows)
 
                     if saved_count <= 0:
-                        mark_normalized_metrics_error(conn, doc_id)
+                        with perf_log.measure("db_write", "mark_normalized_metrics_error"):
+                            mark_normalized_metrics_error(conn, doc_id)
                         total_errors += 1
                         print(f"normalized_metrics_error doc_id={doc_id} error='saved_count=0'")
                         continue
 
-                    mark_normalized_metrics_saved(conn, doc_id)
+                    with perf_log.measure("db_write", "mark_normalized_metrics_saved"):
+                        mark_normalized_metrics_saved(conn, doc_id)
                     total_saved_docs += 1
                     total_saved_rows += saved_count
                     print(f"saved_normalized_metrics doc_id={doc_id} count={saved_count}")
 
                 except Exception as e:
-                    mark_normalized_metrics_error(conn, doc_id)
+                    with perf_log.measure("db_write", "mark_normalized_metrics_error"):
+                        mark_normalized_metrics_error(conn, doc_id)
                     total_errors += 1
                     print(f"normalized_metrics_error doc_id={doc_id} error={repr(e)}")
+    except Exception as e:
+        unhandled_error = e
+        raise
     finally:
+        status = "error" if unhandled_error else ("completed_with_errors" if total_errors else "success")
+        perf_log.finish(
+            conn,
+            status=status,
+            target_total=total_target,
+            success_total=total_saved_docs,
+            error_total=total_errors,
+            output_rows_total=total_saved_rows,
+            error_summary={"unhandled_error": repr(unhandled_error)} if unhandled_error else {},
+            summary={
+                "loop_count": loop_count,
+                "saved_rows_total": total_saved_rows,
+                "enable_period_fallback": int(enable_period_fallback),
+                "enforce_candidate_validation": int(enforce_candidate_validation),
+            },
+        )
         conn.close()
 
     print(f"normalized_metrics_target_total={total_target}")

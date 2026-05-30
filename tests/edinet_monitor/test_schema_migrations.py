@@ -50,6 +50,7 @@ class SchemaMigrationsTest(unittest.TestCase):
                     "001_baseline_current_schema",
                     "002_add_data_quality_report_tables",
                     "003_add_db_reflection_items",
+                    "004_add_pipeline_performance_logs",
                 ],
             )
             count = conn.execute(
@@ -66,6 +67,13 @@ class SchemaMigrationsTest(unittest.TestCase):
                 """
             ).fetchone()[0]
             self.assertEqual(reflection_count, 0)
+            performance_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM pipeline_performance_runs
+                """
+            ).fetchone()[0]
+            self.assertEqual(performance_count, 0)
         finally:
             conn.close()
 
@@ -97,6 +105,7 @@ class SchemaMigrationsTest(unittest.TestCase):
         self.assertIn("001_baseline_current_schema\tpending", output)
         self.assertIn("002_add_data_quality_report_tables\tpending", output)
         self.assertIn("003_add_db_reflection_items\tpending", output)
+        self.assertIn("004_add_pipeline_performance_logs\tpending", output)
 
     def test_apply_schema_migrations_cli_limits_applied_display_without_deleting_rows(self) -> None:
         create_tables(self.db_path)
@@ -124,7 +133,7 @@ class SchemaMigrationsTest(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         try:
             row_count = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-            self.assertEqual(row_count, 3)
+            self.assertEqual(row_count, 4)
         finally:
             conn.close()
 
@@ -150,7 +159,7 @@ class SchemaMigrationsTest(unittest.TestCase):
             cli.main()
 
         output = stdout.getvalue()
-        self.assertEqual(output.count("\tapplied\t"), 3)
+        self.assertEqual(output.count("\tapplied\t"), 4)
 
 
 if __name__ == "__main__":

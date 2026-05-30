@@ -6,7 +6,13 @@ from pathlib import Path
 
 from edinet_monitor.config.settings import DB_PATH
 from edinet_monitor.db.schema import create_tables, get_connection
-from edinet_monitor.services.metric_excel_export_service import export_metric_excel
+from edinet_monitor.services.metric_excel_export_service import (
+    MetricExcelExportResult,
+    build_metric_excel_rows,
+    read_metric_excel_condition,
+    write_metric_excel,
+)
+from edinet_monitor.services.performance_log_service import PerformanceLog
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -34,16 +40,74 @@ def main() -> None:
 
     create_tables()
     conn = get_connection()
+    perf_log = PerformanceLog(
+        command_name="export_metric_excel",
+        workers=1,
+        parameters={
+            "condition_xlsx": str(args.condition_xlsx),
+            "output_path": str(output_path),
+            "limit_preview": args.limit_preview,
+        },
+    )
+    result: MetricExcelExportResult | None = None
+    errors: list[str] = []
+    warnings: list[str] = []
+    target_companies = 0
+    output_rows = 0
+    unhandled_error: Exception | None = None
     try:
-        result = export_metric_excel(
-            conn,
-            condition_xlsx=args.condition_xlsx,
-            output_path=output_path,
-            db_path=DB_PATH,
-            preview_limit=args.limit_preview,
+        with perf_log.measure("file_io", "read_metric_excel_condition"):
+            condition = read_metric_excel_condition(args.condition_xlsx)
+        with perf_log.measure("compute", "build_metric_excel_rows"):
+            rows, errors, warnings, preview_rows, target_companies = build_metric_excel_rows(
+                conn,
+                condition,
+                preview_limit=args.limit_preview,
+            )
+        output_rows = len(rows)
+        with perf_log.measure("file_io", "write_metric_excel"):
+            path = write_metric_excel(
+                rows=rows,
+                condition=condition,
+                output_path=output_path,
+                db_path=DB_PATH,
+                errors=errors,
+                warnings=warnings,
+                target_companies=target_companies,
+            )
+        result = MetricExcelExportResult(
+            output_path=path,
+            target_companies=target_companies,
+            output_rows=output_rows,
+            errors=errors,
+            warnings=warnings,
+            preview_rows=preview_rows,
         )
+    except Exception as e:
+        unhandled_error = e
+        raise
     finally:
+        status = "error" if unhandled_error else ("completed_with_errors" if errors else "success")
+        perf_log.finish(
+            conn,
+            status=status,
+            target_total=target_companies,
+            success_total=1 if result is not None else 0,
+            error_total=len(errors) + (1 if unhandled_error else 0),
+            output_rows_total=output_rows,
+            error_summary={"unhandled_error": repr(unhandled_error)} if unhandled_error else {"errors": errors},
+            summary={
+                "target_companies": target_companies,
+                "output_rows": output_rows,
+                "error_count": len(errors),
+                "warning_count": len(warnings),
+                "output_path": str(result.output_path) if result is not None else "",
+            },
+        )
         conn.close()
+
+    if result is None:
+        raise RuntimeError("metric excel export did not produce a result")
 
     print(f"output_path={result.output_path}")
     print(f"target_companies={result.target_companies}")
