@@ -150,6 +150,7 @@ QUARTER_SUPPORTED_BASES = {
     "InvestmentCash",
     "FinancingCash",
     "CashAndCashEquivalents",
+    "CashBalanceGrowthRate",
     "IssuedShares",
     "TreasuryShares",
     "OutstandingShares",
@@ -172,6 +173,7 @@ QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE = {
     "OrdinaryIncomeGrowthRate": "OrdinaryIncome",
     "ProfitLossGrowthRate": "ProfitLoss",
     "EstimatedNetIncomeGrowthRate": "EstimatedNetIncome",
+    "CashBalanceGrowthRate": "CashAndCashEquivalents",
     "EPSGrowthRate": "EPS",
     "BPSGrowthRate": "BPS",
     "StockPriceGrowthRate": "StockPrice",
@@ -226,6 +228,7 @@ HALF_DISABLED_BASES = {
     "EPSGrowthRate10Year",
     "BPSGrowthRate5Year",
     "BPSGrowthRate10Year",
+    "OutstandingSharesGrowthRate",
     "OutstandingSharesGrowthRate5Year",
     "OutstandingSharesGrowthRate10Year",
     "StockPriceGrowthRate5Year",
@@ -234,17 +237,19 @@ HALF_DISABLED_BASES = {
     "TheoreticalSharePriceGrowthRate10Year",
     "NumberOfEmployees",
     "AverageAge",
+    "AverageLengthOfService",
     "AverageAnnualSalary",
 }
 HALF_PREFIX = "\u534a\u671f "
 HALF_YOY_PREFIX = "\u534a\u671f\u524d\u5e74\u6bd4 "
 INDUSTRY_ONLY_TOKEN = "\u696d\u7a2e\u306e\u307f"
 ROW_KIND_DETAIL = "\u660e\u7d30"
+ROW_KIND_CHANGE_RATE = "\u5897\u6e1b\u7387"
 ROW_KIND_AVERAGE = "\u5e73\u5747\u5024"
 ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
+DETAIL_ROW_KINDS = {ROW_KIND_DETAIL, ROW_KIND_CHANGE_RATE}
 SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES) | {"ProfitBeforeTax", "SegmentProfit"}
 QUARTER_SUPPRESSED_EXCEL_BASES = {
-    "CashBalanceGrowthRate",
     "OutstandingSharesGrowthRate",
     "AssetsPerShare",
     "LiabilitiesPerShare",
@@ -436,6 +441,40 @@ GROWTH_RATIO_BASES = {
 
 INDUSTRY_AGGREGATE_VALUE_BASES = set(INDUSTRY_AGGREGATE_ROW_BASES)
 
+CHANGE_RATE_ROW_KIND_BASES = {
+    "BPSGrowthRate",
+    "BPSGrowthRate5Year",
+    "BPSGrowthRate10Year",
+    "CashBalanceGrowthRate",
+    "CashBalanceGrowthRate5Year",
+    "CashBalanceGrowthRate10Year",
+    "EPSGrowthRate",
+    "EPSGrowthRate5Year",
+    "EPSGrowthRate10Year",
+    "EstimatedNetIncomeGrowthRate",
+    "FCFGrowthRate",
+    "FinancingCashGrowthRate",
+    "InvestmentCashGrowthRate",
+    "NetSalesGrowthRate",
+    "NetSalesGrowthRate5Year",
+    "NetSalesGrowthRate10Year",
+    "OperatingCashGrowthRate",
+    "OperatingIncomeGrowthRate",
+    "OrdinaryIncomeGrowthRate",
+    "OrdinaryIncomeGrowthRate5Year",
+    "OrdinaryIncomeGrowthRate10Year",
+    "OutstandingSharesGrowthRate",
+    "OutstandingSharesGrowthRate5Year",
+    "OutstandingSharesGrowthRate10Year",
+    "ProfitLossGrowthRate",
+    "StockPriceGrowthRate",
+    "StockPriceGrowthRate5Year",
+    "StockPriceGrowthRate10Year",
+    "TheoreticalSharePriceGrowthRate",
+    "TheoreticalSharePriceGrowthRate5Year",
+    "TheoreticalSharePriceGrowthRate10Year",
+}
+
 SPARSE_PERIOD_OFFSETS_BY_BASE: dict[str, set[int]] = {}
 
 FIXED_ROW_BASE_ORDER = [
@@ -552,7 +591,9 @@ EXCEL_METRIC_LABEL_OVERRIDES = {
     "EPSGrowthRate": "EPS増加率(前期比)",
     "BPSGrowthRate": "BPS増加率(前期比)",
     "OrdinaryIncomeGrowthRate": "経常利益増益率(前期比)",
-    "CashBalanceGrowthRate": "現金残高増加率(前期比)",
+    "CashBalanceGrowthRate": "期末残高増加率(前期比)",
+    "CashBalanceGrowthRate5Year": "期末残高増加率(５年)",
+    "CashBalanceGrowthRate10Year": "期末残高増加率(10年)",
     "StockPriceGrowthRate": "株価上昇率(前期比)",
     "TheoreticalSharePriceGrowthRate": "理論株価上昇率",
     "TheoreticalSharePriceGrowthRate5Year": "理論株価上昇率(５年)",
@@ -1597,6 +1638,16 @@ def _decision_label_for_row(row: MetricExcelRow) -> str:
     return _period_scope_label(row.period_scope)
 
 
+def _row_kind_for_metric_base(metric_base: str) -> str:
+    if metric_base in CHANGE_RATE_ROW_KIND_BASES:
+        return ROW_KIND_CHANGE_RATE
+    return ROW_KIND_DETAIL
+
+
+def _is_detail_row(row: MetricExcelRow) -> bool:
+    return row.row_kind in DETAIL_ROW_KINDS
+
+
 def _source_offset_for_display(period_scope: str, display_offset: int) -> int | None:
     if period_scope == "annual":
         if display_offset == 0:
@@ -2040,7 +2091,7 @@ def _build_segment_metric_excel_rows(
                 industry_33=str(sample_row["industry_33"] or ""),
                 market=str(sample_row["market"] or ""),
                 period_scope=display_scope,
-                row_kind=ROW_KIND_DETAIL,
+                row_kind=_row_kind_for_metric_base(metric_base),
                 current_period_end=current_period_end,
                 metric_base=metric_base,
                 metric_label=_segment_metric_label(
@@ -2112,7 +2163,7 @@ def _assign_ranks(rows: list[MetricExcelRow], period_offsets: list[int]) -> None
     groups: dict[tuple[str, str, str, int], list[tuple[int, float]]] = {}
     group_sizes: dict[tuple[str, str, str, int], int] = {}
     for index, row in enumerate(rows):
-        if row.row_kind != ROW_KIND_DETAIL:
+        if not _is_detail_row(row):
             continue
         for offset in period_offsets:
             key = (row.sheet_name, row.period_scope, row.metric_base, offset)
@@ -2142,7 +2193,7 @@ def _append_stat_rows(
     *,
     industry_only: bool,
 ) -> list[MetricExcelRow]:
-    detail_rows = [row for row in rows if row.row_kind == ROW_KIND_DETAIL]
+    detail_rows = [row for row in rows if _is_detail_row(row)]
     grouped: dict[tuple[str, str, str], list[MetricExcelRow]] = {}
     for row in detail_rows:
         grouped.setdefault((row.sheet_name, row.period_scope, row.metric_base), []).append(row)
@@ -2329,6 +2380,7 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, int, str, st
     }.get(row.period_scope, 99)
     row_kind_order = {
         ROW_KIND_DETAIL: 0,
+        ROW_KIND_CHANGE_RATE: 0,
         ROW_KIND_AVERAGE: 1,
         ROW_KIND_MEDIAN: 2,
     }.get(row.row_kind, 9)
@@ -2488,7 +2540,7 @@ def _build_industry_only_metric_excel_rows(
                     industry_33=industry,
                     market="",
                     period_scope=INDUSTRY_AGGREGATE_PERIOD_SCOPE,
-                    row_kind=ROW_KIND_DETAIL,
+                    row_kind=_row_kind_for_metric_base(base),
                     current_period_end=_aggregate_period_display(
                         INDUSTRY_AGGREGATE_PERIOD_SCOPE,
                         max_fiscal_year,
@@ -3116,7 +3168,7 @@ def _find_existing_detail_row(
 ) -> MetricExcelRow | None:
     for row in rows:
         if (
-            row.row_kind == ROW_KIND_DETAIL
+            _is_detail_row(row)
             and row.security_code == security_code
             and row.period_scope == period_scope
             and row.metric_base == metric_base
@@ -3341,7 +3393,7 @@ def _append_quarter_standalone_period_rows(
                     industry_33=str(company["industry_33"] or ""),
                     market=str(company["market"] or ""),
                     period_scope=period_scope,
-                    row_kind=ROW_KIND_DETAIL,
+                    row_kind=_row_kind_for_metric_base(base),
                     current_period_end=current_period_end,
                     metric_base=base,
                     metric_label=_metric_label_for_excel(
@@ -3470,7 +3522,7 @@ def _append_jquants_period_rows(
                 industry_33=str(company["industry_33"] or ""),
                 market=str(company["market"] or ""),
                 period_scope=period_scope,
-                row_kind=ROW_KIND_DETAIL,
+                row_kind=_row_kind_for_metric_base(base),
                 current_period_end=current_period_end,
                 metric_base=base,
                     metric_label=_metric_label_for_excel(
@@ -3762,7 +3814,7 @@ def build_metric_excel_rows(
                     industry_33=str(current["industry_33"] or ""),
                     market=str(current["market"] or ""),
                     period_scope=current_period_scope,
-                    row_kind=ROW_KIND_DETAIL,
+                    row_kind=_row_kind_for_metric_base(base),
                     current_period_end=_current_period_end_for_scope(
                         current["period_end"],
                         current_period_scope,
@@ -3787,10 +3839,10 @@ def build_metric_excel_rows(
     if any(
         FORECAST_PROGRESS_RATIO_KIND in row.ratio_kinds_by_offset.values()
         for row in rows
-        if row.row_kind == ROW_KIND_DETAIL
+        if _is_detail_row(row)
     ):
         warnings.append("quarter_ratio_cells_show_latest_forecast_progress")
-    target_companies = len({row.security_code for row in rows if row.row_kind == ROW_KIND_DETAIL})
+    target_companies = len({row.security_code for row in rows if _is_detail_row(row)})
     _assign_ranks(rows, condition.period_offsets)
     rows = _append_stat_rows(rows, condition.period_offsets, industry_only=False)
     rows.extend(_build_segment_metric_excel_rows(conn, condition, warnings))

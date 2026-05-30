@@ -34,6 +34,7 @@ OBSOLETE_HALF_DERIVED_METRIC_KEYS = [
 OBSOLETE_HALF_NORMALIZED_BASES = (
     "NumberOfEmployees",
     "AverageAge",
+    "AverageLengthOfService",
     "AverageAnnualSalary",
 )
 OBSOLETE_HALF_NORMALIZED_METRIC_KEYS = [

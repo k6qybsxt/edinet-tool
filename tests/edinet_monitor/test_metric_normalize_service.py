@@ -468,8 +468,8 @@ class MetricNormalizeServiceTest(unittest.TestCase):
 
         self.assertNotIn("NumberOfEmployeesCurrent", keys)
         self.assertNotIn("AverageAgeCurrent", keys)
+        self.assertNotIn("AverageLengthOfServiceCurrent", keys)
         self.assertNotIn("AverageAnnualSalaryCurrent", keys)
-        self.assertIn("AverageLengthOfServiceCurrent", keys)
 
     def test_gas_supply_and_sales_expenses_maps_to_selling_expenses_only(self) -> None:
         row = build_raw_fact(tag_name="SupplyAndSalesExpensesGAS")

@@ -87,15 +87,15 @@ class CleanupObsoleteHalfMetricsTest(unittest.TestCase):
         )
 
         rows = count_obsolete_half_metrics(conn)
-        self.assertEqual(sum(int(row["row_count"]) for row in rows), 8)
+        self.assertEqual(sum(int(row["row_count"]) for row in rows), 9)
 
         deleted = delete_obsolete_half_metrics(conn)
 
-        self.assertEqual(deleted, 8)
+        self.assertEqual(deleted, 9)
         remaining = conn.execute("SELECT doc_id, metric_key FROM derived_metrics").fetchall()
         self.assertEqual(len(remaining), 2)
         remaining_normalized = conn.execute("SELECT doc_id, metric_key FROM normalized_metrics").fetchall()
-        self.assertEqual(len(remaining_normalized), 2)
+        self.assertEqual(len(remaining_normalized), 1)
         remaining_market = conn.execute("SELECT source_id, metric_key FROM market_derived_metrics").fetchall()
         self.assertEqual(len(remaining_market), 2)
         self.assertEqual(sum(int(row["row_count"]) for row in count_obsolete_half_metrics(conn)), 0)

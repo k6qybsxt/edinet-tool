@@ -31,6 +31,7 @@ CANDIDATE_VALIDATION_STATUS_EXCLUDE = "EXCLUDE"
 HALF_DISABLED_NORMALIZED_BASES = {
     "NumberOfEmployees",
     "AverageAge",
+    "AverageLengthOfService",
     "AverageAnnualSalary",
 }
 SHARE_COUNT_METRIC_BASES = {
