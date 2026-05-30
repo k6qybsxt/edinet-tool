@@ -9,12 +9,23 @@ def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def delete_derived_metrics_by_doc_id(conn: sqlite3.Connection, doc_id: str) -> None:
+def delete_derived_metrics_by_doc_id(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    *,
+    commit: bool = True,
+) -> None:
     conn.execute("DELETE FROM derived_metrics WHERE doc_id = ?", (doc_id,))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def insert_derived_metrics(conn: sqlite3.Connection, rows: list[dict]) -> int:
+def insert_derived_metrics(
+    conn: sqlite3.Connection,
+    rows: list[dict],
+    *,
+    commit: bool = True,
+) -> int:
     if not rows:
         return 0
 
@@ -105,5 +116,6 @@ def insert_derived_metrics(conn: sqlite3.Connection, rows: list[dict]) -> int:
         """,
         prepared,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(prepared)
