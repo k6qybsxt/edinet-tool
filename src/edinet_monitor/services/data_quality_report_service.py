@@ -33,6 +33,20 @@ MAJOR_METRIC_BASES = (
     "ROA",
     "EquityRatio",
 )
+NORMALIZED_MAJOR_METRIC_BASES = (
+    "NetSales",
+    "OperatingIncome",
+    "OrdinaryIncome",
+    "ProfitLoss",
+    "TotalAssets",
+    "NetAssets",
+    "OperatingCash",
+)
+DERIVED_MAJOR_METRIC_BASES = tuple(
+    metric_base
+    for metric_base in MAJOR_METRIC_BASES
+    if metric_base not in NORMALIZED_MAJOR_METRIC_BASES
+)
 
 RATIO_METRIC_BASES = ("ROE", "ROA", "EquityRatio")
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
@@ -393,7 +407,9 @@ def _fetch_metric_coverage_rows(
         params,
     ).fetchone()
     expected_docs = int(expected_row["expected_docs"] or 0) if expected_row else 0
-    placeholders = ",".join("?" for _ in MAJOR_METRIC_BASES)
+    normalized_metric_keys = [f"{metric_base}Current" for metric_base in NORMALIZED_MAJOR_METRIC_BASES]
+    normalized_placeholders = ",".join("?" for _ in normalized_metric_keys)
+    derived_placeholders = ",".join("?" for _ in DERIVED_MAJOR_METRIC_BASES)
     rows = conn.execute(
         f"""
         WITH scope AS (
@@ -403,22 +419,45 @@ def _fetch_metric_coverage_rows(
                 ON im.edinet_code = f.edinet_code
             WHERE {where_sql}
               AND f.parse_status = 'derived_metrics_saved'
+        ),
+        coverage_source AS (
+            SELECT
+                nm.doc_id,
+                SUBSTR(nm.metric_key, 1, LENGTH(nm.metric_key) - LENGTH('Current')) AS metric_base,
+                nm.value_num,
+                CASE WHEN nm.value_num IS NOT NULL THEN 1 ELSE 0 END AS is_ok
+            FROM normalized_metrics nm
+            INNER JOIN scope s
+                ON s.doc_id = nm.doc_id
+            WHERE nm.metric_key IN ({normalized_placeholders})
+
+            UNION ALL
+
+            SELECT
+                dm.doc_id,
+                dm.metric_base,
+                dm.value_num,
+                CASE
+                    WHEN dm.calc_status = 'ok' AND dm.value_num IS NOT NULL THEN 1
+                    ELSE 0
+                END AS is_ok
+            FROM derived_metrics dm
+            INNER JOIN scope s
+                ON s.doc_id = dm.doc_id
+            WHERE dm.metric_base IN ({derived_placeholders})
         )
         SELECT
-            dm.metric_base,
-            COUNT(DISTINCT dm.doc_id) AS any_doc_count,
+            metric_base,
+            COUNT(DISTINCT doc_id) AS any_doc_count,
             COUNT(DISTINCT CASE
-                WHEN dm.calc_status = 'ok' AND dm.value_num IS NOT NULL THEN dm.doc_id
+                WHEN is_ok = 1 THEN doc_id
             END) AS ok_doc_count,
-            MIN(dm.value_num) AS min_value,
-            MAX(dm.value_num) AS max_value
-        FROM derived_metrics dm
-        INNER JOIN scope s
-            ON s.doc_id = dm.doc_id
-        WHERE dm.metric_base IN ({placeholders})
-        GROUP BY dm.metric_base
+            MIN(value_num) AS min_value,
+            MAX(value_num) AS max_value
+        FROM coverage_source
+        GROUP BY metric_base
         """,
-        [*params, *MAJOR_METRIC_BASES],
+        [*params, *normalized_metric_keys, *DERIVED_MAJOR_METRIC_BASES],
     ).fetchall()
     by_base = {str(row["metric_base"]): row for row in rows}
     coverage_rows: list[dict[str, Any]] = []
@@ -650,6 +689,16 @@ def _apply_previous_values(
         item.previous_value = previous_value
         if item.current_value is not None and previous_value is not None:
             item.delta_value = float(item.current_value) - float(previous_value)
+
+
+def _ensure_unique_item_keys(items: list[DataQualityReportItem]) -> None:
+    seen: dict[str, int] = {}
+    for item in items:
+        base_key = item.item_key
+        occurrence = seen.get(base_key, 0) + 1
+        seen[base_key] = occurrence
+        if occurrence > 1:
+            item.item_key = f"{base_key}:duplicate:{occurrence}"
 
 
 def _counts_by_severity(items: list[DataQualityReportItem]) -> dict[str, int]:
@@ -946,6 +995,7 @@ def export_data_quality_report(
     )
     _add_jquants_items(jquants_quality_rows, items)
 
+    _ensure_unique_item_keys(items)
     previous_run_id = _fetch_previous_run_id(conn, condition_key)
     _apply_previous_values(items, _fetch_previous_values(conn, previous_run_id))
     counts = _counts_by_severity(items)
