@@ -54,7 +54,26 @@ def main() -> None:
     warnings: list[str] = []
     target_companies = 0
     output_rows = 0
+    writer_summary: dict[str, object] = {}
     unhandled_error: Exception | None = None
+
+    def record_writer_span(
+        category: str,
+        name: str,
+        elapsed: float,
+        count: int,
+        detail: dict[str, object],
+    ) -> None:
+        perf_log.add_span(
+            category,
+            name,
+            elapsed_seconds=elapsed,
+            count_total=count,
+            detail=detail,
+        )
+        if name == "write_metric_sheets":
+            writer_summary.update(detail)
+
     try:
         with perf_log.measure("file_io", "read_metric_excel_condition"):
             condition = read_metric_excel_condition(args.condition_xlsx)
@@ -65,16 +84,16 @@ def main() -> None:
                 preview_limit=args.limit_preview,
             )
         output_rows = len(rows)
-        with perf_log.measure("file_io", "write_metric_excel"):
-            path = write_metric_excel(
-                rows=rows,
-                condition=condition,
-                output_path=output_path,
-                db_path=DB_PATH,
-                errors=errors,
-                warnings=warnings,
-                target_companies=target_companies,
-            )
+        path = write_metric_excel(
+            rows=rows,
+            condition=condition,
+            output_path=output_path,
+            db_path=DB_PATH,
+            errors=errors,
+            warnings=warnings,
+            target_companies=target_companies,
+            span_recorder=record_writer_span,
+        )
         result = MetricExcelExportResult(
             output_path=path,
             target_companies=target_companies,
@@ -102,6 +121,9 @@ def main() -> None:
                 "error_count": len(errors),
                 "warning_count": len(warnings),
                 "output_path": str(result.output_path) if result is not None else "",
+                "writer_mode": "openpyxl_write_only",
+                "file_size_bytes": result.output_path.stat().st_size if result is not None else 0,
+                "sheet_row_counts": writer_summary.get("sheet_row_counts", {}),
             },
         )
         conn.close()

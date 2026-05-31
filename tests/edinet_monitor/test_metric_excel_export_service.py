@@ -25,7 +25,6 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     ROW_KIND_DETAIL,
     ROW_KIND_MEDIAN,
     SUMMARY_SHEET,
-    VERTICAL_DATA_SHEET,
     build_metric_excel_rows,
     export_metric_excel,
     read_metric_excel_condition,
@@ -478,6 +477,52 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", headers)
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
         self.assertEqual(ws.cell(2, headers.index("\u6c7a\u7b97\u7a2e\u5225") + 1).value, "\u5730\u57df\u5225")
+
+    def test_write_metric_excel_records_non_overlapping_writer_spans(self) -> None:
+        output_path = self.tmp_path / "spans.xlsx"
+        spans: list[tuple[str, str, float, int, dict]] = []
+        rows = [
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="1111",
+                company_name="A\u793e",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="annual",
+                current_period_end="2026-03-31",
+                metric_base="NetSales",
+                metric_label="\u58f2\u4e0a\u9ad8",
+                periods_by_offset={0: "2026-03-31"},
+                values_by_offset={0: 123.0},
+                units_by_offset={0: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None},
+            )
+        ]
+
+        write_metric_excel(
+            rows=rows,
+            condition=MetricExcelCondition(period_offsets=[0]),
+            output_path=output_path,
+            db_path=":memory:",
+            errors=[],
+            warnings=[],
+            target_companies=1,
+            span_recorder=lambda category, name, elapsed, count, detail: spans.append(
+                (category, name, elapsed, count, detail)
+            ),
+        )
+
+        self.assertEqual(
+            [name for _category, name, _elapsed, _count, _detail in spans],
+            ["write_summary_sheet", "write_metric_sheets", "save_workbook"],
+        )
+        metric_span = spans[1]
+        self.assertEqual(metric_span[0], "file_io")
+        self.assertEqual(metric_span[3], 1)
+        self.assertEqual(metric_span[4]["sheet_row_counts"][GENERAL_SHEET], 1)
+        self.assertEqual(spans[2][4]["file_size_bytes"], output_path.stat().st_size)
+        workbook = load_workbook(output_path)
+        self.assertNotIn("\u30c7\u30fc\u30bf\u7528_\u7e26", workbook.sheetnames)
 
     def test_ordinary_income_row_uses_profit_before_tax_for_ifrs(self) -> None:
         self.conn.execute("UPDATE filings SET accounting_standard = 'IFRS' WHERE edinet_code = 'E00002'")
@@ -1586,7 +1631,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertAlmostEqual(average_row.values_by_offset[1], 1.0)
         self.assertAlmostEqual(median_row.values_by_offset[1], 1.0)
 
-    def test_export_metric_excel_writes_row_kind_rank_and_vertical_data(self) -> None:
+    def test_export_metric_excel_writes_row_kind_rank_without_vertical_data(self) -> None:
         condition_path = self.tmp_path / "condition.xlsx"
         output_path = self.tmp_path / "rank.xlsx"
         _create_condition_workbook(
@@ -1617,13 +1662,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(ws["N2"].value, "1/2")
         self.assertEqual(ws["J1"].fill.fgColor.rgb, "00EAF4FF")
         self.assertEqual(ws["J2"].border.left.style, "thin")
-        vertical = workbook[VERTICAL_DATA_SHEET]
-        self.assertEqual(vertical["C1"].value, "\u30c6\u30f3\u30d0\u30ac\u30fc")
-        self.assertEqual(vertical["G1"].value, "\u884c\u7a2e\u5225")
-        self.assertEqual(vertical["M1"].value, "\u9806\u4f4d")
-        self.assertNotIn("\u5897\u6e1b\u7387", [cell.value for cell in vertical[1]])
-        self.assertEqual(vertical["G2"].value, ROW_KIND_DETAIL)
-        self.assertEqual(vertical["M2"].value, "1/2")
+        self.assertNotIn("\u30c7\u30fc\u30bf\u7528_\u7e26", workbook.sheetnames)
 
     def test_export_metric_excel_marks_tenbagger_learning_security(self) -> None:
         _insert_company(
