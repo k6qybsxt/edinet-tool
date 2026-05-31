@@ -4,14 +4,15 @@ import calendar
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from copy import copy
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any
+from time import perf_counter
+from typing import Any, Callable
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.comments import Comment
 from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -53,7 +54,6 @@ from edinet_monitor.services.segment_name_normalize_service import (
 
 GENERAL_SHEET = "一般企業"
 SUMMARY_SHEET = "summary"
-VERTICAL_DATA_SHEET = "\u30c7\u30fc\u30bf\u7528_\u7e26"
 CONDITION_SHEET = "条件"
 
 SHEET_ORDER = [
@@ -3862,6 +3862,8 @@ def _write_summary_sheet(
     warnings: list[str],
 ) -> None:
     ws = workbook.create_sheet(SUMMARY_SHEET)
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 80
     rows = [
         ("generated_at", datetime.now().isoformat(timespec="seconds")),
         ("db_path", str(db_path)),
@@ -3941,8 +3943,6 @@ def _write_summary_sheet(
         ws.append(("warning_detail", ""))
         for warning in warnings:
             ws.append(("", warning))
-    ws.column_dimensions["A"].width = 24
-    ws.column_dimensions["B"].width = 80
 
 
 def _format_value_cell(cell: Any, metric_base: str) -> None:
@@ -3960,46 +3960,41 @@ def _format_value_cell(cell: Any, metric_base: str) -> None:
         cell.number_format = "#,##0"
 
 
-def _with_left_border(cell: Any, side: Side) -> Border:
-    current = cell.border
-    return Border(
-        left=side,
-        right=current.right,
-        top=current.top,
-        bottom=current.bottom,
-        diagonal=current.diagonal,
-        diagonal_direction=current.diagonal_direction,
-        diagonalUp=current.diagonalUp,
-        diagonalDown=current.diagonalDown,
-        outline=current.outline,
-        vertical=current.vertical,
-        horizontal=current.horizontal,
-    )
-
-
-def _apply_period_block_styles(
+def _write_only_cell(
     ws: Any,
+    value: Any,
     *,
-    period_offsets: list[int],
-    start_col: int,
-    block_width: int,
-) -> None:
-    border_side = Side(style="thin", color=PERIOD_BLOCK_BORDER_COLOR)
+    fill: PatternFill | None = None,
+    font: Font | None = None,
+    border: Border | None = None,
+    number_format: str = "",
+    comment: Comment | None = None,
+) -> WriteOnlyCell:
+    cell = WriteOnlyCell(ws, value=value)
+    if fill is not None:
+        cell.fill = fill
+    if font is not None:
+        cell.font = font
+    if border is not None:
+        cell.border = border
+    if number_format:
+        cell.number_format = number_format
+    if comment is not None:
+        cell.comment = comment
+    return cell
+
+
+def _period_block_styles(period_offsets: list[int]) -> list[tuple[PatternFill, Border]]:
+    left_border = Border(left=Side(style="thin", color=PERIOD_BLOCK_BORDER_COLOR))
+    styles: list[tuple[PatternFill, Border]] = []
     for block_index, offset in enumerate(period_offsets):
-        first_col = start_col + block_index * block_width
-        last_col = first_col + block_width - 1
         fill_color = (
             CURRENT_PERIOD_BLOCK_FILL_COLOR
             if offset == 0
             else PERIOD_BLOCK_FILL_COLORS[block_index % len(PERIOD_BLOCK_FILL_COLORS)]
         )
-        fill = PatternFill("solid", fgColor=fill_color)
-        for row_idx in range(1, ws.max_row + 1):
-            for col_idx in range(first_col, last_col + 1):
-                cell = ws.cell(row_idx, col_idx)
-                cell.fill = fill
-                if col_idx == first_col:
-                    cell.border = _with_left_border(cell, border_side)
+        styles.append((PatternFill("solid", fgColor=fill_color), left_border))
+    return styles
 
 
 def _write_metric_sheet(
@@ -4007,7 +4002,7 @@ def _write_metric_sheet(
     sheet_name: str,
     rows: list[MetricExcelRow],
     period_offsets: list[int],
-) -> None:
+) -> int:
     ws = workbook.create_sheet(sheet_name)
     include_segment_columns = False
     base_headers = [
@@ -4040,15 +4035,42 @@ def _write_metric_sheet(
                 f"{label}_\u9806\u4f4d",
             ]
         )
-    ws.append(headers)
-
     header_fill = PatternFill("solid", fgColor="D9EAF7")
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.fill = header_fill
+    header_font = Font(bold=True)
+    progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
+    block_styles = _period_block_styles(period_offsets)
 
-    forecast_progress_cells: list[Any] = []
-    forecast_revision_cells: list[tuple[Any, str]] = []
+    ws.freeze_panes = f"{get_column_letter(base_col_count + 1)}2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
+    base_widths = [12, 28, 12, 18, 12]
+    if include_segment_columns:
+        base_widths.extend([14, 24])
+    base_widths.extend([12, 16, 16, 24])
+    for col_idx, width in enumerate(base_widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    for col_idx in range(base_col_count + 1, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 14
+
+    header_cells: list[Any] = []
+    for col_idx, header in enumerate(headers, start=1):
+        if col_idx <= base_col_count:
+            header_cells.append(_write_only_cell(ws, header, fill=header_fill, font=header_font))
+            continue
+        period_cell_index = col_idx - base_col_count - 1
+        block_index = period_cell_index // 5
+        cell_index_in_block = period_cell_index % 5
+        fill, border = block_styles[block_index]
+        header_cells.append(
+            _write_only_cell(
+                ws,
+                header,
+                fill=fill,
+                font=header_font,
+                border=border if cell_index_in_block == 0 else None,
+            )
+        )
+    ws.append(header_cells)
+
     for row in rows:
         values: list[Any] = [
             row.security_code,
@@ -4067,140 +4089,56 @@ def _write_metric_sheet(
             row.metric_label,
             ]
         )
-        for offset in period_offsets:
+        for idx, offset in enumerate(period_offsets):
+            fill, border = block_styles[idx]
+            value_kind = row.value_kinds_by_offset.get(offset)
+            value_font: Font | None = None
+            if value_kind in {FORECAST_REVISION_UP_KIND, FORECAST_REVISION_DOWN_KIND}:
+                value_font = Font(
+                    color=(
+                        FORECAST_REVISION_UP_FONT_COLOR
+                        if value_kind == FORECAST_REVISION_UP_KIND
+                        else FORECAST_REVISION_DOWN_FONT_COLOR
+                    )
+                )
+            value_cell = _write_only_cell(
+                ws,
+                row.values_by_offset.get(offset),
+                fill=fill,
+                font=value_font,
+            )
+            _format_value_cell(value_cell, row.metric_base)
+            ratio_is_progress = row.ratio_kinds_by_offset.get(offset) == FORECAST_PROGRESS_RATIO_KIND
+            ratio_cell = _write_only_cell(
+                ws,
+                row.ratios_by_offset.get(offset),
+                fill=progress_fill if ratio_is_progress else fill,
+                number_format="0.0%",
+                comment=(
+                    Comment(
+                        "\u3053\u306e\u6bd4\u7387\u306f\u3001\u56db\u534a\u671f\u5b9f\u7e3e \u00f7 \u540c\u4e00\u5e74\u5ea6\u306e\u6700\u65b0\u901a\u671f\u4e88\u60f3\u3067\u8a08\u7b97\u3057\u305f\u6700\u65b0\u4e88\u60f3\u9032\u6357\u7387\u3067\u3059\u3002",
+                        "EDINET_MONITOR",
+                    )
+                    if ratio_is_progress
+                    else None
+                ),
+            )
             values.extend(
                 [
-                    row.periods_by_offset.get(offset, ""),
-                    row.values_by_offset.get(offset),
-                    row.units_by_offset.get(offset, ""),
-                    row.ratios_by_offset.get(offset),
-                    row.ranks_by_offset.get(offset, ""),
+                    _write_only_cell(
+                        ws,
+                        row.periods_by_offset.get(offset, ""),
+                        fill=fill,
+                        border=border,
+                    ),
+                    value_cell,
+                    _write_only_cell(ws, row.units_by_offset.get(offset, ""), fill=fill),
+                    ratio_cell,
+                    _write_only_cell(ws, row.ranks_by_offset.get(offset, ""), fill=fill),
                 ]
             )
         ws.append(values)
-        current_row = ws.max_row
-        for idx, offset in enumerate(period_offsets):
-            value_col = base_col_count + 2 + idx * 5
-            ratio_col = value_col + 2
-            value_cell = ws.cell(current_row, value_col)
-            _format_value_cell(value_cell, row.metric_base)
-            value_kind = row.value_kinds_by_offset.get(offset)
-            if value_kind in {FORECAST_REVISION_UP_KIND, FORECAST_REVISION_DOWN_KIND}:
-                forecast_revision_cells.append((value_cell, value_kind))
-            ratio_cell = ws.cell(current_row, ratio_col)
-            ratio_cell.number_format = "0.0%"
-            if row.ratio_kinds_by_offset.get(offset) == FORECAST_PROGRESS_RATIO_KIND:
-                forecast_progress_cells.append(ratio_cell)
-
-    _apply_period_block_styles(
-        ws,
-        period_offsets=period_offsets,
-        start_col=base_col_count + 1,
-        block_width=5,
-    )
-    progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
-    for cell in forecast_progress_cells:
-        cell.fill = progress_fill
-        cell.comment = Comment(
-            "\u3053\u306e\u6bd4\u7387\u306f\u3001\u56db\u534a\u671f\u5b9f\u7e3e \u00f7 \u540c\u4e00\u5e74\u5ea6\u306e\u6700\u65b0\u901a\u671f\u4e88\u60f3\u3067\u8a08\u7b97\u3057\u305f\u6700\u65b0\u4e88\u60f3\u9032\u6357\u7387\u3067\u3059\u3002",
-            "EDINET_MONITOR",
-        )
-    for cell, value_kind in forecast_revision_cells:
-        color = (
-            FORECAST_REVISION_UP_FONT_COLOR
-            if value_kind == FORECAST_REVISION_UP_KIND
-            else FORECAST_REVISION_DOWN_FONT_COLOR
-        )
-        font = copy(cell.font)
-        font.color = color
-        cell.font = font
-    ws.freeze_panes = f"{get_column_letter(base_col_count + 1)}2"
-    ws.auto_filter.ref = ws.dimensions
-    base_widths = [12, 28, 12, 18, 12]
-    if include_segment_columns:
-        base_widths.extend([14, 24])
-    base_widths.extend([12, 16, 16, 24])
-    for col_idx, width in enumerate(base_widths, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
-    for col_idx in range(base_col_count + 1, ws.max_column + 1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 14
-
-
-def _write_vertical_data_sheet(
-    workbook: Workbook,
-    rows: list[MetricExcelRow],
-    period_offsets: list[int],
-) -> None:
-    ws = workbook.create_sheet(VERTICAL_DATA_SHEET)
-    include_segment_columns = False
-    headers = [
-        "\u8a3c\u5238\u30b3\u30fc\u30c9",
-        "\u4f01\u696d\u540d",
-        "\u30c6\u30f3\u30d0\u30ac\u30fc",
-        "\u696d\u7a2e",
-        "\u5e02\u5834\u533a\u5206",
-    ]
-    if include_segment_columns:
-        headers.extend(["\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", "\u30bb\u30b0\u30e1\u30f3\u30c8\u540d"])
-    headers.extend(
-        [
-        "\u6c7a\u7b97\u7a2e\u5225",
-        "\u884c\u7a2e\u5225",
-        "\u671f\u9593",
-        "\u6307\u6a19",
-        "\u6570\u5024",
-        "\u5358\u4f4d",
-        "\u6bd4\u7387",
-        "\u9806\u4f4d",
-        ]
-    )
-    ws.append(headers)
-
-    header_fill = PatternFill("solid", fgColor="D9EAF7")
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.fill = header_fill
-
-    for row in rows:
-        for offset in period_offsets:
-            period_text = row.periods_by_offset.get(offset, "")
-            if not period_text:
-                continue
-            values: list[Any] = [
-                    row.security_code,
-                    row.company_name,
-                    tenbagger_learning_mark(row.security_code),
-                    row.industry_33,
-                    row.market,
-            ]
-            if include_segment_columns:
-                values.extend([row.segment_kind, row.segment_name])
-            values.extend(
-                [
-                    _decision_label_for_row(row),
-                    row.row_kind,
-                    period_text,
-                    row.metric_label,
-                    row.values_by_offset.get(offset),
-                    row.units_by_offset.get(offset, ""),
-                    row.ratios_by_offset.get(offset),
-                    row.ranks_by_offset.get(offset, ""),
-                ]
-            )
-            ws.append(values)
-            current_row = ws.max_row
-            value_col = 12 if include_segment_columns else 10
-            _format_value_cell(ws.cell(current_row, value_col), row.metric_base)
-            ws.cell(current_row, value_col + 2).number_format = "0.0%"
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    base_widths = [12, 28, 12, 18, 12]
-    if include_segment_columns:
-        base_widths.extend([14, 24])
-    base_widths.extend([12, 14, 28, 16, 10, 12, 12, 12])
-    for col_idx, width in enumerate(base_widths, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    return len(rows)
 
 
 def write_metric_excel(
@@ -4212,13 +4150,30 @@ def write_metric_excel(
     errors: list[str],
     warnings: list[str],
     target_companies: int | None = None,
+    span_recorder: Callable[[str, str, float, int, dict[str, Any]], None] | None = None,
 ) -> Path:
+    def record_span(
+        span_name: str,
+        started_at: float,
+        *,
+        count_total: int = 0,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        if span_recorder is None:
+            return
+        span_recorder(
+            "file_io",
+            span_name,
+            max(perf_counter() - started_at, 0.0),
+            int(count_total),
+            dict(detail or {}),
+        )
+
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    workbook = Workbook()
-    default_sheet = workbook.active
-    workbook.remove(default_sheet)
+    workbook = Workbook(write_only=True)
 
+    started_at = perf_counter()
     _write_summary_sheet(
         workbook,
         condition=condition,
@@ -4230,22 +4185,36 @@ def write_metric_excel(
         errors=errors,
         warnings=warnings,
     )
+    record_span("write_summary_sheet", started_at, count_total=1)
 
+    started_at = perf_counter()
     rows_by_sheet = {sheet: [] for sheet in SHEET_ORDER}
     for row in rows:
         rows_by_sheet.setdefault(row.sheet_name, []).append(row)
 
+    sheet_row_counts: dict[str, int] = {}
     for sheet_name in SHEET_ORDER:
-        _write_metric_sheet(
+        sheet_row_counts[sheet_name] = _write_metric_sheet(
             workbook,
             sheet_name,
             rows_by_sheet.get(sheet_name, []),
             condition.period_offsets,
         )
+    record_span(
+        "write_metric_sheets",
+        started_at,
+        count_total=sum(sheet_row_counts.values()),
+        detail={"sheet_row_counts": sheet_row_counts},
+    )
 
-    _write_vertical_data_sheet(workbook, rows, condition.period_offsets)
-
+    started_at = perf_counter()
     workbook.save(path)
+    record_span(
+        "save_workbook",
+        started_at,
+        count_total=path.stat().st_size,
+        detail={"file_size_bytes": path.stat().st_size},
+    )
     return path
 
 

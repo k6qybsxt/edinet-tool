@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sqlite3
 import shutil
 import sys
@@ -45,7 +46,8 @@ class ExportMetricExcelCliTest(unittest.TestCase):
             output_dir = tmp_path / "out"
             _create_condition_workbook(condition_path)
 
-            conn = sqlite3.connect(":memory:")
+            db_path = tmp_path / "monitor.db"
+            conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             _create_schema(conn)
             _insert_company(
@@ -86,6 +88,41 @@ class ExportMetricExcelCliTest(unittest.TestCase):
             self.assertIn("preview_rows=3", output)
             self.assertIn("errors=0", output)
             self.assertTrue((output_dir / "result.xlsx").exists())
+            check_conn = sqlite3.connect(db_path)
+            summary_json = check_conn.execute(
+                """
+                SELECT summary_json
+                FROM pipeline_performance_runs
+                WHERE command_name = 'export_metric_excel'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()[0]
+            summary = json.loads(summary_json)
+            self.assertEqual(summary["writer_mode"], "openpyxl_write_only")
+            self.assertGreater(summary["file_size_bytes"], 0)
+            self.assertEqual(summary["sheet_row_counts"]["\u4e00\u822c\u4f01\u696d"], 3)
+            span_names = [
+                row[0]
+                for row in check_conn.execute(
+                    """
+                    SELECT span_name
+                    FROM pipeline_performance_spans
+                    ORDER BY id
+                    """
+                ).fetchall()
+            ]
+            check_conn.close()
+            self.assertEqual(
+                span_names,
+                [
+                    "read_metric_excel_condition",
+                    "build_metric_excel_rows",
+                    "write_summary_sheet",
+                    "write_metric_sheets",
+                    "save_workbook",
+                ],
+            )
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
