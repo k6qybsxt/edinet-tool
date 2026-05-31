@@ -6,6 +6,7 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import load_workbook
 
@@ -125,6 +126,9 @@ class DataQualityReportServiceTest(unittest.TestCase):
         self.assertTrue(result.excel_path.exists())
         self.assertGreater(result.issue_count, 0)
         self.assertTrue(any(item.check_name == "ratio_metric_extreme_value" for item in result.items))
+        coverage_by_base = {row["metric_base"]: row for row in result.metric_coverage_rows}
+        self.assertEqual(coverage_by_base["NetSales"]["ok_doc_count"], 1)
+        self.assertEqual(coverage_by_base["NetSales"]["coverage_ratio"], 1.0)
         run_count = self.conn.execute("SELECT COUNT(*) FROM data_quality_report_runs").fetchone()[0]
         item_count = self.conn.execute("SELECT COUNT(*) FROM data_quality_report_items").fetchone()[0]
         self.assertEqual(run_count, 1)
@@ -198,6 +202,49 @@ class DataQualityReportServiceTest(unittest.TestCase):
             (results[0].run_id,),
         ).fetchone()[0]
         self.assertEqual(stale_items, 0)
+
+    def test_duplicate_quality_issue_keys_are_persisted_with_stable_suffix(self) -> None:
+        duplicate_issue = {
+            "severity": "warning",
+            "check_name": "duplicate_fixture",
+            "security_code": "1111",
+            "fiscal_year": 2025,
+            "period_key": "FY",
+            "metric_base": "NetSales",
+            "value_num": 1.0,
+            "reference_value": "",
+            "disclosure_number": "DISC1",
+            "message": "duplicate fixture",
+        }
+        with patch(
+            "edinet_monitor.services.data_quality_report_service.build_jquants_quality_issues",
+            return_value=[duplicate_issue, duplicate_issue],
+        ):
+            result = export_data_quality_report(
+                self.conn,
+                options=DataQualityReportOptions(
+                    date_from="2025-01-01",
+                    date_to="2025-12-31",
+                    codes=("1111",),
+                    output_dir=self.output_dir,
+                ),
+            )
+
+        rows = self.conn.execute(
+            """
+            SELECT item_key
+            FROM data_quality_report_items
+            WHERE run_id = ?
+              AND check_name = 'duplicate_fixture'
+            ORDER BY id
+            """,
+            (result.run_id,),
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            str(rows[1]["item_key"]),
+            f"{rows[0]['item_key']}:duplicate:2",
+        )
 
 
 if __name__ == "__main__":
