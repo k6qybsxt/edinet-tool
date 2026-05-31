@@ -46,7 +46,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-batch-size", type=int, default=20)
     parser.add_argument("--extract-batch-size", type=int, default=20)
     parser.add_argument("--raw-batch-size", type=int, default=20)
+    parser.add_argument("--raw-workers", type=int, default=1)
+    parser.add_argument("--raw-parse-chunk-size", type=int, default=5)
     parser.add_argument("--normalized-batch-size", type=int, default=100)
+    parser.add_argument("--normalized-workers", type=int, default=1)
+    parser.add_argument("--normalize-chunk-size", type=int, default=5)
     parser.add_argument("--derived-batch-size", type=int, default=100)
     parser.add_argument("--enable-period-fallback", action="store_true")
     parser.add_argument("--enforce-candidate-validation", action="store_true")
@@ -149,7 +153,11 @@ def run_daily_pipeline(
     download_batch_size: int = 20,
     extract_batch_size: int = 20,
     raw_batch_size: int = 20,
+    raw_workers: int = 1,
+    raw_parse_chunk_size: int = 5,
     normalized_batch_size: int = 100,
+    normalized_workers: int = 1,
+    normalize_chunk_size: int = 5,
     derived_batch_size: int = 100,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
@@ -273,6 +281,8 @@ def run_daily_pipeline(
             stage_kwargs={
                 "batch_size": raw_batch_size,
                 "run_all": True,
+                "workers": raw_workers,
+                "parse_chunk_size": raw_parse_chunk_size,
             },
         )
         if chunk_rows:
@@ -293,6 +303,8 @@ def run_daily_pipeline(
                 "batch_size": normalized_batch_size,
                 "enable_period_fallback": enable_period_fallback,
                 "enforce_candidate_validation": enforce_candidate_validation,
+                "workers": normalized_workers,
+                "normalize_chunk_size": normalize_chunk_size,
             },
         )
         if chunk_rows:
@@ -483,7 +495,11 @@ def main() -> None:
         download_batch_size=args.download_batch_size,
         extract_batch_size=args.extract_batch_size,
         raw_batch_size=args.raw_batch_size,
+        raw_workers=args.raw_workers,
+        raw_parse_chunk_size=args.raw_parse_chunk_size,
         normalized_batch_size=args.normalized_batch_size,
+        normalized_workers=args.normalized_workers,
+        normalize_chunk_size=args.normalize_chunk_size,
         derived_batch_size=args.derived_batch_size,
         enable_period_fallback=args.enable_period_fallback,
         enforce_candidate_validation=args.enforce_candidate_validation,

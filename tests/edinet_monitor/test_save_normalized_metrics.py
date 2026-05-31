@@ -34,8 +34,8 @@ class SaveNormalizedMetricsCliTest(unittest.TestCase):
                     side_effect=[[row], []],
                 ),
                 patch(
-                    "edinet_monitor.cli.save_normalized_metrics.fetch_raw_fact_rows",
-                    return_value=[{"doc_id": "S100TEST"}],
+                    "edinet_monitor.cli.save_normalized_metrics.fetch_raw_fact_rows_by_doc_ids",
+                    return_value={"S100TEST": [{"doc_id": "S100TEST"}]},
                 ),
                 patch(
                     "edinet_monitor.cli.save_normalized_metrics.normalize_raw_fact_rows",

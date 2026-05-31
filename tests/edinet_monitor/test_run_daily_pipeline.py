@@ -112,8 +112,33 @@ class RunDailyPipelineTest(unittest.TestCase):
         finally:
             setup_conn.close()
 
+        raw_kwargs: dict = {}
+        normalized_kwargs: dict = {}
+
+        def run_raw(**kwargs):
+            raw_kwargs.update(kwargs)
+            return {
+                "target_total": 0,
+                "saved_docs_total": 0,
+                "saved_rows_total": 0,
+                "error_total": 0,
+            }
+
+        def run_normalized(**kwargs):
+            normalized_kwargs.update(kwargs)
+            return {
+                "target_total": 0,
+                "saved_docs_total": 0,
+                "saved_rows_total": 0,
+                "error_total": 0,
+            }
+
         result = run_daily_pipeline(
             target_date_text="2026-04-09",
+            raw_workers=4,
+            raw_parse_chunk_size=6,
+            normalized_workers=3,
+            normalize_chunk_size=7,
             api_key="dummy",
             resolve_target_dates_func=lambda **_: [date(2026, 4, 9)],
             collect_func=lambda target_dates, api_key: {
@@ -130,18 +155,8 @@ class RunDailyPipelineTest(unittest.TestCase):
                 "extracted_total": 0,
                 "error_total": 0,
             },
-            raw_func=lambda **_: {
-                "target_total": 0,
-                "saved_docs_total": 0,
-                "saved_rows_total": 0,
-                "error_total": 0,
-            },
-            normalized_func=lambda **_: {
-                "target_total": 0,
-                "saved_docs_total": 0,
-                "saved_rows_total": 0,
-                "error_total": 0,
-            },
+            raw_func=run_raw,
+            normalized_func=run_normalized,
             derived_func=lambda **_: {
                 "target_total": 0,
                 "saved_docs_total": 0,
@@ -172,6 +187,10 @@ class RunDailyPipelineTest(unittest.TestCase):
         )
 
         self.assertEqual(result["run_status"], "completed")
+        self.assertEqual(raw_kwargs["workers"], 4)
+        self.assertEqual(raw_kwargs["parse_chunk_size"], 6)
+        self.assertEqual(normalized_kwargs["workers"], 3)
+        self.assertEqual(normalized_kwargs["normalize_chunk_size"], 7)
 
         verify_conn = connection_factory()
         try:
