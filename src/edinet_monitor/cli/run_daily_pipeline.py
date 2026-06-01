@@ -44,6 +44,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="End date in YYYY-MM-DD format.",
     )
     parser.add_argument("--download-batch-size", type=int, default=20)
+    parser.add_argument("--download-workers", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--download-retry-errors", action="store_true")
     parser.add_argument("--extract-batch-size", type=int, default=20)
     parser.add_argument("--extract-workers", type=int, default=1)
     parser.add_argument("--extract-chunk-size", type=int, default=5)
@@ -153,6 +155,8 @@ def run_daily_pipeline(
     date_from_text: str = "",
     date_to_text: str = "",
     download_batch_size: int = 20,
+    download_workers: int = 1,
+    download_retry_errors: bool = False,
     extract_batch_size: int = 20,
     extract_workers: int = 1,
     extract_chunk_size: int = 5,
@@ -247,6 +251,8 @@ def run_daily_pipeline(
                 "api_key": effective_api_key,
                 "batch_size": download_batch_size,
                 "run_all": True,
+                "workers": download_workers,
+                "retry_errors": download_retry_errors,
             },
         )
         if chunk_rows:
@@ -499,6 +505,8 @@ def main() -> None:
         date_from_text=args.date_from,
         date_to_text=args.date_to,
         download_batch_size=args.download_batch_size,
+        download_workers=args.download_workers,
+        download_retry_errors=args.download_retry_errors,
         extract_batch_size=args.extract_batch_size,
         extract_workers=args.extract_workers,
         extract_chunk_size=args.extract_chunk_size,

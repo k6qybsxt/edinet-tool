@@ -30,6 +30,7 @@ from edinet_monitor.config.settings import (
 from edinet_monitor.services.collector.issuer_master_csv_service import load_allowed_edinet_codes
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
+from edinet_monitor.services.collector.download_wave_service import validate_download_workers
 from edinet_monitor.services.storage.raw_retention_service import cleanup_old_raw_storage
 from edinet_monitor.services.storage.manifest_service import (
     build_manifest_path,
@@ -222,6 +223,7 @@ def run_zip_backfill(
     download_progress_every: int | None = None,
     download_cooldown_failure_streak: int | None = None,
     download_cooldown_sec: float | None = None,
+    download_workers: int = 1,
     download_submit_date_text: str = "",
     download_submit_date_from_text: str = "",
     download_submit_date_to_text: str = "",
@@ -242,6 +244,7 @@ def run_zip_backfill(
     raw_retention_cleanup_func: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     ensure_dirs_func()
+    download_workers = validate_download_workers(download_workers)
     manifest_granularity = resolve_manifest_granularity(
         manifest_granularity=manifest_granularity,
         download_profile=download_profile,
@@ -272,6 +275,8 @@ def run_zip_backfill(
     total_download_elapsed_seconds = 0.0
     total_retry_wait_elapsed_seconds = 0.0
     total_cooldown_elapsed_seconds = 0.0
+    total_download_wall_elapsed_seconds = 0.0
+    total_download_waves = 0
     aggregate_error_type_totals: dict[str, int] = {}
     effective_profile_totals: dict[str, int] = {}
     raw_retention_summary: dict[str, Any] = {
@@ -377,6 +382,9 @@ def run_zip_backfill(
                         "download_elapsed_seconds": 0.0,
                         "retry_wait_elapsed_seconds": 0.0,
                         "cooldown_elapsed_seconds": 0.0,
+                        "download_wall_elapsed_seconds": 0.0,
+                        "workers": int(download_workers),
+                        "wave_count": 0,
                         "error_type_totals": {},
                         "skipped": True,
                     }
@@ -407,6 +415,7 @@ def run_zip_backfill(
                         progress_every=runtime_settings["progress_every"],
                         cooldown_failure_streak=runtime_settings["cooldown_failure_streak"],
                         cooldown_sec=runtime_settings["cooldown_sec"],
+                        workers=download_workers,
                         submit_date_text=download_submit_date_text,
                         submit_date_from_text=download_submit_date_from_text,
                         submit_date_to_text=download_submit_date_to_text,
@@ -420,6 +429,10 @@ def run_zip_backfill(
                     total_download_elapsed_seconds += float(download_summary.get("download_elapsed_seconds", 0.0) or 0.0)
                     total_retry_wait_elapsed_seconds += float(download_summary.get("retry_wait_elapsed_seconds", 0.0) or 0.0)
                     total_cooldown_elapsed_seconds += float(download_summary.get("cooldown_elapsed_seconds", 0.0) or 0.0)
+                    total_download_wall_elapsed_seconds += float(
+                        download_summary.get("download_wall_elapsed_seconds", 0.0) or 0.0
+                    )
+                    total_download_waves += int(download_summary.get("wave_count", 0) or 0)
                     for error_type, count in dict(download_summary.get("error_type_totals", {})).items():
                         aggregate_error_type_totals[error_type] = (
                             aggregate_error_type_totals.get(error_type, 0) + int(count)
@@ -476,6 +489,12 @@ def run_zip_backfill(
                             float(download_summary.get("cooldown_elapsed_seconds", 0.0) or 0.0),
                             3,
                         ),
+                        "download_wall_elapsed_seconds": round(
+                            float(download_summary.get("download_wall_elapsed_seconds", 0.0) or 0.0),
+                            3,
+                        ),
+                        "workers": int(download_summary.get("workers", download_workers) or download_workers),
+                        "wave_count": int(download_summary.get("wave_count", 0) or 0),
                         "error_type_totals": dict(sorted(dict(download_summary.get("error_type_totals", {})).items())),
                     },
                 )
@@ -501,6 +520,12 @@ def run_zip_backfill(
                         float(download_summary.get("cooldown_elapsed_seconds", 0.0) or 0.0),
                         3,
                     ),
+                    "chunk_download_wall_elapsed_seconds": round(
+                        float(download_summary.get("download_wall_elapsed_seconds", 0.0) or 0.0),
+                        3,
+                    ),
+                    "download_workers": int(download_summary.get("workers", download_workers) or download_workers),
+                    "chunk_download_wave_count": int(download_summary.get("wave_count", 0) or 0),
                     "chunk_status": chunk_status,
                     "collect_summary": collect_summary,
                     "manifest_summary": manifest_summary,
@@ -551,6 +576,9 @@ def run_zip_backfill(
         print(f"backfill_download_elapsed_seconds={round(total_download_elapsed_seconds, 3)}")
         print(f"backfill_retry_wait_elapsed_seconds={round(total_retry_wait_elapsed_seconds, 3)}")
         print(f"backfill_cooldown_elapsed_seconds={round(total_cooldown_elapsed_seconds, 3)}")
+        print(f"backfill_download_wall_elapsed_seconds={round(total_download_wall_elapsed_seconds, 3)}")
+        print(f"backfill_download_workers={int(download_workers)}")
+        print(f"backfill_download_wave_count={total_download_waves}")
         print(f"raw_retention_cleanup_status={raw_retention_summary['status']}")
         print(f"raw_retention_cleanup_reason={raw_retention_summary['reason']}")
         print(f"raw_retention_reference_month={raw_retention_summary['reference_month']}")
@@ -603,6 +631,9 @@ def run_zip_backfill(
                 "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
                 "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
                 "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
+                "download_wall_elapsed_seconds": round(total_download_wall_elapsed_seconds, 3),
+                "download_workers": int(download_workers),
+                "download_wave_count": total_download_waves,
                 "raw_retention_cleanup_status": raw_retention_summary["status"],
                 "raw_retention_cleanup_reason": raw_retention_summary["reason"],
                 "raw_retention_reference_month": raw_retention_summary["reference_month"],
@@ -637,6 +668,9 @@ def run_zip_backfill(
         "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
         "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
         "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
+        "download_wall_elapsed_seconds": round(total_download_wall_elapsed_seconds, 3),
+        "download_workers": int(download_workers),
+        "download_wave_count": total_download_waves,
         "raw_retention_summary": dict(raw_retention_summary),
         "effective_profile_totals": dict(sorted(effective_profile_totals.items())),
         "error_type_totals": dict(sorted(aggregate_error_type_totals.items())),
@@ -699,6 +733,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-progress-every", type=int, default=None)
     parser.add_argument("--download-cooldown-failure-streak", type=int, default=None)
     parser.add_argument("--download-cooldown-sec", type=float, default=None)
+    parser.add_argument("--download-workers", type=int, choices=[1, 2], default=1)
     parser.add_argument(
         "--download-submit-date",
         default=os.getenv("EDINET_SUBMIT_DATE", "").strip(),
@@ -777,6 +812,7 @@ def main() -> None:
         download_progress_every=args.download_progress_every,
         download_cooldown_failure_streak=args.download_cooldown_failure_streak,
         download_cooldown_sec=args.download_cooldown_sec,
+        download_workers=args.download_workers,
         download_submit_date_text=download_submit_date_text,
         download_submit_date_from_text=download_submit_date_from_text,
         download_submit_date_to_text=download_submit_date_to_text,

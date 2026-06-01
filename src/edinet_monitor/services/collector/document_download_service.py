@@ -3,6 +3,7 @@ from __future__ import annotations
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 import requests
 from requests import HTTPError, RequestException, Timeout
@@ -88,6 +89,7 @@ def download_document_zip(
 ) -> Path:
     api_key = validate_edinet_api_key(api_key)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(f"{output_path.name}.{uuid4().hex}.tmp")
 
     url = build_document_url(doc_id)
 
@@ -132,16 +134,18 @@ def download_document_zip(
             detail=f"content_type={response.headers.get('Content-Type')} preview={preview!r}",
         )
 
-    output_path.write_bytes(response.content)
+    try:
+        temporary_path.write_bytes(response.content)
 
-    if not zipfile.is_zipfile(output_path):
-        output_path.unlink(missing_ok=True)
-        raise DownloadDocumentZipError(
-            error_type="saved_zip_invalid",
-            retryable=True,
-            detail=f"path={output_path}",
-        )
+        if not zipfile.is_zipfile(temporary_path):
+            raise DownloadDocumentZipError(
+                error_type="saved_zip_invalid",
+                retryable=True,
+                detail=f"path={temporary_path}",
+            )
 
-    print(f"[DEBUG] write_complete doc_id={doc_id} bytes={len(response.content)}")
-
-    return output_path
+        temporary_path.replace(output_path)
+        print(f"[DEBUG] write_complete doc_id={doc_id} bytes={len(response.content)}")
+        return output_path
+    finally:
+        temporary_path.unlink(missing_ok=True)
