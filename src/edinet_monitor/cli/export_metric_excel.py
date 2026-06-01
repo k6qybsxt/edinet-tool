@@ -54,10 +54,10 @@ def main() -> None:
     warnings: list[str] = []
     target_companies = 0
     output_rows = 0
-    writer_summary: dict[str, object] = {}
+    span_summary: dict[str, object] = {}
     unhandled_error: Exception | None = None
 
-    def record_writer_span(
+    def record_span(
         category: str,
         name: str,
         elapsed: float,
@@ -71,18 +71,17 @@ def main() -> None:
             count_total=count,
             detail=detail,
         )
-        if name == "write_metric_sheets":
-            writer_summary.update(detail)
+        span_summary.update(detail)
 
     try:
         with perf_log.measure("file_io", "read_metric_excel_condition"):
             condition = read_metric_excel_condition(args.condition_xlsx)
-        with perf_log.measure("compute", "build_metric_excel_rows"):
-            rows, errors, warnings, preview_rows, target_companies = build_metric_excel_rows(
-                conn,
-                condition,
-                preview_limit=args.limit_preview,
-            )
+        rows, errors, warnings, preview_rows, target_companies = build_metric_excel_rows(
+            conn,
+            condition,
+            preview_limit=args.limit_preview,
+            span_recorder=record_span,
+        )
         output_rows = len(rows)
         path = write_metric_excel(
             rows=rows,
@@ -92,7 +91,7 @@ def main() -> None:
             errors=errors,
             warnings=warnings,
             target_companies=target_companies,
-            span_recorder=record_writer_span,
+            span_recorder=record_span,
         )
         result = MetricExcelExportResult(
             output_path=path,
@@ -122,8 +121,12 @@ def main() -> None:
                 "warning_count": len(warnings),
                 "output_path": str(result.output_path) if result is not None else "",
                 "writer_mode": "openpyxl_write_only",
+                "row_builder_mode": span_summary.get("row_builder_mode", ""),
                 "file_size_bytes": result.output_path.stat().st_size if result is not None else 0,
-                "sheet_row_counts": writer_summary.get("sheet_row_counts", {}),
+                "sheet_row_counts": span_summary.get("sheet_row_counts", {}),
+                "jquants_metric_rows": span_summary.get("jquants_metric_rows", 0),
+                "quarter_standalone_metric_rows": span_summary.get("quarter_standalone_metric_rows", 0),
+                "segment_metric_rows": span_summary.get("segment_metric_rows", 0),
             },
         )
         conn.close()
