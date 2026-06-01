@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import json
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -50,6 +51,9 @@ from edinet_monitor.services.segment_name_normalize_service import (
     canonical_segment_key,
     preferred_segment_name_map,
 )
+
+
+SpanRecorder = Callable[[str, str, float, int, dict[str, Any]], None]
 
 
 GENERAL_SHEET = "一般企業"
@@ -861,6 +865,39 @@ class MetricExcelExportResult:
     preview_rows: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class _JQuantsLookupIndexes:
+    max_fiscal_year_by_period: dict[tuple[str, str, str], int]
+    forecast_values_by_as_of_key: dict[tuple[str, int, str], list[tuple[str, str, float]]]
+    forecast_value_by_stage: dict[tuple[str, int, str, str], float]
+
+
+@dataclass(frozen=True)
+class _QuarterStandaloneLookupIndexes:
+    max_fiscal_year_by_code: dict[str, int]
+    period_end_by_code_year_quarter: dict[tuple[str, int, str], str]
+
+
+def _record_span(
+    span_recorder: SpanRecorder | None,
+    category: str,
+    name: str,
+    started: float,
+    *,
+    count: int = 0,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    if span_recorder is None:
+        return
+    span_recorder(
+        category,
+        name,
+        max(perf_counter() - started, 0.0),
+        count,
+        dict(detail or {}),
+    )
+
+
 def _normalize_text(value: Any) -> str:
     text = str(value or "").replace("\u3000", " ").replace("\xa0", " ").strip()
     return re.sub(r"\s+", "", text)
@@ -906,6 +943,42 @@ def _normalize_security_code(value: str) -> str:
     if len(text) == 5 and text.endswith("0"):
         return text[:-1]
     return text
+
+
+def _security_code_candidates(security_codes: list[str]) -> list[str]:
+    candidates: set[str] = set()
+    for value in security_codes:
+        text = str(value or "").strip().replace("-", "")
+        if not text:
+            continue
+        normalized = _normalize_security_code(text)
+        candidates.add(normalized)
+        if len(normalized) == 4:
+            candidates.add(f"{normalized}0")
+    return sorted(candidates)
+
+
+def _jquants_local_code_candidates(security_codes: list[str]) -> list[str]:
+    candidates: set[str] = set()
+    for value in security_codes:
+        text = str(value or "").strip().replace("-", "")
+        if not text:
+            continue
+        normalized = _normalize_security_code(text)
+        candidates.add(text if len(text) == 5 else f"{normalized}0")
+    return sorted(candidates)
+
+
+def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'index' AND name = ?
+        """,
+        (index_name,),
+    ).fetchone()
+    return row is not None
 
 
 def _parse_period_token(token: str) -> int:
@@ -1931,16 +2004,18 @@ def _fetch_segment_metric_rows(
         where.append(f"im.industry_33 IN ({','.join('?' for _ in condition.industries)})")
         params.extend(condition.industries)
     if condition.security_codes:
-        where.append(
-            f"(substr(coalesce(sm.security_code, ''), 1, 4) IN ({','.join('?' for _ in condition.security_codes)}) "
-            f"OR coalesce(sm.security_code, '') IN ({','.join('?' for _ in condition.security_codes)}))"
-        )
-        params.extend(condition.security_codes)
-        params.extend(condition.security_codes)
+        security_code_candidates = _security_code_candidates(condition.security_codes)
+        where.append(f"sm.security_code IN ({','.join('?' for _ in security_code_candidates)})")
+        params.extend(security_code_candidates)
     if condition.company_names:
         where.append(f"im.company_name IN ({','.join('?' for _ in condition.company_names)})")
         params.extend(condition.company_names)
 
+    index_hint = (
+        " INDEXED BY idx_segment_metrics_code_period"
+        if condition.security_codes and _index_exists(conn, "idx_segment_metrics_code_period")
+        else ""
+    )
     return conn.execute(
         f"""
         SELECT
@@ -1948,7 +2023,7 @@ def _fetch_segment_metric_rows(
           im.company_name,
           im.industry_33,
           im.market
-        FROM segment_metrics sm
+        FROM segment_metrics AS sm{index_hint}
         LEFT JOIN issuer_master im
           ON im.edinet_code = sm.edinet_code
         WHERE {' AND '.join(where)}
@@ -1963,6 +2038,8 @@ def _build_segment_metric_excel_rows(
     conn: sqlite3.Connection,
     condition: MetricExcelCondition,
     warnings: list[str],
+    *,
+    span_recorder: SpanRecorder | None = None,
 ) -> list[MetricExcelRow]:
     if condition.segment_mode == "none":
         return []
@@ -1973,11 +2050,20 @@ def _build_segment_metric_excel_rows(
     if not metric_bases:
         _append_warning_once(warnings, "segment_metrics_no_matching_metric")
         return []
+    started = perf_counter()
     raw_rows = _fetch_segment_metric_rows(conn, condition, metric_bases=metric_bases)
+    _record_span(
+        span_recorder,
+        "db_read",
+        "fetch_segment_metric_rows",
+        started,
+        count=len(raw_rows),
+    )
     if not raw_rows:
         _append_warning_once(warnings, "segment_metrics_empty")
         return []
 
+    started = perf_counter()
     preferred_segment_names = preferred_segment_name_map(
         SegmentNameCandidate(
             edinet_code=str(raw["edinet_code"] or ""),
@@ -2110,6 +2196,14 @@ def _build_segment_metric_excel_rows(
                 segment_order=segment_order_by_key.get(key),
             )
         )
+    _record_span(
+        span_recorder,
+        "compute",
+        "build_segment_rows",
+        started,
+        count=len(rows),
+        detail={"segment_metric_rows": len(raw_rows)},
+    )
     return rows
 
 
@@ -2253,7 +2347,6 @@ def _append_stat_rows(
                     raw_values_by_offset=raw_values_by_offset,
                 )
             )
-
     return [*rows, *stat_rows]
 
 
@@ -2674,13 +2767,14 @@ def _fetch_jquants_metric_rows(
         for row in conn.execute("PRAGMA table_info(jquants_financial_metrics)").fetchall()
     }
     forecast_stage_expr = "forecast_stage" if "forecast_stage" in columns else "NULL AS forecast_stage"
-    code_placeholders = ",".join("?" for _ in security_codes)
+    local_codes = _jquants_local_code_candidates(security_codes)
+    local_code_placeholders = ",".join("?" for _ in local_codes)
     base_placeholders = ",".join("?" for _ in metric_bases)
     where = [
-        f"(security_code IN ({code_placeholders}) OR local_code IN ({code_placeholders}))",
+        f"local_code IN ({local_code_placeholders})",
         f"metric_base IN ({base_placeholders})",
     ]
-    params: list[Any] = [*security_codes, *security_codes, *metric_bases]
+    params: list[Any] = [*local_codes, *metric_bases]
     if min_fiscal_year is not None:
         where.append("fiscal_year >= ?")
         params.append(min_fiscal_year)
@@ -2717,6 +2811,7 @@ def _fetch_jquants_metric_rows(
     if market_derived_table_exists(conn):
         market_metric_bases = [base for base in metric_bases if base in MARKET_METRIC_BASES]
         if market_metric_bases:
+            code_placeholders = ",".join("?" for _ in security_codes)
             market_base_placeholders = ",".join("?" for _ in market_metric_bases)
             market_where = [
                 "source_type = 'jquants'",
@@ -2812,7 +2907,87 @@ def _latest_quarter_standalone_metric_rows(
     return latest
 
 
-def _max_quarter_standalone_fiscal_year(rows: list[sqlite3.Row], security_code: str) -> int | None:
+def _build_jquants_lookup_indexes(rows: list[sqlite3.Row]) -> _JQuantsLookupIndexes:
+    max_fiscal_year_by_period: dict[tuple[str, str, str], int] = {}
+    forecast_values_by_as_of_key: dict[tuple[str, int, str], list[tuple[str, str, float]]] = {}
+    forecast_value_by_stage: dict[tuple[str, int, str, str], float] = {}
+    forecast_order_by_stage: dict[tuple[str, int, str, str], tuple[str, str]] = {}
+    for row in rows:
+        if row["fiscal_year"] is None:
+            continue
+        security_code = _normalize_security_code(row["security_code"] or row["local_code"] or "")
+        fiscal_year = int(row["fiscal_year"])
+        period_key = str(row["period_key"] or "")
+        forecast_stage = str(row["forecast_stage"] or "")
+        for stage_key in {"", forecast_stage}:
+            key = (security_code, period_key, stage_key)
+            max_fiscal_year_by_period[key] = max(max_fiscal_year_by_period.get(key, fiscal_year), fiscal_year)
+        if (
+            str(row["period_scope"] or "") != "forecast"
+            or period_key != "forecast:FY"
+            or str(row["calc_status"] or "") != "ok"
+            or row["value_num"] is None
+        ):
+            continue
+        metric_base = str(row["metric_base"] or "")
+        disclosed_date = str(row["disclosed_date"] or "")
+        disclosed_time = str(row["disclosed_time"] or "")
+        value = float(row["value_num"])
+        forecast_values_by_as_of_key.setdefault(
+            (security_code, fiscal_year, metric_base),
+            [],
+        ).append((disclosed_date, disclosed_time, value))
+        stage_key = (security_code, fiscal_year, metric_base, forecast_stage)
+        row_order = (disclosed_date, disclosed_time)
+        if row_order >= forecast_order_by_stage.get(stage_key, ("", "")):
+            forecast_order_by_stage[stage_key] = row_order
+            forecast_value_by_stage[stage_key] = value
+    for values in forecast_values_by_as_of_key.values():
+        values.sort()
+    return _JQuantsLookupIndexes(
+        max_fiscal_year_by_period=max_fiscal_year_by_period,
+        forecast_values_by_as_of_key=forecast_values_by_as_of_key,
+        forecast_value_by_stage=forecast_value_by_stage,
+    )
+
+
+def _build_quarter_standalone_lookup_indexes(
+    rows: list[sqlite3.Row],
+) -> _QuarterStandaloneLookupIndexes:
+    max_fiscal_year_by_code: dict[str, int] = {}
+    period_end_by_code_year_quarter: dict[tuple[str, int, str], str] = {}
+    for row in rows:
+        if row["fiscal_year"] is None:
+            continue
+        security_code = _normalize_security_code(row["security_code"] or "")
+        fiscal_year = int(row["fiscal_year"])
+        quarter_type = str(row["quarter_type"] or "")
+        max_fiscal_year_by_code[security_code] = max(
+            max_fiscal_year_by_code.get(security_code, fiscal_year),
+            fiscal_year,
+        )
+        period_end = _date_text(row["period_end"])
+        if not period_end:
+            continue
+        key = (security_code, fiscal_year, quarter_type)
+        period_end_by_code_year_quarter[key] = max(
+            period_end_by_code_year_quarter.get(key, ""),
+            period_end,
+        )
+    return _QuarterStandaloneLookupIndexes(
+        max_fiscal_year_by_code=max_fiscal_year_by_code,
+        period_end_by_code_year_quarter=period_end_by_code_year_quarter,
+    )
+
+
+def _max_quarter_standalone_fiscal_year(
+    rows: list[sqlite3.Row],
+    security_code: str,
+    *,
+    lookup_indexes: _QuarterStandaloneLookupIndexes | None = None,
+) -> int | None:
+    if lookup_indexes is not None:
+        return lookup_indexes.max_fiscal_year_by_code.get(security_code)
     years = [
         int(row["fiscal_year"])
         for row in rows
@@ -2827,7 +3002,13 @@ def _max_jquants_fiscal_year(
     security_code: str,
     period_key: str,
     forecast_stage: str | None = None,
+    *,
+    lookup_indexes: _JQuantsLookupIndexes | None = None,
 ) -> int | None:
+    if lookup_indexes is not None:
+        return lookup_indexes.max_fiscal_year_by_period.get(
+            (security_code, period_key, forecast_stage or ""),
+        )
     years = [
         int(row["fiscal_year"])
         for row in rows
@@ -2851,18 +3032,27 @@ def _quarter_standalone_period_end(
     security_code: str,
     fiscal_year: int,
     quarter: str,
+    lookup_indexes: _QuarterStandaloneLookupIndexes | None = None,
 ) -> str:
-    matching = [
-        _date_text(row["period_end"])
-        for row in rows
-        if _normalize_security_code(row["security_code"] or "") == security_code
-        and row["fiscal_year"] is not None
-        and int(row["fiscal_year"]) == fiscal_year
-        and str(row["quarter_type"] or "") == quarter
-        and _date_text(row["period_end"])
-    ]
-    if matching:
-        return max(matching)
+    if lookup_indexes is not None:
+        period_end = lookup_indexes.period_end_by_code_year_quarter.get(
+            (security_code, fiscal_year, quarter),
+            "",
+        )
+        if period_end:
+            return period_end
+    else:
+        matching = [
+            _date_text(row["period_end"])
+            for row in rows
+            if _normalize_security_code(row["security_code"] or "") == security_code
+            and row["fiscal_year"] is not None
+            and int(row["fiscal_year"]) == fiscal_year
+            and str(row["quarter_type"] or "") == quarter
+            and _date_text(row["period_end"])
+        ]
+        if matching:
+            return max(matching)
 
     quarter_order = ["1Q", "2Q", "3Q", "4Q"]
     if quarter not in quarter_order:
@@ -2873,19 +3063,28 @@ def _quarter_standalone_period_end(
         key=lambda item: (abs(target_index - quarter_order.index(item)), quarter_order.index(item) > target_index),
     )
     for other in ordered_fallback_quarters:
-        other_dates = [
-            _date_text(row["period_end"])
-            for row in rows
-            if _normalize_security_code(row["security_code"] or "") == security_code
-            and row["fiscal_year"] is not None
-            and int(row["fiscal_year"]) == fiscal_year
-            and str(row["quarter_type"] or "") == other
-            and _date_text(row["period_end"])
-        ]
-        if not other_dates:
-            continue
+        if lookup_indexes is not None:
+            other_period_end = lookup_indexes.period_end_by_code_year_quarter.get(
+                (security_code, fiscal_year, other),
+                "",
+            )
+            if not other_period_end:
+                continue
+        else:
+            other_dates = [
+                _date_text(row["period_end"])
+                for row in rows
+                if _normalize_security_code(row["security_code"] or "") == security_code
+                and row["fiscal_year"] is not None
+                and int(row["fiscal_year"]) == fiscal_year
+                and str(row["quarter_type"] or "") == other
+                and _date_text(row["period_end"])
+            ]
+            if not other_dates:
+                continue
+            other_period_end = max(other_dates)
         other_index = quarter_order.index(other)
-        return _add_months_to_period_end(max(other_dates), (target_index - other_index) * 3)
+        return _add_months_to_period_end(other_period_end, (target_index - other_index) * 3)
     return ""
 
 
@@ -2895,12 +3094,14 @@ def _quarter_standalone_period_display(
     security_code: str,
     fiscal_year: int,
     quarter: str,
+    lookup_indexes: _QuarterStandaloneLookupIndexes | None = None,
 ) -> str:
     period_end = _quarter_standalone_period_end(
         rows,
         security_code=security_code,
         fiscal_year=fiscal_year,
         quarter=quarter,
+        lookup_indexes=lookup_indexes,
     )
     return f"{quarter} {period_end}" if period_end else quarter
 
@@ -3165,7 +3366,10 @@ def _find_existing_detail_row(
     security_code: str,
     period_scope: str,
     metric_base: str,
+    detail_rows_by_key: dict[tuple[str, str, str], MetricExcelRow] | None = None,
 ) -> MetricExcelRow | None:
+    if detail_rows_by_key is not None:
+        return detail_rows_by_key.get((security_code, period_scope, metric_base))
     for row in rows:
         if (
             _is_detail_row(row)
@@ -3210,20 +3414,22 @@ def _append_jquants_rows(
     rows: list[MetricExcelRow],
     selected_row_bases_by_sheet: dict[str, list[str]],
     warnings: list[str],
-) -> None:
+    *,
+    span_recorder: SpanRecorder | None = None,
+) -> dict[str, int]:
     needs_quarter = "quarter" in condition.period_scopes
     needs_quarter_standalone = "quarter_standalone" in condition.period_scopes
     needs_forecast = "forecast" in condition.period_scopes
     if not needs_quarter and not needs_quarter_standalone and not needs_forecast:
-        return
+        return {}
     if (needs_quarter or needs_forecast) and not _jquants_table_exists(conn, "jquants_financial_metrics"):
         warnings.append("jquants_financial_metrics_not_ready")
         if not needs_quarter_standalone:
-            return
+            return {}
 
     companies = _fetch_jquants_companies(conn, condition)
     if not companies:
-        return
+        return {}
     security_codes = sorted({_security_code_for_jquants(company) for company in companies if _security_code_for_jquants(company)})
     requested_bases = sorted(
         {
@@ -3235,9 +3441,10 @@ def _append_jquants_rows(
         }
     )
     if not requested_bases:
-        return
+        return {}
     max_offset = max(condition.period_offsets or [0])
     metric_bases_to_fetch = _jquants_metric_fetch_bases(set(requested_bases) | FORECAST_PROGRESS_BASES)
+    started = perf_counter()
     all_metric_rows = (
         _fetch_jquants_metric_rows(
             conn,
@@ -3248,25 +3455,58 @@ def _append_jquants_rows(
         if _jquants_table_exists(conn, "jquants_financial_metrics")
         else []
     )
+    _record_span(
+        span_recorder,
+        "db_read",
+        "fetch_jquants_metric_rows",
+        started,
+        count=len(all_metric_rows),
+    )
     if not all_metric_rows and (needs_quarter or needs_forecast):
         warnings.append("jquants_metrics_not_found")
         if not needs_quarter_standalone:
-            return
+            return {"jquants_metric_rows": 0}
+    started = perf_counter()
     latest = _latest_jquants_metric_rows(all_metric_rows)
+    lookup_indexes = _build_jquants_lookup_indexes(all_metric_rows)
     standalone_metric_bases = {
         base for base in requested_bases if base in QUARTER_STANDALONE_SUPPORTED_BASES
     }
     if "OrdinaryIncome" in standalone_metric_bases:
         standalone_metric_bases.add("ProfitBeforeTax")
+    _record_span(
+        span_recorder,
+        "compute",
+        "build_jquants_lookup_indexes",
+        started,
+        count=len(all_metric_rows),
+    )
+    started = perf_counter()
     standalone_metric_rows = _fetch_quarter_standalone_metric_rows(
         conn,
         security_codes=security_codes,
         metric_bases=sorted(standalone_metric_bases),
     )
+    _record_span(
+        span_recorder,
+        "db_read",
+        "fetch_quarter_standalone_metric_rows",
+        started,
+        count=len(standalone_metric_rows),
+    )
+    started = perf_counter()
     standalone_latest = _latest_quarter_standalone_metric_rows(standalone_metric_rows)
+    standalone_lookup_indexes = _build_quarter_standalone_lookup_indexes(standalone_metric_rows)
     if needs_quarter_standalone and not standalone_metric_rows:
         warnings.append("quarter_standalone_metrics_not_ready")
 
+    detail_rows_by_key = {
+        (row.security_code, row.period_scope, row.metric_base): row
+        for row in rows
+        if _is_detail_row(row) and not row.segment_kind
+    }
+    rows_before = len(rows)
+    started = perf_counter()
     for company in companies:
         security_code = _security_code_for_jquants(company)
         if not security_code:
@@ -3288,6 +3528,8 @@ def _append_jquants_rows(
                     period_key=f"actual:{quarter}",
                     latest=latest,
                     all_rows=all_metric_rows,
+                    lookup_indexes=lookup_indexes,
+                    detail_rows_by_key=detail_rows_by_key,
                     period_offsets=condition.period_offsets,
                     max_offset=max_offset,
                     with_progress_ratio=True,
@@ -3300,6 +3542,7 @@ def _append_jquants_rows(
                 base_candidates=[base for base in base_candidates if base in QUARTER_STANDALONE_SUPPORTED_BASES],
                 latest=standalone_latest,
                 all_rows=standalone_metric_rows,
+                lookup_indexes=standalone_lookup_indexes,
                 period_offsets=condition.period_offsets,
                 max_offset=max_offset,
             )
@@ -3315,10 +3558,29 @@ def _append_jquants_rows(
                     forecast_stage=forecast_stage,
                     latest=latest,
                     all_rows=all_metric_rows,
+                    lookup_indexes=lookup_indexes,
+                    detail_rows_by_key=detail_rows_by_key,
                     period_offsets=condition.period_offsets,
                     max_offset=max_offset,
                     with_progress_ratio=False,
                 )
+    appended_rows = len(rows) - rows_before
+    _record_span(
+        span_recorder,
+        "compute",
+        "append_jquants_rows",
+        started,
+        count=appended_rows,
+        detail={
+            "jquants_metric_rows": len(all_metric_rows),
+            "quarter_standalone_metric_rows": len(standalone_metric_rows),
+        },
+    )
+    return {
+        "jquants_metric_rows": len(all_metric_rows),
+        "quarter_standalone_metric_rows": len(standalone_metric_rows),
+        "jquants_output_rows": appended_rows,
+    }
 
 
 def _append_quarter_standalone_period_rows(
@@ -3329,12 +3591,17 @@ def _append_quarter_standalone_period_rows(
     base_candidates: list[str],
     latest: dict[tuple[str, str, str, int], sqlite3.Row],
     all_rows: list[sqlite3.Row],
+    lookup_indexes: _QuarterStandaloneLookupIndexes | None,
     period_offsets: list[int],
     max_offset: int,
 ) -> None:
     if not base_candidates:
         return
-    max_fiscal_year = _max_quarter_standalone_fiscal_year(all_rows, security_code)
+    max_fiscal_year = _max_quarter_standalone_fiscal_year(
+        all_rows,
+        security_code,
+        lookup_indexes=lookup_indexes,
+    )
     if max_fiscal_year is None:
         return
     min_year = max_fiscal_year - max_offset
@@ -3353,6 +3620,7 @@ def _append_quarter_standalone_period_rows(
                 security_code=security_code,
                 fiscal_year=max_fiscal_year,
                 quarter=quarter,
+                lookup_indexes=lookup_indexes,
             )
             for offset in period_offsets:
                 fiscal_year = max_fiscal_year - offset
@@ -3376,6 +3644,7 @@ def _append_quarter_standalone_period_rows(
                     security_code=security_code,
                     fiscal_year=fiscal_year,
                     quarter=quarter,
+                    lookup_indexes=lookup_indexes,
                 )
                 values_by_offset[offset] = display_value
                 units_by_offset[offset] = display_unit if raw_value is not None else ""
@@ -3422,6 +3691,8 @@ def _append_jquants_period_rows(
     period_key: str,
     latest: dict[tuple[str, str, str, int, str, str], sqlite3.Row],
     all_rows: list[sqlite3.Row],
+    lookup_indexes: _JQuantsLookupIndexes | None,
+    detail_rows_by_key: dict[tuple[str, str, str], MetricExcelRow],
     period_offsets: list[int],
     max_offset: int,
     with_progress_ratio: bool,
@@ -3434,6 +3705,7 @@ def _append_jquants_period_rows(
         security_code,
         period_key,
         forecast_stage=forecast_stage,
+        lookup_indexes=lookup_indexes,
     )
     if max_fiscal_year is None:
         return
@@ -3476,6 +3748,7 @@ def _append_jquants_period_rows(
                     fiscal_year=fiscal_year,
                     metric_base=base,
                     forecast_stage=forecast_stage,
+                    lookup_indexes=lookup_indexes,
                 )
                 if previous_forecast is not None:
                     if raw_value > previous_forecast:
@@ -3489,6 +3762,7 @@ def _append_jquants_period_rows(
                     fiscal_year=fiscal_year,
                     metric_base=base,
                     disclosed_date=str(row["disclosed_date"] or ""),
+                    lookup_indexes=lookup_indexes,
                 )
                 if forecast_value is not None and forecast_value > 0 and raw_value is not None:
                     ratios_by_offset[offset] = raw_value / forecast_value
@@ -3500,6 +3774,7 @@ def _append_jquants_period_rows(
             security_code=security_code,
             period_scope=period_scope,
             metric_base=base,
+            detail_rows_by_key=detail_rows_by_key,
         )
         if existing_row is not None:
             _merge_missing_offsets(
@@ -3541,6 +3816,7 @@ def _append_jquants_period_rows(
                     accounting_standard=str(company["accounting_standard"] or ""),
                 )
             )
+        detail_rows_by_key[(security_code, period_scope, base)] = rows[-1]
 
 
 def _latest_forecast_value_as_of(
@@ -3550,7 +3826,15 @@ def _latest_forecast_value_as_of(
     fiscal_year: int,
     metric_base: str,
     disclosed_date: str,
+    lookup_indexes: _JQuantsLookupIndexes | None = None,
 ) -> float | None:
+    if lookup_indexes is not None:
+        values = lookup_indexes.forecast_values_by_as_of_key.get(
+            (security_code, fiscal_year, metric_base),
+            [],
+        )
+        position = bisect_right(values, (disclosed_date, "\uffff", float("inf")))
+        return values[position - 1][2] if position else None
     candidates = [
         row
         for row in rows
@@ -3577,6 +3861,7 @@ def _previous_forecast_value(
     fiscal_year: int,
     metric_base: str,
     forecast_stage: str,
+    lookup_indexes: _JQuantsLookupIndexes | None = None,
 ) -> float | None:
     stage_order = list(JQUANTS_FORECAST_STAGES)
     if forecast_stage not in stage_order:
@@ -3585,6 +3870,10 @@ def _previous_forecast_value(
     if stage_index <= 0:
         return None
     previous_stage = stage_order[stage_index - 1]
+    if lookup_indexes is not None:
+        return lookup_indexes.forecast_value_by_stage.get(
+            (security_code, fiscal_year, metric_base, previous_stage),
+        )
     candidates = [
         row
         for row in rows
@@ -3609,6 +3898,7 @@ def build_metric_excel_rows(
     condition: MetricExcelCondition,
     *,
     preview_limit: int = 10,
+    span_recorder: SpanRecorder | None = None,
 ) -> tuple[list[MetricExcelRow], list[str], list[str], list[dict[str, Any]], int]:
     if condition.industry_only:
         return _build_industry_only_metric_excel_rows(
@@ -3619,7 +3909,15 @@ def build_metric_excel_rows(
 
     errors: list[str] = []
     warnings: list[str] = []
+    started = perf_counter()
     filings = _fetch_ranked_filings(conn, condition)
+    _record_span(
+        span_recorder,
+        "db_read",
+        "fetch_ranked_filings",
+        started,
+        count=len(filings),
+    )
 
     filings_by_company_scope: dict[tuple[str, str], list[sqlite3.Row]] = {}
     for row in filings:
@@ -3672,13 +3970,22 @@ def build_metric_excel_rows(
                 selected_value_bases.add("ProfitBeforeTax")
 
     doc_ids = [str(row["doc_id"]) for row in filings]
+    started = perf_counter()
     metric_values = _fetch_metric_values(
         conn,
         doc_ids=doc_ids,
         metric_bases=sorted(selected_value_bases),
     )
+    _record_span(
+        span_recorder,
+        "db_read",
+        "fetch_edinet_metric_values",
+        started,
+        count=len(metric_values),
+    )
 
     rows: list[MetricExcelRow] = []
+    started = perf_counter()
     for (_edinet_code, current_period_scope), company_filings in filings_by_company_scope.items():
         by_offset = {int(row["period_offset"]): row for row in company_filings}
         current = by_offset.get(0) or min(
@@ -3835,7 +4142,21 @@ def build_metric_excel_rows(
                 )
             )
 
-    _append_jquants_rows(conn, condition, rows, selected_row_bases_by_sheet, warnings)
+    _record_span(
+        span_recorder,
+        "compute",
+        "build_edinet_rows",
+        started,
+        count=len(rows),
+    )
+    jquants_summary = _append_jquants_rows(
+        conn,
+        condition,
+        rows,
+        selected_row_bases_by_sheet,
+        warnings,
+        span_recorder=span_recorder,
+    )
     if any(
         FORECAST_PROGRESS_RATIO_KIND in row.ratio_kinds_by_offset.values()
         for row in rows
@@ -3843,11 +4164,38 @@ def build_metric_excel_rows(
     ):
         warnings.append("quarter_ratio_cells_show_latest_forecast_progress")
     target_companies = len({row.security_code for row in rows if _is_detail_row(row)})
+    started = perf_counter()
     _assign_ranks(rows, condition.period_offsets)
     rows = _append_stat_rows(rows, condition.period_offsets, industry_only=False)
-    rows.extend(_build_segment_metric_excel_rows(conn, condition, warnings))
+    _record_span(
+        span_recorder,
+        "compute",
+        "assign_ranks_and_stats",
+        started,
+        count=len(rows),
+    )
+    segment_rows = _build_segment_metric_excel_rows(
+        conn,
+        condition,
+        warnings,
+        span_recorder=span_recorder,
+    )
+    rows.extend(segment_rows)
+    started = perf_counter()
     rows.sort(key=_row_sort_key)
     preview_rows = _build_preview_rows(rows, condition.period_offsets, preview_limit)
+    _record_span(
+        span_recorder,
+        "compute",
+        "sort_and_preview",
+        started,
+        count=len(rows),
+        detail={
+            "row_builder_mode": "indexed_lookup",
+            "segment_output_rows": len(segment_rows),
+            **jquants_summary,
+        },
+    )
     return rows, errors, warnings, preview_rows, target_companies
 
 

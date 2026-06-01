@@ -100,6 +100,7 @@ class ExportMetricExcelCliTest(unittest.TestCase):
             ).fetchone()[0]
             summary = json.loads(summary_json)
             self.assertEqual(summary["writer_mode"], "openpyxl_write_only")
+            self.assertEqual(summary["row_builder_mode"], "indexed_lookup")
             self.assertGreater(summary["file_size_bytes"], 0)
             self.assertEqual(summary["sheet_row_counts"]["\u4e00\u822c\u4f01\u696d"], 3)
             span_names = [
@@ -117,7 +118,15 @@ class ExportMetricExcelCliTest(unittest.TestCase):
                 span_names,
                 [
                     "read_metric_excel_condition",
-                    "build_metric_excel_rows",
+                    "fetch_ranked_filings",
+                    "fetch_edinet_metric_values",
+                    "build_edinet_rows",
+                    "fetch_jquants_metric_rows",
+                    "build_jquants_lookup_indexes",
+                    "fetch_quarter_standalone_metric_rows",
+                    "append_jquants_rows",
+                    "assign_ranks_and_stats",
+                    "sort_and_preview",
                     "write_summary_sheet",
                     "write_metric_sheets",
                     "save_workbook",

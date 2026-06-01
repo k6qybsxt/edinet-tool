@@ -25,6 +25,14 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     ROW_KIND_DETAIL,
     ROW_KIND_MEDIAN,
     SUMMARY_SHEET,
+    _build_jquants_lookup_indexes,
+    _build_quarter_standalone_lookup_indexes,
+    _fetch_jquants_metric_rows,
+    _jquants_local_code_candidates,
+    _latest_forecast_value_as_of,
+    _previous_forecast_value,
+    _quarter_standalone_period_end,
+    _security_code_candidates,
     build_metric_excel_rows,
     export_metric_excel,
     read_metric_excel_condition,
@@ -2339,6 +2347,124 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         down_color = value_cells_by_label["2Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb
         self.assertTrue(str(up_color).endswith("FF0000"))
         self.assertTrue(str(down_color).endswith("00B0F0"))
+
+    def test_security_code_candidates_support_four_and_five_digit_codes(self) -> None:
+        self.assertEqual(
+            _security_code_candidates(["1111", "11110", "2222-0"]),
+            ["1111", "11110", "2222", "22220"],
+        )
+        self.assertEqual(
+            _jquants_local_code_candidates(["1111", "11110", "2222-0"]),
+            ["11110", "22220"],
+        )
+
+    def test_jquants_fetch_uses_local_code_candidates_without_duplicate_rows(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, forecast_stage,
+                fiscal_year, period_start, period_end, disclosed_date, disclosed_time,
+                metric_key, metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                'DISC_LOCAL', '11110', '1111', 'E00001', 'actual',
+                'quarter', 'actual:1Q', '1Q', NULL, NULL,
+                2026, '2025-04-01', '2025-06-30', '2025-08-01', '15:00',
+                'NetSalesCurrent', 'NetSales', 'sales', 100000000.0, 'yen', 'ok',
+                'field', '{}', 'v1', '2026-05-06', '2026-05-06'
+            )
+            """
+        )
+        traced_sql: list[str] = []
+        self.conn.set_trace_callback(traced_sql.append)
+
+        rows = _fetch_jquants_metric_rows(
+            self.conn,
+            security_codes=["1111", "11110"],
+            metric_bases=["NetSales"],
+        )
+
+        self.conn.set_trace_callback(None)
+        self.assertEqual([row["disclosure_number"] for row in rows], ["DISC_LOCAL"])
+        select_sql = next(sql for sql in traced_sql if "FROM jquants_financial_metrics" in sql)
+        self.assertIn("WHERE local_code IN", select_sql)
+        self.assertNotIn(" OR local_code IN", select_sql)
+
+    def test_jquants_lookup_indexes_preserve_forecast_and_quarter_fallbacks(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, forecast_stage,
+                fiscal_year, period_start, period_end, disclosed_date, disclosed_time,
+                metric_key, metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, '11110', '1111', 'E00001', 'forecast',
+                'forecast', 'forecast:FY', NULL, 'FY', ?,
+                2026, '2025-04-01', '2026-03-31', ?, '15:00',
+                'NetSalesCurrent', 'NetSales', 'sales', ?, 'yen', 'ok',
+                'field', '{}', 'v1', '2026-05-06', '2026-05-06'
+            )
+            """,
+            [
+                ("DISC_INITIAL", "initial", "2026-05-01", 100_000_000.0),
+                ("DISC_1Q", "1Q", "2026-08-01", 120_000_000.0),
+            ],
+        )
+        metric_rows = self.conn.execute(
+            "SELECT * FROM jquants_financial_metrics ORDER BY disclosed_date"
+        ).fetchall()
+        lookup_indexes = _build_jquants_lookup_indexes(metric_rows)
+        self.assertEqual(
+            _latest_forecast_value_as_of(
+                metric_rows,
+                security_code="1111",
+                fiscal_year=2026,
+                metric_base="NetSales",
+                disclosed_date="2026-06-30",
+                lookup_indexes=lookup_indexes,
+            ),
+            100_000_000.0,
+        )
+        self.assertEqual(
+            _previous_forecast_value(
+                metric_rows,
+                security_code="1111",
+                fiscal_year=2026,
+                metric_base="NetSales",
+                forecast_stage="1Q",
+                lookup_indexes=lookup_indexes,
+            ),
+            100_000_000.0,
+        )
+        self.conn.execute(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            ) VALUES (
+                '1111', 'E00001', 2026, '3Q', '2025-12-31',
+                'NetSalesCurrent', 'NetSales', 'sales', 300000000.0, 'yen',
+                'ok', 'fixture', '{}', 'test', 'now', 'now'
+            )
+            """
+        )
+        standalone_rows = self.conn.execute("SELECT * FROM quarter_standalone_metrics").fetchall()
+        standalone_indexes = _build_quarter_standalone_lookup_indexes(standalone_rows)
+        self.assertEqual(
+            _quarter_standalone_period_end(
+                standalone_rows,
+                security_code="1111",
+                fiscal_year=2026,
+                quarter="4Q",
+                lookup_indexes=standalone_indexes,
+            ),
+            "2026-03-31",
+        )
 
 
 if __name__ == "__main__":
