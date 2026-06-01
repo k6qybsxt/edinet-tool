@@ -69,6 +69,7 @@ class ZipExtractServiceTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, True)
         zip_path = tmpdir / "sample.zip"
         output_path = tmpdir / "out.xbrl"
+        output_path.write_text("old", encoding="utf-8")
 
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("XBRL/AuditDoc/audit.xbrl", "audit")
@@ -85,6 +86,23 @@ class ZipExtractServiceTest(unittest.TestCase):
             result.member_name,
             "XBRL/PublicDoc/jpcrp030000-asr-001_E00001-000_2026-03-31_01_2026-06-28.xbrl",
         )
+        self.assertEqual(len(result.member_names), 2)
+
+    def test_extract_preferred_xbrl_removes_temporary_file_on_error(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        zip_path = tmpdir / "sample.zip"
+        output_path = tmpdir / "out.xbrl"
+        output_path.write_text("old", encoding="utf-8")
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("readme.txt", "xbrl missing")
+
+        with self.assertRaisesRegex(RuntimeError, "xbrl not found"):
+            extract_preferred_xbrl(zip_path, output_path)
+
+        self.assertEqual(output_path.read_text(encoding="utf-8"), "old")
+        self.assertEqual(list(tmpdir.glob("*.tmp")), [])
 
     def test_extract_first_xbrl_keeps_backward_compatible_return_value(self) -> None:
         tmpdir = make_tempdir()
