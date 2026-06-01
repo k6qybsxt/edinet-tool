@@ -35,6 +35,16 @@ def make_tempdir() -> Path:
 
 
 class RunZipBackfillTest(unittest.TestCase):
+    def test_run_zip_backfill_rejects_download_workers_more_than_two(self) -> None:
+        with self.assertRaises(ValueError):
+            run_zip_backfill(
+                api_key="dummy-key",
+                start_date=date(2026, 4, 1),
+                end_date=date(2026, 4, 1),
+                download_workers=3,
+                ensure_dirs_func=lambda: None,
+            )
+
     def test_iter_month_chunks_splits_range_by_calendar_month(self) -> None:
         chunks = iter_month_chunks(date(2026, 1, 30), date(2026, 3, 2))
 
@@ -156,6 +166,7 @@ class RunZipBackfillTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, True)
         run_log_path = tmpdir / "zip_backfill_runs.jsonl"
         chunk_log_path = tmpdir / "zip_backfill_chunk_runs.jsonl"
+        observed_download_kwargs: dict[str, object] = {}
 
         def fake_collect(
             target_dates: list[date],
@@ -180,7 +191,8 @@ class RunZipBackfillTest(unittest.TestCase):
             )
             return {"manifest_path": str(manifest_path), "saved_manifest_rows": 1, "totals": {"incoming_manifest_rows": 1}}
 
-        def fake_download(**_: object) -> dict[str, object]:
+        def fake_download(**kwargs: object) -> dict[str, object]:
+            observed_download_kwargs.update(kwargs)
             return {
                 "downloaded_total": 1,
                 "existing_total": 0,
@@ -192,6 +204,9 @@ class RunZipBackfillTest(unittest.TestCase):
                 "download_elapsed_seconds": 12.5,
                 "retry_wait_elapsed_seconds": 1.25,
                 "cooldown_elapsed_seconds": 0.0,
+                "download_wall_elapsed_seconds": 7.5,
+                "workers": 2,
+                "wave_count": 1,
                 "error_type_totals": {},
             }
 
@@ -220,6 +235,7 @@ class RunZipBackfillTest(unittest.TestCase):
             timestamp_now_func=lambda: next(timestamp_values),
             timer_func=lambda: next(timer_values),
             ensure_dirs_func=lambda: None,
+            download_workers=2,
         )
 
         self.assertEqual(summary["started_at"], "2026-04-06 12:00:00")
@@ -228,6 +244,10 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(summary["download_elapsed_seconds"], 12.5)
         self.assertEqual(summary["retry_wait_elapsed_seconds"], 1.25)
         self.assertEqual(summary["cooldown_elapsed_seconds"], 0.0)
+        self.assertEqual(summary["download_wall_elapsed_seconds"], 7.5)
+        self.assertEqual(summary["download_workers"], 2)
+        self.assertEqual(summary["download_wave_count"], 1)
+        self.assertEqual(observed_download_kwargs["workers"], 2)
         self.assertEqual(summary["run_id"].startswith("backfill_20260406_120000_"), True)
         self.assertTrue(run_log_path.exists())
         self.assertTrue(chunk_log_path.exists())
@@ -243,6 +263,9 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(records[0]["download_elapsed_seconds"], 12.5)
         self.assertEqual(records[0]["retry_wait_elapsed_seconds"], 1.25)
         self.assertEqual(records[0]["cooldown_elapsed_seconds"], 0.0)
+        self.assertEqual(records[0]["download_wall_elapsed_seconds"], 7.5)
+        self.assertEqual(records[0]["download_workers"], 2)
+        self.assertEqual(records[0]["download_wave_count"], 1)
 
         with chunk_log_path.open("r", encoding="utf-8") as f:
             chunk_records = [json.loads(line) for line in f if line.strip()]
@@ -258,6 +281,9 @@ class RunZipBackfillTest(unittest.TestCase):
         self.assertEqual(chunk_records[0]["download_elapsed_seconds"], 12.5)
         self.assertEqual(chunk_records[0]["retry_wait_elapsed_seconds"], 1.25)
         self.assertEqual(chunk_records[0]["cooldown_elapsed_seconds"], 0.0)
+        self.assertEqual(chunk_records[0]["download_wall_elapsed_seconds"], 7.5)
+        self.assertEqual(chunk_records[0]["workers"], 2)
+        self.assertEqual(chunk_records[0]["wave_count"], 1)
         self.assertEqual(summary["monthly_results"][0]["chunk_key"], "2026-04")
         self.assertEqual(summary["monthly_results"][0]["chunk_status"], "completed")
 

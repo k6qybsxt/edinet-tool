@@ -18,9 +18,21 @@ def fetch_pending_filings(
     limit: int = 10,
     *,
     form_codes: tuple[str, ...] | list[str] | str | None = None,
+    retry_errors: bool = False,
+    exclude_doc_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[sqlite3.Row]:
     cur = conn.cursor()
     form_filter, form_params = _form_code_filter(form_codes)
+    download_status_filter = (
+        "f.download_status IN ('pending', 'error')"
+        if retry_errors
+        else "f.download_status = 'pending'"
+    )
+    excluded = sorted({str(doc_id) for doc_id in (exclude_doc_ids or []) if str(doc_id)})
+    exclude_filter = ""
+    if excluded:
+        placeholders = ",".join("?" for _ in excluded)
+        exclude_filter = f" AND f.doc_id NOT IN ({placeholders})"
     cur.execute(
         f"""
         SELECT
@@ -28,18 +40,20 @@ def fetch_pending_filings(
             f.edinet_code,
             f.security_code,
             f.form_type,
-            f.submit_date
+            f.submit_date,
+            f.download_status
         FROM filings f
         INNER JOIN issuer_master im
             ON f.edinet_code = im.edinet_code
-        WHERE f.download_status = 'pending'
+        WHERE {download_status_filter}
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
           {form_filter}
+          {exclude_filter}
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (*form_params, limit),
+        (*form_params, *excluded, limit),
     )
     return cur.fetchall()
 

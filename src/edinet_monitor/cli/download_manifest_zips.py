@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,11 @@ from edinet_monitor.config.settings import (
 )
 from edinet_monitor.services.collector.document_download_service import download_document_zip
 from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
+from edinet_monitor.services.collector.download_wave_service import (
+    iter_download_waves,
+    run_download_wave,
+    validate_download_workers,
+)
 from edinet_monitor.services.collector.manifest_download_service import (
     matches_manifest_row_submit_filter,
     process_manifest_download_row,
@@ -219,6 +225,26 @@ def print_progress_snapshot(
     print_error_type_counts(label=label, error_type_counts=filtered_summary["error_type_counts"])
 
 
+def _process_manifest_download_job(job: dict[str, Any]) -> dict[str, Any]:
+    row = dict(job["row"])
+    result = process_manifest_download_row(
+        row,
+        api_key=str(job["api_key"]),
+        downloader=job["downloader"],
+        connect_timeout_sec=int(job["connect_timeout_sec"]),
+        read_timeout_sec=int(job["read_timeout_sec"]),
+        max_retries=int(job["max_retries"]),
+        retry_wait_sec=float(job["retry_wait_sec"]),
+        sleep_func=job["sleep_func"],
+        timer_func=job["timer_func"],
+    )
+    return {
+        "index": int(job["index"]),
+        "row": row,
+        "result": result,
+    }
+
+
 def run_download_manifest_zips(
     *,
     api_key: str,
@@ -239,10 +265,13 @@ def run_download_manifest_zips(
     submit_date_to_text: str = "",
     submit_time_from_text: str = "",
     submit_time_to_text: str = "",
+    workers: int = 1,
     downloader: Callable[..., Path] = download_document_zip,
     sleep_func: Callable[[float], None] = sleep,
     timer_func: Callable[[], float] = perf_counter,
+    wall_timer_func: Callable[[], float] = perf_counter,
 ) -> dict[str, Any]:
+    target_workers = validate_download_workers(workers)
     rows = read_manifest_rows(manifest_path)
     if not rows:
         print(f"manifest_path={manifest_path}")
@@ -255,6 +284,9 @@ def run_download_manifest_zips(
             "existing_total": 0,
             "error_total": 0,
             "processed_total": 0,
+            "workers": target_workers,
+            "wave_count": 0,
+            "download_wall_elapsed_seconds": 0.0,
             "error_type_totals": {},
         }
 
@@ -268,7 +300,11 @@ def run_download_manifest_zips(
     total_download_elapsed_seconds = 0.0
     total_retry_wait_elapsed_seconds = 0.0
     total_cooldown_elapsed_seconds = 0.0
+    total_download_wall_elapsed_seconds = 0.0
+    wave_count = 0
     error_type_totals: dict[str, int] = {}
+    attempted_indexes: set[int] = set()
+    executor = ThreadPoolExecutor(max_workers=target_workers) if target_workers > 1 else None
 
     initial_summary = build_filtered_manifest_summary(
         rows,
@@ -287,135 +323,166 @@ def run_download_manifest_zips(
     print(f"initial_retryable_error_rows={initial_summary['retryable_error_rows']}")
     print_error_type_counts(label="initial", error_type_counts=initial_summary["error_type_counts"])
 
-    while True:
-        remaining_limit = batch_size
-        if max_docs > 0:
-            remaining_limit = min(remaining_limit, max(max_docs - total_processed, 0))
+    try:
+        while True:
+            remaining_limit = batch_size
+            if max_docs > 0:
+                remaining_limit = min(remaining_limit, max(max_docs - total_processed, 0))
 
-        if remaining_limit <= 0:
-            break
+            if remaining_limit <= 0:
+                break
 
-        target_indexes = select_manifest_row_indexes(
-            rows,
-            limit=remaining_limit,
-            retry_errors=retry_errors,
-            target_date_text=submit_date_text,
-            date_from_text=submit_date_from_text,
-            date_to_text=submit_date_to_text,
-            time_from_text=submit_time_from_text,
-            time_to_text=submit_time_to_text,
-        )
-
-        print(f"manifest_target_rows={len(target_indexes)}")
-
-        if not target_indexes:
-            break
-
-        total_target += len(target_indexes)
-
-        for idx in target_indexes:
-            row = rows[idx]
-            doc_id = str(row.get("doc_id") or "")
-            submit_date = str(row.get("submit_date") or "")
-            zip_path = str(row.get("zip_path") or "")
-
-            print(f"[DEBUG] target_doc_id={doc_id} submit_date={submit_date}")
-            print(f"[DEBUG] output_path={zip_path}")
-
-            result = process_manifest_download_row(
-                row,
-                api_key=api_key,
-                downloader=downloader,
-                connect_timeout_sec=connect_timeout_sec,
-                read_timeout_sec=read_timeout_sec,
-                max_retries=max_retries,
-                retry_wait_sec=retry_wait_sec,
-                sleep_func=sleep_func,
-                timer_func=timer_func,
+            candidate_indexes = select_manifest_row_indexes(
+                rows,
+                limit=len(rows),
+                retry_errors=retry_errors,
+                target_date_text=submit_date_text,
+                date_from_text=submit_date_from_text,
+                date_to_text=submit_date_to_text,
+                time_from_text=submit_time_from_text,
+                time_to_text=submit_time_to_text,
             )
-            rows[idx] = row
-            total_processed += 1
-            total_download_elapsed_seconds += float(result.get("download_elapsed_seconds", 0.0) or 0.0)
-            total_retry_wait_elapsed_seconds += float(result.get("retry_wait_elapsed_seconds", 0.0) or 0.0)
+            target_indexes = [
+                idx for idx in candidate_indexes
+                if idx not in attempted_indexes
+            ][:remaining_limit]
 
-            if result["result"] == "existing":
-                total_existing += 1
-                consecutive_cooldown_errors = 0
-                print(
-                    f"existing_zip doc_id={doc_id} path={result['path']} attempts_used={result['attempts_used']}"
+            print(f"manifest_target_rows={len(target_indexes)}")
+
+            if not target_indexes:
+                break
+
+            total_target += len(target_indexes)
+            attempted_indexes.update(target_indexes)
+
+            for wave_indexes in iter_download_waves(target_indexes, workers=target_workers):
+                jobs: list[dict[str, Any]] = []
+                for idx in wave_indexes:
+                    row = rows[idx]
+                    doc_id = str(row.get("doc_id") or "")
+                    submit_date = str(row.get("submit_date") or "")
+                    zip_path = str(row.get("zip_path") or "")
+                    print(f"[DEBUG] target_doc_id={doc_id} submit_date={submit_date}")
+                    print(f"[DEBUG] output_path={zip_path}")
+                    jobs.append(
+                        {
+                            "index": idx,
+                            "row": dict(row),
+                            "api_key": api_key,
+                            "downloader": downloader,
+                            "connect_timeout_sec": connect_timeout_sec,
+                            "read_timeout_sec": read_timeout_sec,
+                            "max_retries": max_retries,
+                            "retry_wait_sec": retry_wait_sec,
+                            "sleep_func": sleep_func,
+                            "timer_func": timer_func,
+                        }
+                    )
+
+                wave_started = wall_timer_func()
+                wave_results = run_download_wave(
+                    jobs,
+                    workers=target_workers,
+                    job_func=_process_manifest_download_job,
+                    executor=executor,
                 )
-            elif result["result"] == "downloaded":
-                total_downloaded += 1
-                consecutive_cooldown_errors = 0
-                print(
-                    f"downloaded doc_id={doc_id} path={result['path']} attempts_used={result['attempts_used']}"
-                )
-            else:
-                total_errors += 1
-                error_type = str(result["error_type"] or "unknown_error")
-                error_type_totals[error_type] = error_type_totals.get(error_type, 0) + 1
-                if result["cooldown_eligible"]:
-                    consecutive_cooldown_errors += 1
-                else:
+                total_download_wall_elapsed_seconds += max(wall_timer_func() - wave_started, 0.0)
+                wave_count += 1
+                should_cooldown = False
+
+                for wave_result in wave_results:
+                    idx = int(wave_result["index"])
+                    row = dict(wave_result["row"])
+                    result = dict(wave_result["result"])
+                    rows[idx] = row
+                    doc_id = str(row.get("doc_id") or "")
+                    total_processed += 1
+                    total_download_elapsed_seconds += float(result.get("download_elapsed_seconds", 0.0) or 0.0)
+                    total_retry_wait_elapsed_seconds += float(result.get("retry_wait_elapsed_seconds", 0.0) or 0.0)
+
+                    if result["result"] == "existing":
+                        total_existing += 1
+                        consecutive_cooldown_errors = 0
+                        print(
+                            f"existing_zip doc_id={doc_id} path={result['path']} attempts_used={result['attempts_used']}"
+                        )
+                    elif result["result"] == "downloaded":
+                        total_downloaded += 1
+                        consecutive_cooldown_errors = 0
+                        print(
+                            f"downloaded doc_id={doc_id} path={result['path']} attempts_used={result['attempts_used']}"
+                        )
+                    else:
+                        total_errors += 1
+                        error_type = str(result["error_type"] or "unknown_error")
+                        error_type_totals[error_type] = error_type_totals.get(error_type, 0) + 1
+                        if result["cooldown_eligible"]:
+                            consecutive_cooldown_errors += 1
+                        else:
+                            consecutive_cooldown_errors = 0
+                        if (
+                            cooldown_failure_streak > 0
+                            and cooldown_sec > 0
+                            and consecutive_cooldown_errors >= cooldown_failure_streak
+                        ):
+                            should_cooldown = True
+                        print(
+                            "download_error "
+                            f"doc_id={doc_id} "
+                            f"error_type={result['error_type']} "
+                            f"retryable={result['retryable']} "
+                            f"status_code={result['status_code']} "
+                            f"attempts_used={result['attempts_used']} "
+                            f"error={row.get('download_error')}"
+                        )
+
+                    write_manifest_rows(manifest_path, rows)
+
+                    should_print_progress = progress_every > 0 and (
+                        total_processed == 1 or total_processed % progress_every == 0
+                    )
+                    if should_print_progress:
+                        print_progress_snapshot(
+                            label="progress",
+                            rows=rows,
+                            processed_total=total_processed,
+                            downloaded_total=total_downloaded,
+                            existing_total=total_existing,
+                            error_total=total_errors,
+                            download_elapsed_seconds=total_download_elapsed_seconds,
+                            retry_wait_elapsed_seconds=total_retry_wait_elapsed_seconds,
+                            cooldown_elapsed_seconds=total_cooldown_elapsed_seconds,
+                            retry_errors=retry_errors,
+                            target_date_text=submit_date_text,
+                            date_from_text=submit_date_from_text,
+                            date_to_text=submit_date_to_text,
+                            time_from_text=submit_time_from_text,
+                            time_to_text=submit_time_to_text,
+                        )
+
+                if should_cooldown:
+                    cooldown_count += 1
+                    print(
+                        f"cooldown_start consecutive_failures={consecutive_cooldown_errors} "
+                        f"cooldown_sec={cooldown_sec}"
+                    )
+                    cooldown_started = timer_func()
+                    sleep_func(cooldown_sec)
+                    total_cooldown_elapsed_seconds += max(timer_func() - cooldown_started, 0.0)
+                    print("cooldown_end=1")
                     consecutive_cooldown_errors = 0
-                print(
-                    "download_error "
-                    f"doc_id={doc_id} "
-                    f"error_type={result['error_type']} "
-                    f"retryable={result['retryable']} "
-                    f"status_code={result['status_code']} "
-                    f"attempts_used={result['attempts_used']} "
-                    f"error={row.get('download_error')}"
-                )
 
-            write_manifest_rows(manifest_path, rows)
+                if max_docs > 0 and total_processed >= max_docs:
+                    break
 
-            should_print_progress = progress_every > 0 and (
-                total_processed == 1 or total_processed % progress_every == 0
-            )
-            if should_print_progress:
-                print_progress_snapshot(
-                    label="progress",
-                    rows=rows,
-                    processed_total=total_processed,
-                    downloaded_total=total_downloaded,
-                    existing_total=total_existing,
-                    error_total=total_errors,
-                    download_elapsed_seconds=total_download_elapsed_seconds,
-                    retry_wait_elapsed_seconds=total_retry_wait_elapsed_seconds,
-                    cooldown_elapsed_seconds=total_cooldown_elapsed_seconds,
-                    retry_errors=retry_errors,
-                    target_date_text=submit_date_text,
-                    date_from_text=submit_date_from_text,
-                    date_to_text=submit_date_to_text,
-                    time_from_text=submit_time_from_text,
-                    time_to_text=submit_time_to_text,
-                )
-
-            if (
-                cooldown_failure_streak > 0
-                and cooldown_sec > 0
-                and consecutive_cooldown_errors >= cooldown_failure_streak
-            ):
-                cooldown_count += 1
-                print(
-                    f"cooldown_start consecutive_failures={consecutive_cooldown_errors} "
-                    f"cooldown_sec={cooldown_sec}"
-                )
-                cooldown_started = timer_func()
-                sleep_func(cooldown_sec)
-                total_cooldown_elapsed_seconds += max(timer_func() - cooldown_started, 0.0)
-                print("cooldown_end=1")
-                consecutive_cooldown_errors = 0
+            if not run_all:
+                break
 
             if max_docs > 0 and total_processed >= max_docs:
                 break
-
-        if not run_all:
-            break
-
-        if max_docs > 0 and total_processed >= max_docs:
-            break
+    finally:
+        if executor is not None:
+            executor.shutdown()
 
     print_progress_snapshot(
         label="final",
@@ -444,6 +511,9 @@ def run_download_manifest_zips(
     print(f"download_elapsed_seconds={round(total_download_elapsed_seconds, 3)}")
     print(f"retry_wait_elapsed_seconds={round(total_retry_wait_elapsed_seconds, 3)}")
     print(f"cooldown_elapsed_seconds={round(total_cooldown_elapsed_seconds, 3)}")
+    print(f"download_wall_elapsed_seconds={round(total_download_wall_elapsed_seconds, 3)}")
+    print(f"workers={target_workers}")
+    print(f"wave_count={wave_count}")
     print_error_type_counts(label="run", error_type_counts=error_type_totals)
 
     return {
@@ -458,6 +528,9 @@ def run_download_manifest_zips(
         "download_elapsed_seconds": round(total_download_elapsed_seconds, 3),
         "retry_wait_elapsed_seconds": round(total_retry_wait_elapsed_seconds, 3),
         "cooldown_elapsed_seconds": round(total_cooldown_elapsed_seconds, 3),
+        "download_wall_elapsed_seconds": round(total_download_wall_elapsed_seconds, 3),
+        "workers": target_workers,
+        "wave_count": wave_count,
         "error_type_totals": dict(sorted(error_type_totals.items())),
         "initial_summary": initial_summary,
         "final_summary": build_filtered_manifest_summary(
@@ -553,6 +626,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--progress-every", type=int, default=None)
     parser.add_argument("--cooldown-failure-streak", type=int, default=None)
     parser.add_argument("--cooldown-sec", type=float, default=None)
+    parser.add_argument("--workers", type=int, default=1, choices=[1, 2])
     parser.add_argument(
         "--submit-date",
         default=os.getenv("EDINET_SUBMIT_DATE", "").strip(),
@@ -645,6 +719,7 @@ def main() -> None:
         progress_every=runtime_settings["progress_every"],
         cooldown_failure_streak=runtime_settings["cooldown_failure_streak"],
         cooldown_sec=runtime_settings["cooldown_sec"],
+        workers=args.workers,
         submit_date_text=submit_date_text,
         submit_date_from_text=submit_date_from_text,
         submit_date_to_text=submit_date_to_text,

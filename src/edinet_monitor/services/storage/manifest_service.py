@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Iterable
+from uuid import uuid4
 
 from edinet_monitor.config.settings import MANIFEST_ROOT
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
@@ -77,13 +78,18 @@ def merge_manifest_rows(
 def write_manifest_rows(manifest_path: Path, rows: Iterable[dict[str, Any]]) -> int:
     target_path = Path(manifest_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = target_path.with_name(f"{target_path.name}.{uuid4().hex}.tmp")
 
     count = 0
-    with target_path.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False))
-            f.write("\n")
-            count += 1
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False))
+                f.write("\n")
+                count += 1
+        temporary_path.replace(target_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
     return count
 

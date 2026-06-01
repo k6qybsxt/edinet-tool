@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
+import time
 import unittest
+from unittest.mock import patch
 import uuid
 import zipfile
 from pathlib import Path
@@ -285,6 +288,98 @@ class DownloadManifestZipsTest(unittest.TestCase):
         self.assertEqual(saved_rows[0]["download_status"], "pending")
         self.assertEqual(saved_rows[1]["download_status"], "downloaded")
 
+    def test_run_download_manifest_zips_workers_two_downloads_in_parallel(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        manifest_path = tmpdir / "document_manifest.jsonl"
+        rows = [
+            build_manifest_row(
+                f"S100{index:04d}",
+                zip_path=str(tmpdir / "raw" / "2026-04-01" / f"S100{index:04d}.zip"),
+            )
+            for index in range(3)
+        ]
+        write_manifest_rows(manifest_path, rows)
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+        manifest_write_threads: list[int | None] = []
+
+        def fake_downloader(*, output_path: Path, **_: object) -> Path:
+            nonlocal active
+            nonlocal max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.02)
+            create_zip_file(output_path)
+            with lock:
+                active -= 1
+            return output_path
+
+        def write_from_parent(path: Path, target_rows: list[dict[str, object]]) -> int:
+            manifest_write_threads.append(threading.current_thread().ident)
+            return write_manifest_rows(path, target_rows)
+
+        with patch(
+            "edinet_monitor.cli.download_manifest_zips.write_manifest_rows",
+            side_effect=write_from_parent,
+        ):
+            summary = run_download_manifest_zips(
+                api_key="dummy-key",
+                manifest_path=manifest_path,
+                batch_size=10,
+                run_all=True,
+                workers=2,
+                downloader=fake_downloader,
+                progress_every=0,
+            )
+
+        saved_rows = read_manifest_rows(manifest_path)
+        self.assertEqual(summary["downloaded_total"], 3)
+        self.assertEqual(summary["workers"], 2)
+        self.assertEqual(summary["wave_count"], 2)
+        self.assertEqual(max_active, 2)
+        self.assertTrue(all(row["download_status"] == "downloaded" for row in saved_rows))
+        self.assertTrue(manifest_write_threads)
+        self.assertEqual(set(manifest_write_threads), {threading.current_thread().ident})
+
+    def test_run_download_manifest_zips_retry_errors_attempts_each_doc_once_per_run(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        manifest_path = tmpdir / "document_manifest.jsonl"
+        rows = [
+            build_manifest_row(
+                f"S100{index:04d}",
+                zip_path=str(tmpdir / "raw" / "2026-04-01" / f"S100{index:04d}.zip"),
+                download_status="error",
+            )
+            for index in range(2)
+        ]
+        write_manifest_rows(manifest_path, rows)
+        calls: list[str] = []
+
+        def failing_downloader(*, doc_id: str, **_: object) -> Path:
+            calls.append(doc_id)
+            raise DownloadDocumentZipError("timeout", retryable=True)
+
+        summary = run_download_manifest_zips(
+            api_key="dummy-key",
+            manifest_path=manifest_path,
+            batch_size=10,
+            run_all=True,
+            retry_errors=True,
+            workers=2,
+            downloader=failing_downloader,
+            max_retries=0,
+            progress_every=0,
+            cooldown_failure_streak=0,
+        )
+
+        self.assertEqual(summary["processed_total"], 2)
+        self.assertEqual(summary["error_total"], 2)
+        self.assertEqual(sorted(calls), ["S1000000", "S1000001"])
+
     def test_run_download_manifest_zips_applies_cooldown_after_consecutive_retryable_errors(self) -> None:
         tmpdir = make_tempdir()
         self.addCleanup(shutil.rmtree, tmpdir, True)
@@ -321,6 +416,42 @@ class DownloadManifestZipsTest(unittest.TestCase):
         self.assertEqual(summary["download_elapsed_seconds"], 5.0)
         self.assertEqual(summary["retry_wait_elapsed_seconds"], 0.0)
         self.assertEqual(summary["cooldown_elapsed_seconds"], 4.0)
+
+    def test_workers_two_applies_global_cooldown_before_starting_next_wave(self) -> None:
+        tmpdir = make_tempdir()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        manifest_path = tmpdir / "document_manifest.jsonl"
+        rows = [
+            build_manifest_row(
+                f"S100{index:04d}",
+                zip_path=str(tmpdir / "raw" / "2026-04-01" / f"S100{index:04d}.zip"),
+            )
+            for index in range(3)
+        ]
+        write_manifest_rows(manifest_path, rows)
+        events: list[str] = []
+
+        def failing_downloader(*, doc_id: str, **_: object) -> Path:
+            events.append(f"download:{doc_id}")
+            raise DownloadDocumentZipError("timeout", retryable=True)
+
+        summary = run_download_manifest_zips(
+            api_key="dummy-key",
+            manifest_path=manifest_path,
+            batch_size=10,
+            run_all=True,
+            workers=2,
+            downloader=failing_downloader,
+            max_retries=0,
+            progress_every=0,
+            cooldown_failure_streak=2,
+            cooldown_sec=1.0,
+            sleep_func=lambda _: events.append("cooldown"),
+        )
+
+        self.assertEqual(summary["error_total"], 3)
+        self.assertEqual(summary["cooldown_count"], 1)
+        self.assertLess(events.index("cooldown"), events.index("download:S1000002"))
 
     def test_matches_manifest_row_submit_filter_combines_date_and_time(self) -> None:
         row = build_manifest_row("S100AAAA", zip_path=r"D:\dummy\a.zip")
