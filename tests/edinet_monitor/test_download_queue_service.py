@@ -85,6 +85,14 @@ class DownloadQueueServiceTest(unittest.TestCase):
 
         self.assertEqual([row["doc_id"] for row in rows], ["S100A001", "S100A003"])
 
+        filtered_rows = fetch_downloaded_filings_without_xbrl(
+            conn,
+            limit=10,
+            exclude_doc_ids={"S100A001"},
+        )
+
+        self.assertEqual([row["doc_id"] for row in filtered_rows], ["S100A003"])
+
     def test_mark_xbrl_extract_success_saves_member_name_when_column_exists(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

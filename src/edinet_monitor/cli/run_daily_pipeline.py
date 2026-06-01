@@ -45,6 +45,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--download-batch-size", type=int, default=20)
     parser.add_argument("--extract-batch-size", type=int, default=20)
+    parser.add_argument("--extract-workers", type=int, default=1)
+    parser.add_argument("--extract-chunk-size", type=int, default=5)
     parser.add_argument("--raw-batch-size", type=int, default=20)
     parser.add_argument("--raw-workers", type=int, default=1)
     parser.add_argument("--raw-parse-chunk-size", type=int, default=5)
@@ -152,6 +154,8 @@ def run_daily_pipeline(
     date_to_text: str = "",
     download_batch_size: int = 20,
     extract_batch_size: int = 20,
+    extract_workers: int = 1,
+    extract_chunk_size: int = 5,
     raw_batch_size: int = 20,
     raw_workers: int = 1,
     raw_parse_chunk_size: int = 5,
@@ -262,6 +266,8 @@ def run_daily_pipeline(
             stage_kwargs={
                 "batch_size": extract_batch_size,
                 "run_all": True,
+                "workers": extract_workers,
+                "extract_chunk_size": extract_chunk_size,
             },
         )
         if chunk_rows:
@@ -494,6 +500,8 @@ def main() -> None:
         date_to_text=args.date_to,
         download_batch_size=args.download_batch_size,
         extract_batch_size=args.extract_batch_size,
+        extract_workers=args.extract_workers,
+        extract_chunk_size=args.extract_chunk_size,
         raw_batch_size=args.raw_batch_size,
         raw_workers=args.raw_workers,
         raw_parse_chunk_size=args.raw_parse_chunk_size,

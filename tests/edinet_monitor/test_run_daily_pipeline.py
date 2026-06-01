@@ -114,6 +114,15 @@ class RunDailyPipelineTest(unittest.TestCase):
 
         raw_kwargs: dict = {}
         normalized_kwargs: dict = {}
+        extract_kwargs: dict = {}
+
+        def run_extract(**kwargs):
+            extract_kwargs.update(kwargs)
+            return {
+                "target_total": 0,
+                "extracted_total": 0,
+                "error_total": 0,
+            }
 
         def run_raw(**kwargs):
             raw_kwargs.update(kwargs)
@@ -135,6 +144,8 @@ class RunDailyPipelineTest(unittest.TestCase):
 
         result = run_daily_pipeline(
             target_date_text="2026-04-09",
+            extract_workers=4,
+            extract_chunk_size=8,
             raw_workers=4,
             raw_parse_chunk_size=6,
             normalized_workers=3,
@@ -150,11 +161,7 @@ class RunDailyPipelineTest(unittest.TestCase):
                 "downloaded_total": 0,
                 "error_total": 0,
             },
-            extract_func=lambda **_: {
-                "target_total": 0,
-                "extracted_total": 0,
-                "error_total": 0,
-            },
+            extract_func=run_extract,
             raw_func=run_raw,
             normalized_func=run_normalized,
             derived_func=lambda **_: {
@@ -187,6 +194,8 @@ class RunDailyPipelineTest(unittest.TestCase):
         )
 
         self.assertEqual(result["run_status"], "completed")
+        self.assertEqual(extract_kwargs["workers"], 4)
+        self.assertEqual(extract_kwargs["extract_chunk_size"], 8)
         self.assertEqual(raw_kwargs["workers"], 4)
         self.assertEqual(raw_kwargs["parse_chunk_size"], 6)
         self.assertEqual(normalized_kwargs["workers"], 3)

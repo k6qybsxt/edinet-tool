@@ -48,9 +48,15 @@ def fetch_downloaded_filings_without_xbrl(
     limit: int = 10,
     *,
     form_codes: tuple[str, ...] | list[str] | str | None = None,
+    exclude_doc_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[sqlite3.Row]:
     cur = conn.cursor()
     form_filter, form_params = _form_code_filter(form_codes)
+    excluded = sorted({str(doc_id) for doc_id in (exclude_doc_ids or []) if str(doc_id)})
+    exclude_filter = ""
+    if excluded:
+        placeholders = ",".join("?" for _ in excluded)
+        exclude_filter = f" AND f.doc_id NOT IN ({placeholders})"
     cur.execute(
         f"""
         SELECT
@@ -68,10 +74,11 @@ def fetch_downloaded_filings_without_xbrl(
           AND im.is_listed = 1
           AND im.exchange = 'TSE'
           {form_filter}
+          {exclude_filter}
         ORDER BY f.submit_date ASC, f.doc_id ASC
         LIMIT ?
         """,
-        (*form_params, limit),
+        (*form_params, *excluded, limit),
     )
     return cur.fetchall()
 
