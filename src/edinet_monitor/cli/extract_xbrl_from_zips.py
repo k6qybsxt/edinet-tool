@@ -173,6 +173,7 @@ def run_extract_xbrl_from_zips(
 
     def mark_error(doc_id: str, error: str) -> None:
         nonlocal total_errors
+        attempted_doc_ids.add(str(doc_id))
         conn.rollback()
         with perf_log.measure("db_write", "mark_xbrl_extract_error"):
             mark_xbrl_extract_error(conn, doc_id)
@@ -291,7 +292,6 @@ def run_extract_xbrl_from_zips(
 
                 loop_count += 1
                 total_target += len(rows)
-                attempted_doc_ids.update(str(row["doc_id"]) for row in rows)
                 extract_and_save(prepare_jobs(rows, period_scope=False))
 
                 if not run_all:
