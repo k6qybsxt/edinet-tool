@@ -21,8 +21,8 @@ from edinet_monitor.services.derived_metrics.derived_metric_service import (
     calculate_derived_metrics,
 )
 from edinet_monitor.services.derived_metrics.historical_growth_reference_service import (
-    fetch_half_progress_annual_values,
-    fetch_historical_growth_values,
+    fetch_half_progress_annual_values_bulk,
+    fetch_historical_growth_values_bulk,
 )
 from edinet_monitor.services.derived_metrics.derived_metric_store_service import (
     delete_derived_metrics_by_doc_id,
@@ -32,29 +32,69 @@ from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 from edinet_monitor.services.performance_log_service import PerformanceLog
 
 
+RUN_ALL_TARGET_FETCH_LIMIT = 1_000_000
+
+
+def _chunked(items: list[Any], chunk_size: int) -> list[list[Any]]:
+    size = max(int(chunk_size or 1), 1)
+    return [items[index:index + size] for index in range(0, len(items), size)]
+
+
 def fetch_normalized_metric_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
+    return fetch_normalized_metric_rows_by_doc_ids(conn, [doc_id]).get(str(doc_id), [])
+
+
+def fetch_normalized_metric_rows_by_doc_ids(
+    conn: sqlite3.Connection,
+    doc_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    ordered_doc_ids = [str(doc_id) for doc_id in doc_ids if str(doc_id or "")]
+    if not ordered_doc_ids:
+        return {}
+
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    rows = cur.execute(
-        """
-        SELECT
-            doc_id,
-            edinet_code,
-            security_code,
-            metric_key,
-            fiscal_year,
-            period_end,
-            value_num,
-            source_tag,
-            consolidation,
-            rule_version
-        FROM normalized_metrics
-        WHERE doc_id = ?
-        ORDER BY metric_key ASC
-        """,
-        (doc_id,),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    grouped: dict[str, list[dict[str, Any]]] = {doc_id: [] for doc_id in ordered_doc_ids}
+    for chunk in [ordered_doc_ids[index:index + 900] for index in range(0, len(ordered_doc_ids), 900)]:
+        placeholders = ",".join("?" for _ in chunk)
+        rows = cur.execute(
+            f"""
+            SELECT
+                doc_id,
+                edinet_code,
+                security_code,
+                metric_key,
+                fiscal_year,
+                period_end,
+                value_num,
+                source_tag,
+                consolidation,
+                rule_version
+            FROM normalized_metrics
+            WHERE doc_id IN ({placeholders})
+            ORDER BY doc_id ASC, metric_key ASC, period_end ASC, consolidation ASC
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            grouped.setdefault(str(row["doc_id"] or ""), []).append(dict(row))
+    return grouped
+
+
+def _count_historical_reference_values(
+    values_by_doc_id: dict[str, dict[str, dict[int, dict[str, Any]]]]
+) -> int:
+    return sum(
+        len(offset_values)
+        for metric_values in values_by_doc_id.values()
+        for offset_values in metric_values.values()
+    )
+
+
+def _count_half_progress_reference_values(
+    values_by_doc_id: dict[str, dict[str, dict[str, Any]]]
+) -> int:
+    return sum(len(metric_values) for metric_values in values_by_doc_id.values())
 
 
 def ensure_filing_parse_metadata(
@@ -124,27 +164,54 @@ def run_save_derived_metrics(
     total_saved_rows = 0
     total_errors = 0
     loop_count = 0
+    bulk_reference_batch_count = 0
+    normalized_input_rows_total = 0
+    historical_reference_rows_total = 0
+    half_progress_reference_rows_total = 0
     unhandled_error: Exception | None = None
 
     try:
-        while True:
-            with perf_log.measure("db_read", "fetch_derived_metrics_target_filings"):
-                filings = fetch_derived_metrics_target_filings(
-                    conn,
-                    rule_version=rule_version,
-                    limit=batch_size,
-                    form_codes=target_form_codes,
-                )
-            print(f"derived_metrics_target_rows={len(filings)}")
+        with perf_log.measure("db_read", "fetch_derived_metrics_target_filings"):
+            target_filings = fetch_derived_metrics_target_filings(
+                conn,
+                rule_version=rule_version,
+                limit=RUN_ALL_TARGET_FETCH_LIMIT if run_all else batch_size,
+                form_codes=target_form_codes,
+            )
+        print(f"derived_metrics_target_rows={len(target_filings)}")
 
-            if not filings:
-                break
-
+        filing_batches = _chunked([dict(row) for row in target_filings], batch_size)
+        for filing_dicts in filing_batches:
             loop_count += 1
-            total_target += len(filings)
+            total_target += len(filing_dicts)
+            doc_ids = [str(filing["doc_id"]) for filing in filing_dicts]
+            bulk_reference_batch_count += 1
 
-            for filing_row in filings:
-                filing = dict(filing_row)
+            with perf_log.measure("db_read", "fetch_normalized_metric_rows_bulk"):
+                normalized_rows_by_doc_id = fetch_normalized_metric_rows_by_doc_ids(conn, doc_ids)
+            normalized_input_rows_total += sum(
+                len(rows) for rows in normalized_rows_by_doc_id.values()
+            )
+
+            with perf_log.measure("db_read", "fetch_historical_growth_values_bulk"):
+                historical_growth_values_by_doc_id = fetch_historical_growth_values_bulk(
+                    conn,
+                    filing_dicts,
+                )
+            historical_reference_rows_total += _count_historical_reference_values(
+                historical_growth_values_by_doc_id
+            )
+
+            with perf_log.measure("db_read", "fetch_half_progress_annual_values_bulk"):
+                half_progress_annual_values_by_doc_id = fetch_half_progress_annual_values_bulk(
+                    conn,
+                    filing_dicts,
+                )
+            half_progress_reference_rows_total += _count_half_progress_reference_values(
+                half_progress_annual_values_by_doc_id
+            )
+
+            for filing in filing_dicts:
                 doc_id = str(filing["doc_id"])
 
                 print(f"[DEBUG] target_doc_id={doc_id}")
@@ -152,10 +219,9 @@ def run_save_derived_metrics(
                 try:
                     with perf_log.measure("parse", "ensure_filing_parse_metadata"):
                         filing = ensure_filing_parse_metadata(conn, filing, commit=False)
-                    with perf_log.measure("db_read", "fetch_derived_metric_inputs"):
-                        normalized_rows = fetch_normalized_metric_rows(conn, doc_id)
-                        historical_growth_values = fetch_historical_growth_values(conn, filing)
-                        half_progress_annual_values = fetch_half_progress_annual_values(conn, filing)
+                    normalized_rows = normalized_rows_by_doc_id.get(doc_id, [])
+                    historical_growth_values = historical_growth_values_by_doc_id.get(doc_id, {})
+                    half_progress_annual_values = half_progress_annual_values_by_doc_id.get(doc_id, {})
                     with perf_log.measure("compute", "calculate_derived_metrics"):
                         derived_rows = calculate_derived_metrics(
                             normalized_rows,
@@ -196,9 +262,6 @@ def run_save_derived_metrics(
                         mark_derived_metrics_error(conn, doc_id)
                     total_errors += 1
                     print(f"derived_metrics_error doc_id={doc_id} error={repr(e)}")
-
-            if not run_all:
-                break
     except Exception as e:
         unhandled_error = e
         raise
@@ -216,6 +279,10 @@ def run_save_derived_metrics(
                 "loop_count": loop_count,
                 "saved_rows_total": total_saved_rows,
                 "rule_version": rule_version,
+                "bulk_reference_batch_count": bulk_reference_batch_count,
+                "normalized_input_rows": normalized_input_rows_total,
+                "historical_reference_rows": historical_reference_rows_total,
+                "half_progress_reference_rows": half_progress_reference_rows_total,
             },
         )
         conn.close()
@@ -231,6 +298,9 @@ def run_save_derived_metrics(
         "saved_docs_total": total_saved_docs,
         "saved_rows_total": total_saved_rows,
         "error_total": total_errors,
+        "normalized_input_rows": normalized_input_rows_total,
+        "historical_reference_rows": historical_reference_rows_total,
+        "half_progress_reference_rows": half_progress_reference_rows_total,
     }
 
 
