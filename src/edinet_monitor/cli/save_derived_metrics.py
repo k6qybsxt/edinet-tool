@@ -11,7 +11,9 @@ from edinet_monitor.services.collector.download_queue_service import (
     fetch_derived_metrics_target_filings,
     mark_derived_metrics_error,
     mark_derived_metrics_saved,
+    mark_derived_metrics_saved_many,
     update_filing_parse_metadata,
+    update_filing_parse_metadata_many,
 )
 from edinet_monitor.services.collector.document_filter_service import (
     is_half_form_type,
@@ -25,8 +27,9 @@ from edinet_monitor.services.derived_metrics.historical_growth_reference_service
     fetch_historical_growth_values_bulk,
 )
 from edinet_monitor.services.derived_metrics.derived_metric_store_service import (
+    DerivedMetricInserter,
+    delete_derived_metrics_by_doc_ids,
     delete_derived_metrics_by_doc_id,
-    insert_derived_metrics,
 )
 from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 from edinet_monitor.services.performance_log_service import PerformanceLog
@@ -38,6 +41,11 @@ RUN_ALL_TARGET_FETCH_LIMIT = 1_000_000
 def _chunked(items: list[Any], chunk_size: int) -> list[list[Any]]:
     size = max(int(chunk_size or 1), 1)
     return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+def _chunk_count(total: int, chunk_size: int) -> int:
+    size = max(int(chunk_size or 1), 1)
+    return (int(total or 0) + size - 1) // size
 
 
 def fetch_normalized_metric_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
@@ -102,6 +110,7 @@ def ensure_filing_parse_metadata(
     filing: dict[str, Any],
     *,
     commit: bool = True,
+    update_db: bool = True,
 ) -> dict[str, Any]:
     accounting_standard = str(filing.get("accounting_standard") or "")
     document_display_unit = str(filing.get("document_display_unit") or "")
@@ -125,16 +134,150 @@ def ensure_filing_parse_metadata(
         or document_display_unit
     )
 
-    update_filing_parse_metadata(
-        conn,
-        str(filing["doc_id"]),
-        accounting_standard=accounting_standard,
-        document_display_unit=document_display_unit,
-        commit=commit,
-    )
+    if update_db:
+        update_filing_parse_metadata(
+            conn,
+            str(filing["doc_id"]),
+            accounting_standard=accounting_standard,
+            document_display_unit=document_display_unit,
+            commit=commit,
+        )
     filing["accounting_standard"] = accounting_standard
     filing["document_display_unit"] = document_display_unit
     return filing
+
+
+def _metadata_row_from_filing(filing: dict[str, Any]) -> dict[str, str]:
+    return {
+        "doc_id": str(filing.get("doc_id") or ""),
+        "accounting_standard": str(filing.get("accounting_standard") or ""),
+        "document_display_unit": str(filing.get("document_display_unit") or ""),
+    }
+
+
+def _derived_doc_id(result: dict[str, Any]) -> str:
+    return str(result.get("doc_id") or "")
+
+
+def _derived_rows_from_result(result: dict[str, Any]) -> list[dict]:
+    return list(result.get("derived_rows") or [])
+
+
+def _save_derived_metrics_batch(
+    conn: sqlite3.Connection,
+    save_results: list[dict[str, Any]],
+    *,
+    inserter: DerivedMetricInserter,
+    perf_log: PerformanceLog,
+    db_insert_chunk_size: int,
+    db_doc_id_chunk_size: int,
+) -> tuple[int, int]:
+    doc_ids = [_derived_doc_id(result) for result in save_results]
+    metadata_rows = [
+        _metadata_row_from_filing(dict(result.get("filing") or {}))
+        for result in save_results
+    ]
+    derived_rows: list[dict] = []
+    for result in save_results:
+        derived_rows.extend(_derived_rows_from_result(result))
+
+    with perf_log.measure(
+        "db_write",
+        "derived_metrics_delete",
+        count_total=len(doc_ids),
+        detail={
+            "doc_count": len(doc_ids),
+            "chunk_size": db_doc_id_chunk_size,
+            "chunk_count": _chunk_count(len(doc_ids), db_doc_id_chunk_size),
+        },
+    ):
+        delete_derived_metrics_by_doc_ids(
+            conn,
+            doc_ids,
+            chunk_size=db_doc_id_chunk_size,
+            commit=False,
+        )
+
+    with perf_log.measure(
+        "db_write",
+        "derived_metrics_insert",
+        count_total=len(derived_rows),
+        detail={
+            "doc_count": len(doc_ids),
+            "row_count": len(derived_rows),
+            "chunk_size": db_insert_chunk_size,
+            "chunk_count": _chunk_count(len(derived_rows), db_insert_chunk_size),
+        },
+    ):
+        saved_count = inserter.insert_many(derived_rows, chunk_size=db_insert_chunk_size)
+
+    with perf_log.measure(
+        "db_write",
+        "filing_metadata_update",
+        count_total=len(metadata_rows),
+        detail={"doc_count": len(metadata_rows)},
+    ):
+        update_filing_parse_metadata_many(conn, metadata_rows, commit=False)
+
+    with perf_log.measure(
+        "db_write",
+        "status_update",
+        count_total=len(doc_ids),
+        detail={
+            "doc_count": len(doc_ids),
+            "chunk_size": db_doc_id_chunk_size,
+            "chunk_count": _chunk_count(len(doc_ids), db_doc_id_chunk_size),
+        },
+    ):
+        mark_derived_metrics_saved_many(
+            conn,
+            doc_ids,
+            chunk_size=db_doc_id_chunk_size,
+            commit=False,
+        )
+
+    with perf_log.measure(
+        "db_write",
+        "commit",
+        count_total=len(doc_ids),
+        detail={"doc_count": len(doc_ids), "row_count": saved_count},
+    ):
+        conn.commit()
+
+    return len(save_results), saved_count
+
+
+def _save_derived_metrics_doc_fallback(
+    conn: sqlite3.Connection,
+    save_result: dict[str, Any],
+    *,
+    inserter: DerivedMetricInserter,
+    perf_log: PerformanceLog,
+    db_insert_chunk_size: int,
+) -> int:
+    doc_id = _derived_doc_id(save_result)
+    derived_rows = _derived_rows_from_result(save_result)
+    filing = dict(save_result.get("filing") or {})
+    with perf_log.measure(
+        "db_write",
+        "fallback_save_derived_metrics_doc",
+        count_total=len(derived_rows),
+        detail={"doc_id": doc_id, "row_count": len(derived_rows)},
+    ):
+        delete_derived_metrics_by_doc_id(conn, doc_id, commit=False)
+        saved_count = inserter.insert_many(derived_rows, chunk_size=db_insert_chunk_size)
+        if saved_count <= 0:
+            raise RuntimeError("saved_count=0")
+        update_filing_parse_metadata(
+            conn,
+            doc_id,
+            accounting_standard=str(filing.get("accounting_standard") or ""),
+            document_display_unit=str(filing.get("document_display_unit") or ""),
+            commit=False,
+        )
+        mark_derived_metrics_saved(conn, doc_id, commit=False)
+        conn.commit()
+    return saved_count
 
 
 def run_save_derived_metrics(
@@ -143,11 +286,15 @@ def run_save_derived_metrics(
     run_all: bool = False,
     form_codes: tuple[str, ...] | None = None,
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
+    db_insert_chunk_size: int = 50000,
+    db_doc_id_chunk_size: int = 500,
 ) -> dict[str, Any]:
     create_tables()
 
     conn = get_connection()
     target_form_codes = normalize_form_codes(form_codes)
+    target_db_insert_chunk_size = max(int(db_insert_chunk_size or 1), 1)
+    target_db_doc_id_chunk_size = max(int(db_doc_id_chunk_size or 1), 1)
     perf_log = PerformanceLog(
         command_name="save_derived_metrics",
         workers=1,
@@ -157,12 +304,18 @@ def run_save_derived_metrics(
             "run_all": bool(run_all),
             "form_codes": list(target_form_codes),
             "rule_version": rule_version,
+            "db_insert_chunk_size": target_db_insert_chunk_size,
+            "db_doc_id_chunk_size": target_db_doc_id_chunk_size,
         },
     )
+    derived_metric_inserter = DerivedMetricInserter(conn)
     total_target = 0
     total_saved_docs = 0
     total_saved_rows = 0
     total_errors = 0
+    fallback_doc_count = 0
+    fallback_error_count = 0
+    zero_row_error_count = 0
     loop_count = 0
     bulk_reference_batch_count = 0
     normalized_input_rows_total = 0
@@ -211,6 +364,7 @@ def run_save_derived_metrics(
                 half_progress_annual_values_by_doc_id
             )
 
+            successful_results: list[dict[str, Any]] = []
             for filing in filing_dicts:
                 doc_id = str(filing["doc_id"])
 
@@ -218,7 +372,12 @@ def run_save_derived_metrics(
 
                 try:
                     with perf_log.measure("parse", "ensure_filing_parse_metadata"):
-                        filing = ensure_filing_parse_metadata(conn, filing, commit=False)
+                        filing = ensure_filing_parse_metadata(
+                            conn,
+                            filing,
+                            commit=False,
+                            update_db=False,
+                        )
                     normalized_rows = normalized_rows_by_doc_id.get(doc_id, [])
                     historical_growth_values = historical_growth_values_by_doc_id.get(doc_id, {})
                     half_progress_annual_values = half_progress_annual_values_by_doc_id.get(doc_id, {})
@@ -238,30 +397,71 @@ def run_save_derived_metrics(
                         f"[DEBUG] doc_id={doc_id} normalized_row_count={len(normalized_rows)} derived_row_count={len(derived_rows)}"
                     )
 
-                    with perf_log.measure("db_write", "save_derived_metrics_doc"):
-                        delete_derived_metrics_by_doc_id(conn, doc_id, commit=False)
-                        saved_count = insert_derived_metrics(conn, derived_rows, commit=False)
-                        if saved_count > 0:
-                            mark_derived_metrics_saved(conn, doc_id, commit=False)
-                            conn.commit()
-
-                    if saved_count <= 0:
+                    if not derived_rows:
                         conn.rollback()
                         with perf_log.measure("db_write", "mark_derived_metrics_error"):
                             mark_derived_metrics_error(conn, doc_id)
+                        zero_row_error_count += 1
                         total_errors += 1
                         print(f"derived_metrics_error doc_id={doc_id} error='saved_count=0'")
                         continue
 
-                    total_saved_docs += 1
-                    total_saved_rows += saved_count
-                    print(f"saved_derived_metrics doc_id={doc_id} count={saved_count}")
+                    successful_results.append(
+                        {
+                            "doc_id": doc_id,
+                            "filing": filing,
+                            "derived_rows": derived_rows,
+                        }
+                    )
                 except Exception as e:
                     conn.rollback()
                     with perf_log.measure("db_write", "mark_derived_metrics_error"):
                         mark_derived_metrics_error(conn, doc_id)
                     total_errors += 1
                     print(f"derived_metrics_error doc_id={doc_id} error={repr(e)}")
+
+            if successful_results:
+                try:
+                    saved_docs, saved_rows = _save_derived_metrics_batch(
+                        conn,
+                        successful_results,
+                        inserter=derived_metric_inserter,
+                        perf_log=perf_log,
+                        db_insert_chunk_size=target_db_insert_chunk_size,
+                        db_doc_id_chunk_size=target_db_doc_id_chunk_size,
+                    )
+                    total_saved_docs += saved_docs
+                    total_saved_rows += saved_rows
+                    for save_result in successful_results:
+                        doc_id = _derived_doc_id(save_result)
+                        print(
+                            f"saved_derived_metrics doc_id={doc_id} "
+                            f"count={len(_derived_rows_from_result(save_result))}"
+                        )
+                except Exception as e:
+                    conn.rollback()
+                    print(f"derived_metrics_batch_save_error error={repr(e)}")
+                    for save_result in successful_results:
+                        doc_id = _derived_doc_id(save_result)
+                        fallback_doc_count += 1
+                        try:
+                            saved_count = _save_derived_metrics_doc_fallback(
+                                conn,
+                                save_result,
+                                inserter=derived_metric_inserter,
+                                perf_log=perf_log,
+                                db_insert_chunk_size=target_db_insert_chunk_size,
+                            )
+                            total_saved_docs += 1
+                            total_saved_rows += saved_count
+                            print(f"saved_derived_metrics doc_id={doc_id} count={saved_count}")
+                        except Exception as fallback_error:
+                            conn.rollback()
+                            with perf_log.measure("db_write", "mark_derived_metrics_error"):
+                                mark_derived_metrics_error(conn, doc_id)
+                            fallback_error_count += 1
+                            total_errors += 1
+                            print(f"derived_metrics_error doc_id={doc_id} error={repr(fallback_error)}")
     except Exception as e:
         unhandled_error = e
         raise
@@ -283,6 +483,11 @@ def run_save_derived_metrics(
                 "normalized_input_rows": normalized_input_rows_total,
                 "historical_reference_rows": historical_reference_rows_total,
                 "half_progress_reference_rows": half_progress_reference_rows_total,
+                "fallback_doc_count": fallback_doc_count,
+                "fallback_error_count": fallback_error_count,
+                "zero_row_error_count": zero_row_error_count,
+                "db_insert_chunk_size": target_db_insert_chunk_size,
+                "db_doc_id_chunk_size": target_db_doc_id_chunk_size,
             },
         )
         conn.close()
@@ -301,6 +506,9 @@ def run_save_derived_metrics(
         "normalized_input_rows": normalized_input_rows_total,
         "historical_reference_rows": historical_reference_rows_total,
         "half_progress_reference_rows": half_progress_reference_rows_total,
+        "fallback_doc_count": fallback_doc_count,
+        "fallback_error_count": fallback_error_count,
+        "zero_row_error_count": zero_row_error_count,
     }
 
 
@@ -309,6 +517,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--run-all", action="store_true")
     parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
+    parser.add_argument("--db-insert-chunk-size", type=int, default=50000)
+    parser.add_argument("--db-doc-id-chunk-size", type=int, default=500)
     return parser
 
 
@@ -318,6 +528,8 @@ def main() -> None:
         batch_size=args.batch_size,
         run_all=args.run_all,
         form_codes=normalize_form_codes(args.form_codes or None),
+        db_insert_chunk_size=args.db_insert_chunk_size,
+        db_doc_id_chunk_size=args.db_doc_id_chunk_size,
     )
 
 

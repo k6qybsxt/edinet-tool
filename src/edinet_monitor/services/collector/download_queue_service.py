@@ -489,6 +489,35 @@ def mark_derived_metrics_saved(conn: sqlite3.Connection, doc_id: str, *, commit:
         conn.commit()
 
 
+def mark_derived_metrics_saved_many(
+    conn: sqlite3.Connection,
+    doc_ids: Sequence[str],
+    *,
+    chunk_size: int = 500,
+    commit: bool = True,
+) -> int:
+    clean_doc_ids = [str(doc_id) for doc_id in doc_ids if str(doc_id)]
+    if not clean_doc_ids:
+        return 0
+
+    updated_total = 0
+    for chunk in _chunked_values(clean_doc_ids, chunk_size):
+        placeholders = ",".join("?" for _ in chunk)
+        cursor = conn.execute(
+            f"""
+            UPDATE filings
+            SET
+                parse_status = 'derived_metrics_saved'
+            WHERE doc_id IN ({placeholders})
+            """,
+            chunk,
+        )
+        updated_total += int(cursor.rowcount if cursor.rowcount is not None else 0)
+    if commit:
+        conn.commit()
+    return updated_total
+
+
 def mark_derived_metrics_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:
     conn.execute(
         """

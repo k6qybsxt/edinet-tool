@@ -188,7 +188,7 @@ class DbWriteTransactionServiceTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_save_derived_metrics_uses_bulk_inputs_and_rolls_back_when_status_update_fails(self) -> None:
+    def test_save_derived_metrics_uses_bulk_inputs_and_falls_back_when_batch_status_update_fails(self) -> None:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -290,7 +290,7 @@ class DbWriteTransactionServiceTest(unittest.TestCase):
                     return_value=[derived_row],
                 ),
                 patch(
-                    "edinet_monitor.cli.save_derived_metrics.mark_derived_metrics_saved",
+                    "edinet_monitor.cli.save_derived_metrics.mark_derived_metrics_saved_many",
                     side_effect=RuntimeError("status update failed"),
                 ),
             ):
@@ -310,11 +310,161 @@ class DbWriteTransactionServiceTest(unittest.TestCase):
             fetch_normalized_bulk.assert_called_once()
             fetch_historical_bulk.assert_called_once()
             fetch_half_bulk.assert_called_once()
-            self.assertEqual(result["saved_docs_total"], 0)
-            self.assertEqual(result["error_total"], 1)
+            self.assertEqual(result["saved_docs_total"], 1)
+            self.assertEqual(result["error_total"], 0)
             self.assertEqual(result["normalized_input_rows"], 1)
-            self.assertEqual(metric_count, 0)
-            self.assertEqual(parse_status, "derived_metrics_error")
+            self.assertEqual(result["fallback_doc_count"], 1)
+            self.assertEqual(metric_count, 1)
+            self.assertEqual(parse_status, "derived_metrics_saved")
+        finally:
+            conn.close()
+
+    def test_save_derived_metrics_batch_write_records_performance_spans(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute(
+                """
+                INSERT INTO issuer_master (
+                    edinet_code, security_code, company_name, industry_33,
+                    is_listed, exchange, updated_at
+                )
+                VALUES ('E00001', '12340', 'Company A', 'Chemicals', 1, 'TSE',
+                        '2026-05-30 10:00:00')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO filings (
+                    doc_id, edinet_code, security_code, form_type, period_end,
+                    submit_date, accounting_standard, document_display_unit,
+                    download_status, parse_status, created_at, updated_at
+                )
+                VALUES ('DOC1', 'E00001', '12340', '030000', '2026-03-31',
+                        '2026-05-30 10:00:00', 'Japan GAAP', 'unit',
+                        'downloaded', 'normalized_metrics_saved',
+                        '2026-05-30 10:00:00', '2026-05-30 10:00:00')
+                """
+            )
+            conn.commit()
+            filing_row = conn.execute(
+                """
+                SELECT
+                    'DOC1' AS doc_id,
+                    'E00001' AS edinet_code,
+                    '12340' AS security_code,
+                    'Chemicals' AS industry_33,
+                    '2026-03-31' AS period_end,
+                    '030000' AS form_type,
+                    'Japan GAAP' AS accounting_standard,
+                    'unit' AS document_display_unit,
+                    '' AS xbrl_path,
+                    '' AS zip_path
+                """
+            ).fetchone()
+            assert filing_row is not None
+            normalized_row = {
+                "doc_id": "DOC1",
+                "edinet_code": "E00001",
+                "security_code": "12340",
+                "metric_key": "NetSalesCurrent",
+                "fiscal_year": 2026,
+                "period_end": "2026-03-31",
+                "value_num": 100.0,
+                "source_tag": "NetSales",
+                "consolidation": "Consolidated",
+                "rule_version": "test",
+            }
+            derived_row = {
+                "doc_id": "DOC1",
+                "edinet_code": "E00001",
+                "security_code": "12340",
+                "metric_key": "NetSalesGrowthRateCurrent",
+                "metric_base": "NetSalesGrowthRate",
+                "metric_group": "growth",
+                "fiscal_year": 2026,
+                "period_end": "2026-03-31",
+                "period_scope": "current",
+                "period_offset": 0,
+                "consolidation": "Consolidated",
+                "accounting_standard": "Japan GAAP",
+                "document_display_unit": "unit",
+                "value_num": 0.1,
+                "value_unit": "ratio",
+                "calc_status": "ok",
+                "formula_name": "test",
+                "source_detail_json": {},
+                "rule_version": "test",
+            }
+
+            with (
+                patch("edinet_monitor.cli.save_derived_metrics.create_tables"),
+                patch("edinet_monitor.cli.save_derived_metrics.get_connection", return_value=conn),
+                patch(
+                    "edinet_monitor.cli.save_derived_metrics.fetch_derived_metrics_target_filings",
+                    return_value=[filing_row],
+                ),
+                patch(
+                    "edinet_monitor.cli.save_derived_metrics.fetch_normalized_metric_rows_by_doc_ids",
+                    return_value={"DOC1": [normalized_row]},
+                ),
+                patch(
+                    "edinet_monitor.cli.save_derived_metrics.fetch_historical_growth_values_bulk",
+                    return_value={},
+                ),
+                patch(
+                    "edinet_monitor.cli.save_derived_metrics.fetch_half_progress_annual_values_bulk",
+                    return_value={},
+                ),
+                patch(
+                    "edinet_monitor.cli.save_derived_metrics.calculate_derived_metrics",
+                    return_value=[derived_row],
+                ),
+            ):
+                result = run_save_derived_metrics(
+                    batch_size=10,
+                    rule_version="test",
+                    db_insert_chunk_size=1,
+                    db_doc_id_chunk_size=1,
+                )
+
+            checker = sqlite3.connect(self.db_path)
+            checker.row_factory = sqlite3.Row
+            try:
+                metric_count = checker.execute(
+                    "SELECT COUNT(*) FROM derived_metrics WHERE doc_id = 'DOC1'"
+                ).fetchone()[0]
+                parse_status = checker.execute(
+                    "SELECT parse_status FROM filings WHERE doc_id = 'DOC1'"
+                ).fetchone()[0]
+                span_names = [
+                    str(row["span_name"])
+                    for row in checker.execute(
+                        """
+                        SELECT span_name
+                        FROM pipeline_performance_spans
+                        WHERE run_id = (
+                            SELECT run_id
+                            FROM pipeline_performance_runs
+                            WHERE command_name = 'save_derived_metrics'
+                            ORDER BY started_at DESC, id DESC
+                            LIMIT 1
+                        )
+                        """
+                    ).fetchall()
+                ]
+            finally:
+                checker.close()
+
+            self.assertEqual(result["saved_docs_total"], 1)
+            self.assertEqual(result["error_total"], 0)
+            self.assertEqual(metric_count, 1)
+            self.assertEqual(parse_status, "derived_metrics_saved")
+            self.assertIn("derived_metrics_delete", span_names)
+            self.assertIn("derived_metrics_insert", span_names)
+            self.assertIn("filing_metadata_update", span_names)
+            self.assertIn("status_update", span_names)
+            self.assertIn("commit", span_names)
         finally:
             conn.close()
 

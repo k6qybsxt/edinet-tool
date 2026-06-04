@@ -13,6 +13,7 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.services.collector.download_queue_service import (  # noqa: E402
     fetch_downloaded_filings_without_xbrl,
+    mark_derived_metrics_saved_many,
     mark_xbrl_extract_success,
 )
 
@@ -139,6 +140,52 @@ class DownloadQueueServiceTest(unittest.TestCase):
             "XBRL/PublicDoc/jpcrp030000-asr-001_E00001-000_2026-03-31_01_2026-06-28.xbrl",
         )
         self.assertTrue(str(row["xbrl_path"]).endswith("S100A001.xbrl"))
+
+    def test_mark_derived_metrics_saved_many_chunks_targets_only(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        create_tables(conn)
+
+        conn.execute(
+            """
+            INSERT INTO issuer_master (edinet_code, exchange, is_listed)
+            VALUES ('E00001', 'TSE', 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, xbrl_member_name, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES
+            ('DOC1', 'E00001', '11110', '030000', '2026-03-31', '2026-04-09 09:00', 0, '0', '1', '', '', '', '', '', 'downloaded', 'normalized_metrics_saved', '2026-04-11', '2026-04-11'),
+            ('DOC2', 'E00001', '11110', '030000', '2026-03-31', '2026-04-09 10:00', 0, '0', '1', '', '', '', '', '', 'downloaded', 'normalized_metrics_saved', '2026-04-11', '2026-04-11'),
+            ('DOC3', 'E00001', '11110', '030000', '2026-03-31', '2026-04-09 11:00', 0, '0', '1', '', '', '', '', '', 'downloaded', 'normalized_metrics_saved', '2026-04-11', '2026-04-11'),
+            ('DOC4', 'E00001', '11110', '030000', '2026-03-31', '2026-04-09 12:00', 0, '0', '1', '', '', '', '', '', 'downloaded', 'normalized_metrics_saved', '2026-04-11', '2026-04-11')
+            """
+        )
+        conn.commit()
+
+        updated_count = mark_derived_metrics_saved_many(
+            conn,
+            ["DOC1", "DOC2", "DOC3"],
+            chunk_size=2,
+        )
+        statuses = {
+            str(row["doc_id"]): str(row["parse_status"])
+            for row in conn.execute(
+                "SELECT doc_id, parse_status FROM filings ORDER BY doc_id"
+            ).fetchall()
+        }
+
+        self.assertEqual(updated_count, 3)
+        self.assertEqual(statuses["DOC1"], "derived_metrics_saved")
+        self.assertEqual(statuses["DOC2"], "derived_metrics_saved")
+        self.assertEqual(statuses["DOC3"], "derived_metrics_saved")
+        self.assertEqual(statuses["DOC4"], "normalized_metrics_saved")
 
 
 if __name__ == "__main__":
