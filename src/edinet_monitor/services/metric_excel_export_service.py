@@ -1411,6 +1411,9 @@ def _fetch_ranked_filings(
         where.append(f"im.company_name IN ({placeholders})")
         params.extend(condition.company_names)
 
+    quarter_form_type_values = ",".join(
+        "'" + form_type.replace("'", "''") + "'" for form_type in FORM_TYPES_BY_PERIOD_SCOPE["quarter"]
+    )
     sql = f"""
     WITH base AS (
       SELECT
@@ -1427,11 +1430,11 @@ def _fetch_ranked_filings(
         im.market,
         im.security_code AS issuer_security_code,
         CASE
-          WHEN f.form_type = '043A00' THEN 'quarter:2Q'
+          WHEN f.form_type IN ({quarter_form_type_values}) THEN 'quarter:2Q'
           ELSE 'annual'
         END AS period_scope_key,
         CASE
-          WHEN f.form_type = '043A00'
+          WHEN f.form_type IN ({quarter_form_type_values})
             THEN COALESCE(date(f.period_end, 'start of month', '+6 months', '+1 month', '-1 day'), f.period_end)
           ELSE f.period_end
         END AS period_bucket_end

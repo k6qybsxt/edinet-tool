@@ -993,6 +993,61 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual([row.values_by_offset[0] for row in detail_rows], [55.0, None])
         self.assertEqual([row.values_by_offset[1] for row in detail_rows], [None, 100.0])
 
+    def test_build_rows_keeps_043000_half_filings_out_of_annual_offsets(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES ('E00001_HALF_043000', 'E00001', '11110', '043000',
+                      '2025-09-30', '2025-11-14 12:00', 0, '0', '1',
+                      'Japan GAAP', '逋ｾ荳・・', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO normalized_metrics (
+                doc_id, edinet_code, security_code, metric_key, fiscal_year, period_end,
+                value_num, source_tag, consolidation, rule_version, created_at, updated_at
+            ) VALUES ('E00001_HALF_043000', 'E00001', '11110', 'NetSalesCurrent',
+                      2025, '2025-09-30', 55.0, 'tag',
+                      'consolidated', 'v1', '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.commit()
+
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["\u58f2\u4e0a\u9ad8"],
+            period_offsets=[3, 2, 1],
+            period_scopes=["annual", "quarter"],
+        )
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        annual_row = next(
+            row
+            for row in _detail_rows(rows)
+            if row.period_scope == "annual" and row.metric_base == "NetSales"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        self.assertEqual(
+            [annual_row.periods_by_offset[offset] for offset in [3, 2, 1]],
+            ["\u901a\u671f 2024-03", "\u901a\u671f 2025-03", "\u901a\u671f 2026-03"],
+        )
+        self.assertEqual(
+            [annual_row.values_by_offset[offset] for offset in [3, 2, 1]],
+            [70.0, 80.0, 100.0],
+        )
+
     def test_half_rows_suppress_disabled_metrics(self) -> None:
         self.conn.execute(
             """
