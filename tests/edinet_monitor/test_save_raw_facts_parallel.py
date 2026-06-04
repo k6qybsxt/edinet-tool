@@ -216,13 +216,25 @@ class SaveRawFactsParallelTest(unittest.TestCase):
                 ).fetchone()
                 perf_row = checker.execute(
                     """
-                    SELECT workers, summary_json
+                    SELECT run_id, workers, summary_json
                     FROM pipeline_performance_runs
                     WHERE command_name = 'save_raw_facts'
                     ORDER BY started_at DESC
                     LIMIT 1
                     """
                 ).fetchone()
+                span_names = [
+                    str(row["span_name"])
+                    for row in checker.execute(
+                        """
+                        SELECT span_name
+                        FROM pipeline_performance_spans
+                        WHERE run_id = ?
+                        ORDER BY id
+                        """,
+                        (perf_row["run_id"],),
+                    ).fetchall()
+                ] if perf_row else []
             finally:
                 checker.close()
 
@@ -242,6 +254,212 @@ class SaveRawFactsParallelTest(unittest.TestCase):
             summary = json.loads(str(perf_row["summary_json"]))
             self.assertEqual(summary["parse_chunk_count"], 1)
             self.assertEqual(summary["worker_parse_elapsed_seconds_total"], 1.75)
+            self.assertEqual(summary["fallback_doc_count"], 0)
+            self.assertEqual(summary["fallback_error_count"], 0)
+            self.assertIn("raw_facts_delete", span_names)
+            self.assertIn("raw_facts_insert", span_names)
+            self.assertIn("filing_metadata_update", span_names)
+            self.assertIn("status_update", span_names)
+            self.assertIn("commit", span_names)
+        finally:
+            try:
+                conn.close()
+            except sqlite3.ProgrammingError:
+                pass
+
+    def test_run_save_raw_facts_batch_writes_multiple_successes(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            self._insert_target(conn, "DOC1", "C:/tmp/doc1.xbrl")
+            self._insert_target(conn, "DOC2", "C:/tmp/doc2.xbrl")
+            conn.commit()
+
+            def fake_run_parse_jobs(jobs: list[dict], *, workers: int, parse_chunk_size: int):
+                return (
+                    [
+                        {
+                            "ok": True,
+                            "order_index": 0,
+                            "doc_id": "DOC1",
+                            "raw_rows": [_raw_row("DOC1", "NetSales")],
+                            "accounting_standard": "Japan GAAP",
+                            "document_display_unit": "JPY",
+                            "elapsed_seconds": 0.1,
+                            "error": "",
+                        },
+                        {
+                            "ok": True,
+                            "order_index": 1,
+                            "doc_id": "DOC2",
+                            "raw_rows": [_raw_row("DOC2", "OperatingIncome")],
+                            "accounting_standard": "IFRS",
+                            "document_display_unit": "JPY_million",
+                            "elapsed_seconds": 0.2,
+                            "error": "",
+                        },
+                    ],
+                    1,
+                    0.3,
+                )
+
+            with (
+                patch("edinet_monitor.cli.save_raw_facts.create_tables"),
+                patch("edinet_monitor.cli.save_raw_facts.get_connection", return_value=conn),
+                patch("edinet_monitor.cli.save_raw_facts._run_parse_jobs", side_effect=fake_run_parse_jobs),
+            ):
+                result = cli.run_save_raw_facts(
+                    batch_size=10,
+                    run_all=True,
+                    db_insert_chunk_size=1,
+                    db_doc_id_chunk_size=1,
+                )
+
+            checker = sqlite3.connect(self.db_path)
+            checker.row_factory = sqlite3.Row
+            try:
+                raw_counts = {
+                    str(row["doc_id"]): int(row["count"])
+                    for row in checker.execute(
+                        """
+                        SELECT doc_id, COUNT(*) AS count
+                        FROM raw_facts
+                        GROUP BY doc_id
+                        ORDER BY doc_id
+                        """
+                    ).fetchall()
+                }
+                statuses = {
+                    str(row["doc_id"]): str(row["parse_status"])
+                    for row in checker.execute(
+                        "SELECT doc_id, parse_status FROM filings ORDER BY doc_id"
+                    ).fetchall()
+                }
+                metadata = {
+                    str(row["doc_id"]): (
+                        str(row["accounting_standard"] or ""),
+                        str(row["document_display_unit"] or ""),
+                    )
+                    for row in checker.execute(
+                        """
+                        SELECT doc_id, accounting_standard, document_display_unit
+                        FROM filings
+                        ORDER BY doc_id
+                        """
+                    ).fetchall()
+                }
+            finally:
+                checker.close()
+
+            self.assertEqual(result["saved_docs_total"], 2)
+            self.assertEqual(result["saved_rows_total"], 2)
+            self.assertEqual(result["error_total"], 0)
+            self.assertEqual(result["db_insert_chunk_size"], 1)
+            self.assertEqual(result["db_doc_id_chunk_size"], 1)
+            self.assertEqual(raw_counts, {"DOC1": 1, "DOC2": 1})
+            self.assertEqual(statuses, {"DOC1": "raw_facts_saved", "DOC2": "raw_facts_saved"})
+            self.assertEqual(metadata["DOC1"], ("Japan GAAP", "JPY"))
+            self.assertEqual(metadata["DOC2"], ("IFRS", "JPY_million"))
+        finally:
+            try:
+                conn.close()
+            except sqlite3.ProgrammingError:
+                pass
+
+    def test_run_save_raw_facts_fallback_separates_success_and_error_docs(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            self._insert_target(conn, "DOC1", "C:/tmp/doc1.xbrl")
+            self._insert_target(conn, "DOC2", "C:/tmp/doc2.xbrl")
+            conn.commit()
+
+            def fake_run_parse_jobs(jobs: list[dict], *, workers: int, parse_chunk_size: int):
+                return (
+                    [
+                        {
+                            "ok": True,
+                            "order_index": 0,
+                            "doc_id": "DOC1",
+                            "raw_rows": [_raw_row("DOC1")],
+                            "accounting_standard": "Japan GAAP",
+                            "document_display_unit": "JPY",
+                            "elapsed_seconds": 0.1,
+                            "error": "",
+                        },
+                        {
+                            "ok": True,
+                            "order_index": 1,
+                            "doc_id": "DOC2",
+                            "raw_rows": [
+                                {
+                                    "doc_id": "DOC2",
+                                    "created_at": "2026-05-30 10:00:00",
+                                }
+                            ],
+                            "accounting_standard": "IFRS",
+                            "document_display_unit": "JPY_million",
+                            "elapsed_seconds": 0.2,
+                            "error": "",
+                        },
+                    ],
+                    1,
+                    0.3,
+                )
+
+            with (
+                patch("edinet_monitor.cli.save_raw_facts.create_tables"),
+                patch("edinet_monitor.cli.save_raw_facts.get_connection", return_value=conn),
+                patch("edinet_monitor.cli.save_raw_facts._run_parse_jobs", side_effect=fake_run_parse_jobs),
+                patch(
+                    "edinet_monitor.cli.save_raw_facts._save_raw_facts_batch",
+                    side_effect=RuntimeError("batch insert failed"),
+                ),
+            ):
+                result = cli.run_save_raw_facts(batch_size=10, run_all=True)
+
+            checker = sqlite3.connect(self.db_path)
+            checker.row_factory = sqlite3.Row
+            try:
+                statuses = {
+                    str(row["doc_id"]): str(row["parse_status"])
+                    for row in checker.execute(
+                        "SELECT doc_id, parse_status FROM filings ORDER BY doc_id"
+                    ).fetchall()
+                }
+                raw_counts = {
+                    str(row["doc_id"]): int(row["count"])
+                    for row in checker.execute(
+                        """
+                        SELECT doc_id, COUNT(*) AS count
+                        FROM raw_facts
+                        GROUP BY doc_id
+                        ORDER BY doc_id
+                        """
+                    ).fetchall()
+                }
+                perf_row = checker.execute(
+                    """
+                    SELECT summary_json
+                    FROM pipeline_performance_runs
+                    WHERE command_name = 'save_raw_facts'
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            finally:
+                checker.close()
+
+            self.assertEqual(result["saved_docs_total"], 1)
+            self.assertEqual(result["saved_rows_total"], 1)
+            self.assertEqual(result["error_total"], 1)
+            self.assertEqual(result["fallback_doc_count"], 2)
+            self.assertEqual(result["fallback_error_count"], 1)
+            self.assertEqual(statuses, {"DOC1": "raw_facts_saved", "DOC2": "raw_facts_error"})
+            self.assertEqual(raw_counts, {"DOC1": 1})
+            summary = json.loads(str(perf_row["summary_json"]))
+            self.assertEqual(summary["fallback_doc_count"], 2)
+            self.assertEqual(summary["fallback_error_count"], 1)
         finally:
             try:
                 conn.close()

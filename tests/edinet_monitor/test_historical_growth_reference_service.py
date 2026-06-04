@@ -233,6 +233,7 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
                 [
                     ("ANNUAL_REF", "NetSalesCurrent", 2000, "2026-03-31", "Consolidated"),
                     ("ANNUAL_REF", "OrdinaryIncomeCurrent", 300, "2026-03-31", "Consolidated"),
+                    ("ANNUAL_REF", "ProfitBeforeTaxCurrent", 280, "2026-03-31", "Consolidated"),
                     ("ANNUAL_REF", "ProfitLossCurrent", 210, "2026-03-31", "Consolidated"),
                     ("ANNUAL_LATE", "NetSalesCurrent", 9999, "2026-12-31", "Consolidated"),
                 ],
@@ -251,6 +252,8 @@ class HistoricalGrowthReferenceServiceTest(unittest.TestCase):
 
         self.assertEqual(bulk["HALF_CURRENT"], single)
         self.assertEqual(bulk["HALF_CURRENT"]["NetSales"]["value_num"], 2000)
+        self.assertEqual(bulk["HALF_CURRENT"]["ProfitBeforeTax"]["value_num"], 280)
+        self.assertEqual(bulk["HALF_CURRENT"]["ProfitBeforeTax"]["metric_key"], "ProfitBeforeTaxCurrent")
 
 
 if __name__ == "__main__":

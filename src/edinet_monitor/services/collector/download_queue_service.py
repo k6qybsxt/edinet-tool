@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 
@@ -11,6 +12,11 @@ def _form_code_filter(form_codes: tuple[str, ...] | list[str] | str | None) -> t
         return "", []
     placeholders = ",".join("?" for _ in codes)
     return f" AND f.form_type IN ({placeholders})", list(codes)
+
+
+def _chunked_values(values: Sequence[str], chunk_size: int) -> list[list[str]]:
+    size = max(int(chunk_size or 1), 1)
+    return [list(values[index:index + size]) for index in range(0, len(values), size)]
 
 
 def fetch_pending_filings(
@@ -254,6 +260,35 @@ def mark_raw_facts_saved(conn: sqlite3.Connection, doc_id: str, *, commit: bool 
         conn.commit()
 
 
+def mark_raw_facts_saved_many(
+    conn: sqlite3.Connection,
+    doc_ids: Sequence[str],
+    *,
+    chunk_size: int = 500,
+    commit: bool = True,
+) -> int:
+    clean_doc_ids = [str(doc_id) for doc_id in doc_ids if str(doc_id)]
+    if not clean_doc_ids:
+        return 0
+
+    updated_total = 0
+    for chunk in _chunked_values(clean_doc_ids, chunk_size):
+        placeholders = ",".join("?" for _ in chunk)
+        cursor = conn.execute(
+            f"""
+            UPDATE filings
+            SET
+                parse_status = 'raw_facts_saved'
+            WHERE doc_id IN ({placeholders})
+            """,
+            chunk,
+        )
+        updated_total += int(cursor.rowcount if cursor.rowcount is not None else 0)
+    if commit:
+        conn.commit()
+    return updated_total
+
+
 def update_filing_parse_metadata(
     conn: sqlite3.Connection,
     doc_id: str,
@@ -278,6 +313,39 @@ def update_filing_parse_metadata(
     )
     if commit:
         conn.commit()
+
+
+def update_filing_parse_metadata_many(
+    conn: sqlite3.Connection,
+    metadata_rows: Sequence[dict],
+    *,
+    commit: bool = True,
+) -> int:
+    payloads = [
+        {
+            "accounting_standard": str(row.get("accounting_standard") or ""),
+            "document_display_unit": str(row.get("document_display_unit") or ""),
+            "doc_id": str(row.get("doc_id") or ""),
+        }
+        for row in metadata_rows
+        if str(row.get("doc_id") or "")
+    ]
+    if not payloads:
+        return 0
+
+    conn.executemany(
+        """
+        UPDATE filings
+        SET
+            accounting_standard = :accounting_standard,
+            document_display_unit = :document_display_unit
+        WHERE doc_id = :doc_id
+        """,
+        payloads,
+    )
+    if commit:
+        conn.commit()
+    return len(payloads)
 
 
 def mark_raw_facts_error(conn: sqlite3.Connection, doc_id: str, *, commit: bool = True) -> None:

@@ -324,6 +324,14 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["value_num"], 0.5)
         self.assertEqual(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["value_num"], 0.8)
         self.assertEqual(by_key["HalfProfitProgressRateCurrent"]["value_num"], 0.5)
+        self.assertEqual(
+            by_key["HalfOrdinaryIncomeProgressRateCurrent"]["source_detail_json"]["selected_half_metric_base"],
+            "OrdinaryIncome",
+        )
+        self.assertEqual(
+            by_key["HalfOrdinaryIncomeProgressRateCurrent"]["source_detail_json"]["progress_base_reason"],
+            "jpgaap_ordinary_income",
+        )
         self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["period_scope"], "quarter")
         self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["period_key"], "actual:2Q")
         self.assertEqual(by_key["HalfNetSalesProgressRateCurrent"]["quarter_type"], "2Q")
@@ -331,6 +339,104 @@ class DerivedMetricServiceTest(unittest.TestCase):
             by_key["HalfNetSalesProgressRateCurrent"]["source_detail_json"]["annual_doc_id"],
             "ANNUAL1",
         )
+
+    def test_ifrs_half_ordinary_income_progress_uses_profit_before_tax(self) -> None:
+        normalized_rows = [
+            build_normalized_row("NetSalesCurrent", 500_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 80_000),
+            build_normalized_row("ProfitBeforeTaxCurrent", 60_000),
+            build_normalized_row("ProfitLossCurrent", 40_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="043A00",
+            accounting_standard="IFRS",
+            document_display_unit="unit",
+            half_progress_annual_values={
+                "NetSales": {"value_num": 1_000_000, "doc_id": "ANNUAL1", "metric_key": "NetSalesCurrent"},
+                "OrdinaryIncome": {
+                    "value_num": 100_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "OrdinaryIncomeCurrent",
+                },
+                "ProfitBeforeTax": {
+                    "value_num": 120_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "ProfitBeforeTaxCurrent",
+                },
+                "ProfitLoss": {"value_num": 80_000, "doc_id": "ANNUAL1", "metric_key": "ProfitLossCurrent"},
+            },
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+        detail = by_key["HalfOrdinaryIncomeProgressRateCurrent"]["source_detail_json"]
+
+        self.assertEqual(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["value_num"], 0.5)
+        self.assertEqual(detail["inputs"]["ProfitBeforeTaxCurrent"], 60_000)
+        self.assertEqual(detail["inputs"]["AnnualProfitBeforeTaxCurrent"], 120_000)
+        self.assertEqual(detail["selected_half_metric_base"], "ProfitBeforeTax")
+        self.assertEqual(detail["selected_annual_metric_base"], "ProfitBeforeTax")
+        self.assertEqual(detail["progress_base_reason"], "ifrs_usgaap_profit_before_tax")
+        self.assertEqual(detail["annual_metric_key"], "ProfitBeforeTaxCurrent")
+
+    def test_us_gaap_half_ordinary_income_progress_uses_profit_before_tax(self) -> None:
+        rows = calculate_derived_metrics(
+            [
+                build_normalized_row("OrdinaryIncomeCurrent", 80_000),
+                build_normalized_row("ProfitBeforeTaxCurrent", 75_000),
+            ],
+            form_type="043A00",
+            accounting_standard="US GAAP",
+            document_display_unit="unit",
+            half_progress_annual_values={
+                "OrdinaryIncome": {
+                    "value_num": 100_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "OrdinaryIncomeCurrent",
+                },
+                "ProfitBeforeTax": {
+                    "value_num": 150_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "ProfitBeforeTaxCurrent",
+                },
+            },
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertEqual(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["value_num"], 0.5)
+        self.assertEqual(
+            by_key["HalfOrdinaryIncomeProgressRateCurrent"]["source_detail_json"]["progress_base_reason"],
+            "ifrs_usgaap_profit_before_tax",
+        )
+
+    def test_ifrs_half_ordinary_income_progress_missing_without_profit_before_tax(self) -> None:
+        rows = calculate_derived_metrics(
+            [
+                build_normalized_row("OrdinaryIncomeCurrent", 80_000),
+            ],
+            form_type="043A00",
+            accounting_standard="ifrs",
+            document_display_unit="unit",
+            half_progress_annual_values={
+                "OrdinaryIncome": {
+                    "value_num": 100_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "OrdinaryIncomeCurrent",
+                },
+                "ProfitBeforeTax": {
+                    "value_num": 150_000,
+                    "doc_id": "ANNUAL1",
+                    "metric_key": "ProfitBeforeTaxCurrent",
+                },
+            },
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+        detail = by_key["HalfOrdinaryIncomeProgressRateCurrent"]["source_detail_json"]
+
+        self.assertIsNone(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["value_num"])
+        self.assertEqual(by_key["HalfOrdinaryIncomeProgressRateCurrent"]["calc_status"], "missing_input")
+        self.assertIn("ProfitBeforeTaxCurrent", detail["inputs"])
+        self.assertNotIn("OrdinaryIncomeCurrent", detail["inputs"])
 
     def test_equity_ratio_prefers_direct_normalized_tag(self) -> None:
         rows = calculate_derived_metrics(

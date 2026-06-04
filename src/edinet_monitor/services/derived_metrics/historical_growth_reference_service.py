@@ -29,6 +29,7 @@ OUTSTANDING_SHARES_COMPONENT_KEYS = {
 HALF_PROGRESS_ANNUAL_METRIC_KEYS = {
     "NetSales": "NetSalesCurrent",
     "OrdinaryIncome": "OrdinaryIncomeCurrent",
+    "ProfitBeforeTax": "ProfitBeforeTaxCurrent",
     "ProfitLoss": "ProfitLossCurrent",
 }
 

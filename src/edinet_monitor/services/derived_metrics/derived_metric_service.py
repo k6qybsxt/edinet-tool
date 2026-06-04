@@ -343,6 +343,7 @@ def _half_progress_input(
     half_metric_base: str,
     annual_metric_base: str,
     half_progress_annual_values: dict[str, dict[str, Any]],
+    progress_base_reason: str = "",
 ) -> dict[str, Any]:
     half_input = _single_metric_input(metric_rows, half_metric_base, suffix)
     annual_key = f"Annual{annual_metric_base}Current"
@@ -355,6 +356,19 @@ def _half_progress_input(
         denominator=annual_value,
         require_positive_denominator=False,
     )
+    detail_extra = {
+        "annual_doc_id": annual_detail.get("doc_id"),
+        "annual_metric_key": annual_detail.get("metric_key"),
+        "annual_period_end": annual_detail.get("period_end"),
+    }
+    if progress_base_reason:
+        detail_extra.update(
+            {
+                "selected_half_metric_base": half_metric_base,
+                "selected_annual_metric_base": annual_metric_base,
+                "progress_base_reason": progress_base_reason,
+            }
+        )
     return {
         "value_num": value_num,
         "calc_status": calc_status,
@@ -363,14 +377,16 @@ def _half_progress_input(
             annual_key: annual_value,
         },
         "reference_keys": half_input["reference_keys"],
-        "detail_extra": {
-            "annual_doc_id": annual_detail.get("doc_id"),
-            "annual_metric_key": annual_detail.get("metric_key"),
-            "annual_period_end": annual_detail.get("period_end"),
-        },
+        "detail_extra": detail_extra,
         "display_formula": "half_value / annual_value * 100",
         "stored_formula": "half_value / annual_value",
     }
+
+
+def _ordinary_income_progress_metric_bases(accounting_standard: str) -> tuple[str, str, str]:
+    if is_ifrs_or_us_gaap(accounting_standard):
+        return "ProfitBeforeTax", "ProfitBeforeTax", "ifrs_usgaap_profit_before_tax"
+    return "OrdinaryIncome", "OrdinaryIncome", "jpgaap_ordinary_income"
 
 
 def _ratio_status(
@@ -2446,10 +2462,18 @@ def calculate_derived_metrics(
         rule_version=rule_version,
     )
     if quarter_type == "2Q":
-        for derived_base, half_base, annual_base in [
-            ("HalfNetSalesProgressRate", "NetSales", "NetSales"),
-            ("HalfOrdinaryIncomeProgressRate", "OrdinaryIncome", "OrdinaryIncome"),
-            ("HalfProfitProgressRate", "ProfitLoss", "ProfitLoss"),
+        ordinary_half_base, ordinary_annual_base, ordinary_reason = _ordinary_income_progress_metric_bases(
+            accounting_standard
+        )
+        for derived_base, half_base, annual_base, progress_base_reason in [
+            ("HalfNetSalesProgressRate", "NetSales", "NetSales", ""),
+            (
+                "HalfOrdinaryIncomeProgressRate",
+                ordinary_half_base,
+                ordinary_annual_base,
+                ordinary_reason,
+            ),
+            ("HalfProfitProgressRate", "ProfitLoss", "ProfitLoss", ""),
         ]:
             _append_rows_from_inputs(
                 out_rows,
@@ -2459,12 +2483,13 @@ def calculate_derived_metrics(
                 metric_group="progress",
                 formula_name="half_progress_rate",
                 value_unit="ratio",
-                input_builder=lambda rows, suffix, half_base=half_base, annual_base=annual_base: _half_progress_input(
+                input_builder=lambda rows, suffix, half_base=half_base, annual_base=annual_base, progress_base_reason=progress_base_reason: _half_progress_input(
                     rows,
                     suffix,
                     half_metric_base=half_base,
                     annual_metric_base=annual_base,
                     half_progress_annual_values=half_progress_annual_values,
+                    progress_base_reason=progress_base_reason,
                 ),
                 accounting_standard=accounting_standard,
                 document_display_unit=document_display_unit,

@@ -14,7 +14,11 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.db.schema import _ensure_raw_facts_columns  # noqa: E402
 from edinet_monitor.services.parser.raw_fact_mapper import to_raw_fact_rows  # noqa: E402
-from edinet_monitor.services.parser.raw_fact_store_service import insert_raw_facts  # noqa: E402
+from edinet_monitor.services.parser.raw_fact_store_service import (  # noqa: E402
+    RawFactInserter,
+    delete_raw_facts_by_doc_ids,
+    insert_raw_facts,
+)
 from edinet_pipeline.services.xbrl_parser import parse_xbrl_file_raw  # noqa: E402
 
 
@@ -45,6 +49,17 @@ SAMPLE_XBRL = b"""<?xml version="1.0" encoding="UTF-8"?>
   <jppfs_cor:OperatingIncome contextRef="CurrentYearDuration_ConsolidatedMember" unitRef="JPY" xsi:nil="true"/>
 </xbrli:xbrl>
 """
+
+
+class CountingConnection(sqlite3.Connection):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.pragma_table_info_count = 0
+
+    def execute(self, sql, parameters=(), /):
+        if str(sql).strip().lower().startswith("pragma table_info(raw_facts)"):
+            self.pragma_table_info_count += 1
+        return super().execute(sql, parameters)
 
 
 class RawFactMetadataTest(unittest.TestCase):
@@ -136,6 +151,85 @@ class RawFactMetadataTest(unittest.TestCase):
         self.assertEqual(row["decimals"], "-6")
         self.assertEqual(json.loads(row["unit_measures_json"])["measures"], ["iso4217:JPY"])
         self.assertEqual(row["xbrl_member_name"], "XBRL/PublicDoc/main.xbrl")
+
+    def test_raw_fact_inserter_reuses_table_columns_and_insert_sql(self) -> None:
+        conn = sqlite3.connect(":memory:", factory=CountingConnection)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+
+        conn.execute(
+            """
+            CREATE TABLE raw_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id TEXT NOT NULL,
+                tag_name TEXT NOT NULL,
+                tag_qname TEXT,
+                value_text TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        inserter = RawFactInserter(conn)
+        first_count = inserter.insert_many(
+            [
+                {
+                    "doc_id": "DOC1",
+                    "tag_name": "NetSales",
+                    "tag_qname": "jppfs_cor:NetSales",
+                    "value_text": "100",
+                    "created_at": "2026-05-30 10:00:00",
+                }
+            ],
+            chunk_size=1,
+        )
+        second_count = inserter.insert_many(
+            [
+                {
+                    "doc_id": "DOC2",
+                    "tag_name": "OperatingIncome",
+                    "tag_qname": "jppfs_cor:OperatingIncome",
+                    "value_text": "200",
+                    "created_at": "2026-05-30 10:00:00",
+                }
+            ],
+            chunk_size=1,
+        )
+
+        self.assertEqual(first_count, 1)
+        self.assertEqual(second_count, 1)
+        self.assertEqual(conn.pragma_table_info_count, 1)
+        row_count = conn.execute("SELECT COUNT(*) FROM raw_facts").fetchone()[0]
+        self.assertEqual(row_count, 2)
+
+    def test_delete_raw_facts_by_doc_ids_chunks_targets_only(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute(
+            """
+            CREATE TABLE raw_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id TEXT NOT NULL,
+                tag_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_facts (doc_id, tag_name, created_at)
+            VALUES (?, 'NetSales', '2026-05-30 10:00:00')
+            """,
+            [("DOC1",), ("DOC2",), ("DOC3",), ("KEEP",)],
+        )
+
+        deleted_count = delete_raw_facts_by_doc_ids(conn, ["DOC1", "DOC2", "DOC3"], chunk_size=2)
+
+        self.assertEqual(deleted_count, 3)
+        remaining = [
+            str(row[0])
+            for row in conn.execute("SELECT doc_id FROM raw_facts ORDER BY doc_id").fetchall()
+        ]
+        self.assertEqual(remaining, ["KEEP"])
 
     def test_schema_migration_adds_raw_fact_metadata_columns(self) -> None:
         conn = sqlite3.connect(":memory:")
