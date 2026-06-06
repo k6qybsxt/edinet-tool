@@ -7,6 +7,7 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import load_workbook
 
@@ -22,6 +23,7 @@ from edinet_monitor.services.metric_excel_audit_service import (  # noqa: E402
     HEADER_ROW_KIND,
     ExcelAuditOptions,
     audit_metric_excel,
+    read_metric_excel_summary_options,
 )
 from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     GENERAL_SHEET,
@@ -219,6 +221,87 @@ class MetricExcelAuditServiceTest(unittest.TestCase):
                 for issue in result.issues
             )
         )
+
+    def test_summary_periods_are_used_when_offsets_are_not_explicit(self) -> None:
+        output_path = self.tmp_path / "summary_periods.xlsx"
+        self._write_expected_workbook(output_path, period_offsets=[1])
+
+        offsets, segment_mode, warnings = read_metric_excel_summary_options(output_path)
+        result = audit_metric_excel(
+            self.conn,
+            ExcelAuditOptions(
+                excel_path=output_path,
+                target_set="normal",
+                target_config_path=self.target_config_path,
+                output_dir=self.tmp_path / "reports",
+                period_scopes=("annual",),
+            ),
+        )
+
+        self.assertEqual(offsets, (1,))
+        self.assertEqual(segment_mode, "none")
+        self.assertEqual(warnings, [])
+        self.assertFalse(any(issue.period_label == PERIOD_LABEL_BY_OFFSET[0] for issue in result.issues))
+
+    def test_summary_segment_mode_is_used_when_not_explicit(self) -> None:
+        output_path = self.tmp_path / "summary_segment.xlsx"
+        row = MetricExcelRow(
+            sheet_name=GENERAL_SHEET,
+            security_code="1111",
+            company_name="A\u793e",
+            industry_33="\u5316\u5b66",
+            market="Prime",
+            period_scope="annual",
+            current_period_end="2026-03-31",
+            metric_base="NetSales",
+            metric_label="4Q \u58f2\u4e0a\u9ad8 <\u5408\u8a08>",
+            periods_by_offset={1: "\u901a\u671f 2025-03"},
+            values_by_offset={1: 80.0},
+            units_by_offset={1: "\u767e\u4e07\u5186"},
+            ratios_by_offset={1: None},
+            row_kind=ROW_KIND_DETAIL,
+            segment_kind="\u5408\u8a08",
+            segment_name="\u5408\u8a08",
+        )
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            period_offsets=[1],
+            segment_mode="all",
+        )
+        write_metric_excel(
+            rows=[row],
+            condition=condition,
+            output_path=output_path,
+            db_path=":memory:",
+            errors=[],
+            warnings=[],
+            target_companies=1,
+        )
+        captured = {}
+
+        def fake_build_metric_excel_rows(conn, condition, **kwargs):
+            captured["period_offsets"] = tuple(condition.period_offsets)
+            captured["segment_mode"] = condition.segment_mode
+            return [row], [], [], [], 1
+
+        with patch(
+            "edinet_monitor.services.metric_excel_audit_service.build_metric_excel_rows",
+            fake_build_metric_excel_rows,
+        ):
+            result = audit_metric_excel(
+                self.conn,
+                ExcelAuditOptions(
+                    excel_path=output_path,
+                    target_set="normal",
+                    target_config_path=self.target_config_path,
+                    output_dir=self.tmp_path / "reports",
+                    period_scopes=("annual",),
+                ),
+            )
+
+        self.assertEqual(captured["period_offsets"], (1,))
+        self.assertEqual(captured["segment_mode"], "all")
+        self.assertEqual(result.issue_count, 0)
 
     def test_blank_value_cell_does_not_create_value_mismatch(self) -> None:
         output_path = self.tmp_path / "blank_value.xlsx"

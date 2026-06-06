@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import math
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 
@@ -19,6 +20,7 @@ from edinet_monitor.services.metric_excel_export_service import (
     GENERAL_SHEET,
     HALF_DISABLED_BASES,
     MARKET_METRIC_BASES,
+    OFFSET_BY_PERIOD_LABEL,
     PERIOD_LABEL_BY_OFFSET,
     ROW_KIND_AVERAGE,
     ROW_KIND_MEDIAN,
@@ -28,6 +30,7 @@ from edinet_monitor.services.metric_excel_export_service import (
     _build_label_to_base_map,
     _decision_label_for_row,
     _normalize_text,
+    _parse_segment_mode,
     build_metric_excel_rows,
 )
 
@@ -113,8 +116,9 @@ class ExcelAuditOptions:
     target_set: str = "normal"
     target_config_path: Path = DEFAULT_TARGET_CONFIG_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    period_offsets: tuple[int, ...] = tuple(range(10, -1, -1))
+    period_offsets: tuple[int, ...] | None = None
     period_scopes: tuple[str, ...] = tuple(ALL_PERIOD_SCOPES)
+    segment_mode: str | None = None
     value_tolerance: float = 1e-6
 
 
@@ -384,6 +388,66 @@ def _period_columns(headers: dict[str, int]) -> dict[int, dict[str, int]]:
         if mapping:
             columns[offset] = mapping
     return columns
+
+
+def _parse_summary_period_offsets(value: Any) -> tuple[tuple[int, ...], list[str]]:
+    text = _clean_text(value)
+    if not text or text.upper() == "ALL":
+        return tuple(range(10, -1, -1)), []
+    offsets: list[int] = []
+    warnings: list[str] = []
+    seen: set[int] = set()
+    for part in re.split(r"[,、\n\r]+", text):
+        label = part.strip()
+        if not label:
+            continue
+        if label not in OFFSET_BY_PERIOD_LABEL:
+            warnings.append(f"unsupported_summary_period={label}")
+            continue
+        offset = OFFSET_BY_PERIOD_LABEL[label]
+        if offset not in seen:
+            offsets.append(offset)
+            seen.add(offset)
+    if not offsets:
+        warnings.append("summary_periods_empty_after_parse")
+        return tuple(range(10, -1, -1)), warnings
+    return tuple(offsets), warnings
+
+
+def _parse_summary_segment_mode(value: Any) -> tuple[str | None, list[str]]:
+    text = _clean_text(value)
+    if not text:
+        return None, []
+    try:
+        return _parse_segment_mode(text), []
+    except ValueError:
+        return None, [f"unsupported_summary_segment_mode={text}"]
+
+
+def read_metric_excel_summary_options(
+    excel_path: str | Path,
+) -> tuple[tuple[int, ...], str | None, list[str]]:
+    workbook = load_workbook(excel_path, data_only=True, read_only=True)
+    warnings: list[str] = []
+    try:
+        if SUMMARY_SHEET not in workbook.sheetnames:
+            return tuple(range(10, -1, -1)), None, ["summary_sheet_not_found"]
+        ws = workbook[SUMMARY_SHEET]
+        summary: dict[str, Any] = {}
+        for row in ws.iter_rows(values_only=True):
+            if not row:
+                continue
+            key = _clean_text(row[0] if len(row) > 0 else "")
+            if not key:
+                continue
+            summary[key] = row[1] if len(row) > 1 else ""
+        period_offsets, period_warnings = _parse_summary_period_offsets(summary.get("periods"))
+        segment_mode, segment_warnings = _parse_summary_segment_mode(summary.get("segment_mode"))
+        warnings.extend(period_warnings)
+        warnings.extend(segment_warnings)
+        return period_offsets, segment_mode, warnings
+    finally:
+        workbook.close()
 
 
 def _value_at(values: tuple[Any, ...], index: int | None) -> Any:
@@ -909,10 +973,16 @@ def _build_output_paths(output_dir: Path, generated_at: str) -> tuple[str, Path,
 def audit_metric_excel(conn: sqlite3.Connection, options: ExcelAuditOptions) -> ExcelAuditResult:
     targets = load_excel_audit_targets(options.target_config_path, target_set=options.target_set)
     target_codes = {target.security_code for target in targets}
+    summary_period_offsets, summary_segment_mode, summary_warnings = read_metric_excel_summary_options(
+        options.excel_path
+    )
+    period_offsets = options.period_offsets if options.period_offsets is not None else summary_period_offsets
+    segment_mode = options.segment_mode if options.segment_mode is not None else (summary_segment_mode or "none")
     condition = MetricExcelCondition(
         security_codes=sorted(target_codes),
         period_scopes=list(options.period_scopes),
-        period_offsets=list(options.period_offsets),
+        period_offsets=list(period_offsets),
+        segment_mode=segment_mode,
     )
     expected_rows, errors, build_warnings, _preview, _target_companies = build_metric_excel_rows(
         conn,
@@ -925,7 +995,7 @@ def audit_metric_excel(conn: sqlite3.Connection, options: ExcelAuditOptions) -> 
     issues = _compare_rows(
         expected_rows=expected_rows,
         actual_rows=actual_rows,
-        period_offsets=options.period_offsets,
+        period_offsets=period_offsets,
         tolerance=options.value_tolerance,
     )
     generated_at = datetime.now().isoformat(timespec="seconds")
@@ -942,7 +1012,7 @@ def audit_metric_excel(conn: sqlite3.Connection, options: ExcelAuditOptions) -> 
         actual_rows=len(actual_rows),
         issues=issues,
         errors=list(errors),
-        warnings=list(build_warnings) + read_warnings,
+        warnings=summary_warnings + list(build_warnings) + read_warnings,
         counts_by_severity=_counts_by_severity(issues),
     )
     _write_json_report(result)
