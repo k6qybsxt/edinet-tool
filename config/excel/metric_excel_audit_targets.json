@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "description": "Representative security-code sets for metric Excel audit.",
+  "target_sets": {
+    "normal": [
+      {
+        "security_code": "1928",
+        "features": ["jgaap", "annual", "half", "jquants", "market"]
+      },
+      {
+        "security_code": "2914",
+        "features": ["ifrs", "annual", "half", "jquants", "market"]
+      },
+      {
+        "security_code": "5889",
+        "features": ["ifrs", "short_history", "jquants", "market"]
+      },
+      {
+        "security_code": "1844",
+        "features": ["jgaap", "legacy_half_043000", "half", "jquants"]
+      },
+      {
+        "security_code": "3636",
+        "features": ["jgaap", "new_half_043A00", "half", "jquants"]
+      },
+      {
+        "security_code": "6454",
+        "features": ["jgaap", "jquants_quarter", "market"]
+      },
+      {
+        "security_code": "3391",
+        "features": ["jgaap", "retail", "feb_fiscal_year", "jquants"]
+      },
+      {
+        "security_code": "8601",
+        "features": ["securities_industry", "industry_labels", "roic_exclusion"]
+      },
+      {
+        "security_code": "9501",
+        "features": ["electric_gas", "special_industry_pattern"]
+      },
+      {
+        "security_code": "9743",
+        "features": ["jgaap", "jan_fiscal_year", "jquants", "market"]
+      }
+    ],
+    "known_issue": [
+      {
+        "security_code": "8209",
+        "features": ["equity_ratio_anomaly", "outstanding_shares_anomaly"]
+      },
+      {
+        "security_code": "2978",
+        "features": ["outstanding_shares_non_positive"]
+      },
+      {
+        "security_code": "6195",
+        "features": ["equity_ratio_anomaly", "outstanding_shares_anomaly"]
+      },
+      {
+        "security_code": "7203",
+        "features": ["ifrs", "large_cap", "forecast"]
+      },
+      {
+        "security_code": "8267",
+        "features": ["forecast_profit_missing_warning"]
+      },
+      {
+        "security_code": "9984",
+        "features": ["ifrs", "rapid_yoy_change"]
+      }
+    ]
+  }
+}
