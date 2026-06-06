@@ -17,6 +17,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from edinet_monitor.cli import normalize_metric_excel_golden_master as cli  # noqa: E402
+from edinet_monitor.cli import compare_metric_excel_golden_master as compare_cli  # noqa: E402
+from edinet_monitor.services.metric_excel_golden_master_service import (  # noqa: E402
+    write_metric_excel_normalized_json,
+)
 from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     GENERAL_SHEET,
     MetricExcelCondition,
@@ -86,6 +90,46 @@ class NormalizeMetricExcelGoldenMasterCliTest(unittest.TestCase):
             self.assertIn("sheet_count=4", output)
             self.assertIn("row_count=1", output)
             self.assertTrue((output_dir / "input.normalized.json").exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_compare_cli_writes_diff_reports(self) -> None:
+        tmp_path = TMP_ROOT / uuid.uuid4().hex
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        workbook_path = tmp_path / "input.xlsx"
+        output_dir = tmp_path / "diff"
+        _write_workbook(workbook_path)
+        golden = write_metric_excel_normalized_json(
+            workbook_path,
+            output_path=tmp_path / "golden.json",
+        )
+        try:
+            stdout = io.StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "compare_metric_excel_golden_master",
+                        "--golden-json",
+                        str(golden.output_path),
+                        "--actual-excel",
+                        str(workbook_path),
+                        "--output-dir",
+                        str(output_dir),
+                    ],
+                ),
+                redirect_stdout(stdout),
+            ):
+                compare_cli.main()
+
+            output = stdout.getvalue()
+            self.assertIn("comparison_id=", output)
+            self.assertIn("issue_count=0", output)
+            self.assertIn("critical=0", output)
+            self.assertIn("warning=0", output)
+            self.assertEqual(len(list(output_dir.glob("*.json"))), 2)
+            self.assertEqual(len(list(output_dir.glob("*.xlsx"))), 1)
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
