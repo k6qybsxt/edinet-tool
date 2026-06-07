@@ -440,6 +440,36 @@ jquants schema fins.summary
 jquants schema eq.daily
 ```
 
+仕様変更レビューCLI:
+
+```powershell
+.\.venv\Scripts\python.exe -m edinet_monitor.cli.review_jquants_spec_change `
+  --endpoints fins.summary,eq.daily `
+  --date 2026-05-07 `
+  --code 72030 `
+  --baseline-dir config\jquants\schema_baseline `
+  --output-dir logs\operation\jquants_spec_review
+```
+
+- 公式 `jquants` CLIのschemaと代表データを取得し、schema baselineおよびDB rawと比較する。
+- DB更新、再計算、`db_reflection_items` 登録は行わない。
+- baseline更新は、差分が正常な仕様変更だと確認した後に `--update-baseline` を明示して実行する。
+- `fins.details` はStandard運用では対象外のため、このCLIでも対象外として扱う。
+
+J-Quants仕様変更確認を依頼する定型プロンプト:
+
+```text
+J-Quants仕様変更の有無を確認してください。
+対象: fins.summary, eq.daily
+代表日: YYYY-MM-DD
+代表銘柄: 72030
+実行内容:
+- review_jquants_spec_change を実行
+- schema差分、公式CLIとDB raw差分を要約
+- critical/warningの有無を明示
+- mapper修正やDB再構築が必要なら、実行せず db_reflection_items 登録案を提示
+```
+
 J-Quants秘密情報:
 
 - `JQUANTS_API_KEY` の値はGit管理ファイル、ログ、READMEへ書かない。

@@ -1,0 +1,22 @@
+{
+  "endpoint": "eq.daily",
+  "baseline_source": "local_compare_fields",
+  "generated_at": "2026-06-07T00:00:00",
+  "notes": "Initial baseline uses fields currently compared against official jquants CLI output. Refresh with review_jquants_spec_change --update-baseline after confirming official schema is normal.",
+  "fields": [
+    {"name": "AdjC", "type": ""},
+    {"name": "AdjFactor", "type": ""},
+    {"name": "AdjH", "type": ""},
+    {"name": "AdjL", "type": ""},
+    {"name": "AdjO", "type": ""},
+    {"name": "AdjVo", "type": ""},
+    {"name": "C", "type": ""},
+    {"name": "Code", "type": ""},
+    {"name": "Date", "type": ""},
+    {"name": "H", "type": ""},
+    {"name": "L", "type": ""},
+    {"name": "O", "type": ""},
+    {"name": "Va", "type": ""},
+    {"name": "Vo", "type": ""}
+  ]
+}

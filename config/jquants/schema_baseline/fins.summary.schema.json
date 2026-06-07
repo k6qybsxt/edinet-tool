@@ -1,0 +1,27 @@
+{
+  "endpoint": "fins.summary",
+  "baseline_source": "local_compare_fields",
+  "generated_at": "2026-06-07T00:00:00",
+  "notes": "Initial baseline uses fields currently compared against official jquants CLI output. Refresh with review_jquants_spec_change --update-baseline after confirming official schema is normal.",
+  "fields": [
+    {"name": "BPS", "type": ""},
+    {"name": "CFF", "type": ""},
+    {"name": "CFI", "type": ""},
+    {"name": "CFO", "type": ""},
+    {"name": "CashEq", "type": ""},
+    {"name": "Code", "type": ""},
+    {"name": "DiscDate", "type": ""},
+    {"name": "DiscNo", "type": ""},
+    {"name": "DiscTime", "type": ""},
+    {"name": "DocType", "type": ""},
+    {"name": "EPS", "type": ""},
+    {"name": "Eq", "type": ""},
+    {"name": "NP", "type": ""},
+    {"name": "OP", "type": ""},
+    {"name": "OdP", "type": ""},
+    {"name": "Sales", "type": ""},
+    {"name": "ShOutFY", "type": ""},
+    {"name": "TA", "type": ""},
+    {"name": "TrShFY", "type": ""}
+  ]
+}
