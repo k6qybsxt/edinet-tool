@@ -96,6 +96,49 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "EquityRatioCurrent")
         self.assertEqual(normalized["value_num"], 0.425)
 
+    def test_equity_ratio_ratio_tag_is_kept_as_ratio(self) -> None:
+        row = build_raw_fact(
+            tag_name="EquityToAssetRatioSummaryOfBusinessResults",
+            value_text="0.43",
+            context_ref="CurrentYearInstant_ConsolidatedMember",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2025-03-31",
+            unit_ref="pure",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="9501",
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["metric_key"], "EquityRatioCurrent")
+        self.assertEqual(normalized["value_num"], 0.43)
+
+    def test_equity_ratio_tag_is_rejected_when_still_out_of_range_after_percent_conversion(self) -> None:
+        row = build_raw_fact(
+            tag_name="EquityToAssetRatioIFRSSummaryOfBusinessResults",
+            value_text="1357.63",
+            context_ref="CurrentYearInstant_ConsolidatedMember",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2025-03-31",
+            unit_ref="pure",
+        )
+
+        normalized = normalize_raw_fact_row(
+            row,
+            edinet_code="E00000",
+            security_code="6758",
+        )
+
+        self.assertIsNone(normalized)
+
     def test_usgaap_parent_equity_summary_maps_to_net_assets(self) -> None:
         row = build_raw_fact(
             tag_name="EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults",

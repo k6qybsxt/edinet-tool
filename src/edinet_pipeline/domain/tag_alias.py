@@ -139,6 +139,7 @@ TAG_ALIAS = {
     "OrdinaryIncomeLossSummaryOfBusinessResults": "OrdinaryIncome",
     "OrdinaryIncome": "OrdinaryIncome",
     "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults": "ProfitBeforeTax",
+    "ProfitLossBeforeTaxUSGAAPSummaryOfBusinessResults": "ProfitBeforeTax",
     "ProfitBeforeIncomeTaxesFromContinuingIFRSKeyFinancialData": "ProfitBeforeTax",
     "ProfitBeforeTax": "ProfitBeforeTax",
     "ProfitBeforeTaxIFRS": "ProfitBeforeTax",
@@ -162,6 +163,7 @@ TAG_ALIAS = {
     "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResultsIFRS": "ProfitLoss",
     "ProfitLossIFRSSummaryOfBusinessResults": "ProfitLoss",
     "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": "ProfitLoss",
+    "NetIncomeLossAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults": "ProfitLoss",
 
 
     # 営業CF
@@ -189,6 +191,7 @@ TAG_ALIAS = {
     # 資産
     "TotalAssetsSummaryOfBusinessResults": "TotalAssets",
     "TotalAssetsIFRSSummaryOfBusinessResults": "TotalAssets",
+    "TotalAssetsUSGAAPSummaryOfBusinessResults": "TotalAssets",
     "AssetsIFRS": "TotalAssets",
     "TotalAssets": "TotalAssets",
     "TotalAssetsIFRS": "TotalAssets",

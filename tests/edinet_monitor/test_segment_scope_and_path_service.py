@@ -106,6 +106,10 @@ class SegmentScopeAndPathServiceTest(unittest.TestCase):
         specs = parse_period_rank_specs("latest,5,10")
         self.assertEqual([(spec.label, spec.rank) for spec in specs], [("latest", 1), ("5_prior", 6), ("10_prior", 11)])
 
+    def test_parse_period_rank_specs_maps_recent3(self) -> None:
+        specs = parse_period_rank_specs("recent3")
+        self.assertEqual([(spec.label, spec.rank) for spec in specs], [("latest", 1), ("1_prior", 2), ("2_prior", 3)])
+
     def test_fetch_segment_scope_filings_returns_latest_fifth_and_tenth_prior(self) -> None:
         rows = fetch_segment_scope_filings(
             self.conn,
@@ -118,6 +122,36 @@ class SegmentScopeAndPathServiceTest(unittest.TestCase):
         self.assertEqual(by_label["latest"]["doc_id"], "DOC01")
         self.assertEqual(by_label["5_prior"]["doc_id"], "DOC06")
         self.assertEqual(by_label["10_prior"]["doc_id"], "DOC11")
+
+    def test_fetch_segment_scope_filings_recent3_groups_half_form_types(self) -> None:
+        half_filings = [
+            ("HALF01", "E00001", "11110", "043A00", "2029-09-30", "2029-11-14", "", "", "", "downloaded", "derived_metrics_saved"),
+            ("HALF02", "E00001", "11110", "043000", "2028-09-30", "2028-11-14", "", "", "", "downloaded", "derived_metrics_saved"),
+            ("HALF03", "E00001", "11110", "043A00", "2027-09-30", "2027-11-14", "", "", "", "downloaded", "derived_metrics_saved"),
+            ("HALF04", "E00001", "11110", "043000", "2026-09-30", "2026-11-14", "", "", "", "downloaded", "derived_metrics_saved"),
+        ]
+        self.conn.executemany(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                zip_path, xbrl_path, xbrl_member_name, download_status, parse_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            half_filings,
+        )
+
+        rows = fetch_segment_scope_filings(
+            self.conn,
+            form_codes=["043A00", "043000"],
+            period_ranks="recent3",
+            codes=["1111"],
+        )
+
+        by_label = {row["period_rank_label"]: row for row in rows}
+        self.assertEqual([row["doc_id"] for row in rows], ["HALF01", "HALF02", "HALF03"])
+        self.assertEqual(by_label["latest"]["form_type"], "043A00")
+        self.assertEqual(by_label["1_prior"]["form_type"], "043000")
+        self.assertEqual(by_label["2_prior"]["doc_id"], "HALF03")
 
     def test_resolve_existing_path_uses_replaced_storage_root(self) -> None:
         root = TMP_ROOT / "edinet_monitor"

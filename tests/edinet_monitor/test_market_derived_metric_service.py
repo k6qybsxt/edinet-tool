@@ -345,6 +345,30 @@ class MarketDerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_base["PBR"]["value_num"], 1.2)
         self.assertEqual(by_base["StockPriceGrowthRate"]["value_num"], 2.0)
 
+    def test_old_second_quarter_edinet_filing_builds_market_metrics(self) -> None:
+        _insert_filing(self.conn, "DOC_043000", "2025-09-30", form_type="043000")
+        for base, value in (
+            ("EPS", 100),
+            ("BPS", 1000),
+            ("OutstandingShares", 1_000_000),
+        ):
+            _insert_derived(self.conn, "DOC_043000", base, value)
+        _insert_quote(self.conn, "1111", "2025-09-30", 1200)
+
+        rows, missing_quotes, warnings = build_market_derived_metrics(
+            self.conn,
+            period_scopes={"quarter"},
+        )
+
+        by_base = {row["metric_base"]: row for row in rows if row["source_id"] == "DOC_043000"}
+        self.assertEqual(missing_quotes, 0)
+        self.assertEqual(warnings, [])
+        self.assertEqual(by_base["StockPrice"]["value_num"], 1200)
+        self.assertEqual(by_base["MarketCapitalization"]["value_num"], 1_200_000_000)
+        self.assertEqual(by_base["StockPrice"]["period_scope"], "quarter")
+        self.assertEqual(by_base["StockPrice"]["period_key"], "actual:2Q")
+        self.assertEqual(by_base["StockPrice"]["quarter_type"], "2Q")
+
     def test_jquants_quarter_excludes_pcfr_and_builds_theoretical_metrics(self) -> None:
         for disclosure, fiscal_year, period_end, ordinary_income in (
             ("DISC2026Q1", 2026, "2026-06-30", 1_000_000),

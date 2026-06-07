@@ -387,6 +387,92 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         self.assertNotIn((2026, "3Q", "FCF"), rows)
         self.assertNotIn((2026, "4Q", "FCF"), rows)
 
+    def test_profit_before_tax_uses_ordinary_income_equivalent_when_missing(self) -> None:
+        _insert_jquants_metric(
+            self.conn,
+            disclosure_number="fy2026q1ordinary",
+            fiscal_year=2026,
+            quarter_type="1Q",
+            period_end="2025-06-30",
+            value=100.0,
+            metric_base="OrdinaryIncome",
+            metric_group="profitability",
+            source_field="OrdinaryIncome",
+        )
+        _insert_jquants_metric(
+            self.conn,
+            disclosure_number="fy2026q2ordinary",
+            fiscal_year=2026,
+            quarter_type="2Q",
+            period_end="2025-09-30",
+            value=220.0,
+            metric_base="OrdinaryIncome",
+            metric_group="profitability",
+            source_field="OrdinaryIncome",
+        )
+        _insert_jquants_metric(
+            self.conn,
+            disclosure_number="fy2026q3ordinary",
+            fiscal_year=2026,
+            quarter_type="3Q",
+            period_end="2025-12-31",
+            value=360.0,
+            metric_base="OrdinaryIncome",
+            metric_group="profitability",
+            source_field="OrdinaryIncome",
+        )
+
+        result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
+
+        rows = {
+            (row.fiscal_year, row.quarter_type, row.metric_base): row
+            for row in result.rows
+            if row.metric_base == "ProfitBeforeTax"
+        }
+        self.assertEqual(rows[(2026, "1Q", "ProfitBeforeTax")].value_num, 100.0)
+        self.assertEqual(rows[(2026, "3Q", "ProfitBeforeTax")].value_num, 140.0)
+        self.assertIn(
+            "derived:OrdinaryIncome_as_ProfitBeforeTax_equivalent",
+            rows[(2026, "1Q", "ProfitBeforeTax")].source_detail_json,
+        )
+
+    def test_direct_profit_before_tax_takes_precedence_over_ordinary_income(self) -> None:
+        _insert_jquants_metric(
+            self.conn,
+            disclosure_number="fy2026q1ordinary",
+            fiscal_year=2026,
+            quarter_type="1Q",
+            period_end="2025-06-30",
+            value=100.0,
+            metric_base="OrdinaryIncome",
+            metric_group="profitability",
+            source_field="OrdinaryIncome",
+        )
+        _insert_jquants_metric(
+            self.conn,
+            disclosure_number="fy2026q1pbt",
+            fiscal_year=2026,
+            quarter_type="1Q",
+            period_end="2025-06-30",
+            value=120.0,
+            metric_base="ProfitBeforeTax",
+            metric_group="profitability",
+            source_field="ProfitBeforeTax",
+        )
+
+        result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
+
+        rows = {
+            (row.fiscal_year, row.quarter_type, row.metric_base): row
+            for row in result.rows
+            if row.metric_base == "ProfitBeforeTax"
+        }
+        self.assertEqual(rows[(2026, "1Q", "ProfitBeforeTax")].value_num, 120.0)
+        self.assertNotIn(
+            "derived:OrdinaryIncome_as_ProfitBeforeTax_equivalent",
+            rows[(2026, "1Q", "ProfitBeforeTax")].source_detail_json,
+        )
+
     def test_apply_is_idempotent(self) -> None:
         _insert_jquants_metric(
             self.conn,

@@ -96,6 +96,7 @@ class TagAliasTest(unittest.TestCase):
             "ProfitBeforeTaxIFRS",
             "IncomeBeforeIncomeTaxes",
             "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults",
+            "ProfitLossBeforeTaxUSGAAPSummaryOfBusinessResults",
         ]
 
         for tag_name in cases:
@@ -128,13 +129,15 @@ class TagAliasTest(unittest.TestCase):
             with self.subTest(tag_name=tag_name):
                 self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
 
-    def test_usgaap_cashflow_tags_map_to_cashflow_metrics(self) -> None:
+    def test_usgaap_summary_tags_map_to_expected_metrics(self) -> None:
         cases = {
             "CashFlowsFromUsedInOperatingActivitiesUSGAAPSummaryOfBusinessResults": "OperatingCash",
             "CashFlowsFromUsedInInvestingActivitiesUSGAAPSummaryOfBusinessResults": "InvestmentCash",
             "CashFlowsFromUsedInFinancingActivitiesUSGAAPSummaryOfBusinessResults": "FinancingCash",
             "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults": "CashAndCashEquivalents",
             "EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults": "NetAssets",
+            "NetIncomeLossAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults": "ProfitLoss",
+            "TotalAssetsUSGAAPSummaryOfBusinessResults": "TotalAssets",
         }
 
         for tag_name, metric_name in cases.items():
