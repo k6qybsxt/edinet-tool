@@ -46,6 +46,16 @@ def parse_period_rank_specs(value: str | list[str] | tuple[str, ...] | None) -> 
         text = str(item or "").strip().lower()
         if not text:
             continue
+        if text in {"recent3", "latest3", "recent_3", "latest_3"}:
+            for spec in (
+                PeriodRankSpec("latest", 1),
+                PeriodRankSpec("1_prior", 2),
+                PeriodRankSpec("2_prior", 3),
+            ):
+                if spec.rank not in seen:
+                    specs.append(spec)
+                    seen.add(spec.rank)
+            continue
         if text in {"latest", "current", "当期", "最新"}:
             spec = PeriodRankSpec("latest", 1)
         elif text in {"5", "5期前", "5_prior", "prior5"}:

@@ -663,6 +663,8 @@ def normalize_raw_fact_row(
         value_num = value_num / 12.0
     if metric_base == "EquityRatio" and abs(value_num) > 1:
         value_num = value_num / 100.0
+        if abs(value_num) > 1:
+            return None
 
     consolidation = row.get("consolidation")
     if _is_forbidden_candidate(metric_base, tag_name, consolidation, industry_33=industry_33):

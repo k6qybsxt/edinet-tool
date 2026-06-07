@@ -1421,6 +1421,13 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(row["period_scope"], "quarter")
         self.assertEqual(row["period_key"], "actual:2Q")
         self.assertEqual(row["quarter_type"], "2Q")
+        self.assertAlmostEqual(by_key["AssetsPerShareCurrent"]["value_num"], 1_500_000 / 950_000)
+        self.assertAlmostEqual(
+            by_key["LiabilitiesPerShareCurrent"]["value_num"],
+            (1_500_000 - 700_000) / 950_000,
+        )
+        self.assertEqual(by_key["AssetsPerShareCurrent"]["period_key"], "actual:2Q")
+        self.assertEqual(by_key["LiabilitiesPerShareCurrent"]["quarter_type"], "2Q")
 
     def test_growth_rate_uses_null_when_prior_is_zero_or_negative(self) -> None:
         normalized_rows = [

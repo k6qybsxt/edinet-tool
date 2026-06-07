@@ -394,7 +394,7 @@ def _fetch_edinet_cumulative_values(
     annual_periods = _annual_periods_by_code(conn)
     placeholders = ",".join("?" for _ in security_codes)
     where = [
-        "f.form_type IN ('030000', '043A00')",
+        "f.form_type IN ('030000', '043A00', '043000')",
         "f.parse_status = 'derived_metrics_saved'",
         f"(substr(coalesce(im.security_code, ''), 1, 4) IN ({placeholders}) OR coalesce(f.security_code, '') IN ({placeholders}))",
     ]
@@ -488,6 +488,11 @@ def _derive_cumulative_values(cumulative: dict[tuple[str, int, str], dict[str, A
     for item in cumulative.values():
         values = item.get("values", {})
         sources = item.get("sources", {})
+        if "ProfitBeforeTax" not in values:
+            ordinary_income = _to_float(values.get("OrdinaryIncome"))
+            if ordinary_income is not None:
+                values["ProfitBeforeTax"] = ordinary_income
+                sources["ProfitBeforeTax"] = "derived:OrdinaryIncome_as_ProfitBeforeTax_equivalent"
         if "FCF" not in values:
             operating_cash = _to_float(values.get("OperatingCash"))
             investment_cash = _to_float(values.get("InvestmentCash"))

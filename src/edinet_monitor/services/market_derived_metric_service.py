@@ -298,7 +298,7 @@ def _fetch_edinet_sources(
     codes: list[str],
 ) -> list[MarketSourcePeriod]:
     where = [
-        "f.form_type IN ('030000', '043A00')",
+        "f.form_type IN ('030000', '043A00', '043000')",
         "f.parse_status = 'derived_metrics_saved'",
         "COALESCE(im.is_listed, 1) = 1",
         "(im.exchange = 'TSE' OR im.exchange IS NULL OR im.exchange = '')",
@@ -336,7 +336,7 @@ def _fetch_edinet_sources(
     sources: list[MarketSourcePeriod] = []
     for row in rows:
         form_type = str(row["form_type"] or "")
-        period_scope = "quarter" if form_type == "043A00" else "annual"
+        period_scope = "quarter" if form_type in {"043A00", "043000"} else "annual"
         period_key = "actual:2Q" if period_scope == "quarter" else "annual:FY"
         quarter_type = "2Q" if period_scope == "quarter" else None
         period_end = str(row["period_end"] or "")
