@@ -29,6 +29,8 @@ OBSOLETE_HALF_DERIVED_METRIC_KEYS = [
     "TheoreticalSharePriceGrowthRate10YearCurrent",
     "AssetsPerShareCurrent",
     "LiabilitiesPerShareCurrent",
+    "InterestBearingDebtCurrent",
+    "ROICCurrent",
 ]
 
 OBSOLETE_HALF_NORMALIZED_BASES = (
@@ -187,18 +189,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Count or delete obsolete 2Q metrics from normalized, derived, and market tables."
     )
+    parser.add_argument("--db-path", default=str(DB_PATH))
     parser.add_argument("--apply", action="store_true", help="Delete rows. Omit for dry-run.")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    conn = get_connection()
+    conn = get_connection(args.db_path)
     conn.row_factory = sqlite3.Row
     try:
         rows = count_obsolete_half_metrics(conn)
         total = sum(int(row["row_count"]) for row in rows)
-        print(f"db_path={DB_PATH}")
+        print(f"db_path={args.db_path}")
         print(f"mode={'apply' if args.apply else 'dry_run'}")
         print(f"target_rows={total}")
         for row in rows:

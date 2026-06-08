@@ -16,6 +16,9 @@ SEGMENT_MEMBER_SUFFIXES = (
     "BusinessMember",
     "Member",
 )
+SEGMENT_KEY_ALIASES = {
+    "electronicsproductsandsolutions": "entertainmenttechnologyandservices",
+}
 
 
 @dataclass(frozen=True)
@@ -58,8 +61,9 @@ def canonical_segment_key(member_qname: str, segment_name: str = "") -> str:
 
     key = _normalize_key_text(local)
     if key:
-        return key
-    return _normalize_key_text(segment_name or member)
+        return SEGMENT_KEY_ALIASES.get(key, key)
+    fallback_key = _normalize_key_text(segment_name or member)
+    return SEGMENT_KEY_ALIASES.get(fallback_key, fallback_key)
 
 
 def _has_japanese(text: str) -> bool:

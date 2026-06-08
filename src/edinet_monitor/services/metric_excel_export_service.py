@@ -243,6 +243,8 @@ HALF_DISABLED_BASES = {
     "AverageAge",
     "AverageLengthOfService",
     "AverageAnnualSalary",
+    "InterestBearingDebt",
+    "ROIC",
 }
 HALF_PREFIX = "\u534a\u671f "
 HALF_YOY_PREFIX = "\u534a\u671f\u524d\u5e74\u6bd4 "
@@ -251,12 +253,16 @@ ROW_KIND_DETAIL = "\u660e\u7d30"
 ROW_KIND_CHANGE_RATE = "\u5897\u6e1b\u7387"
 ROW_KIND_AVERAGE = "\u5e73\u5747\u5024"
 ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
+VALUE_KIND_BASE = "\u57fa\u6e96\u5024"
+VALUE_KIND_CALCULATED = "\u8a08\u7b97\u5024"
 DETAIL_ROW_KINDS = {ROW_KIND_DETAIL, ROW_KIND_CHANGE_RATE}
 SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES) | {"ProfitBeforeTax", "SegmentProfit"}
 QUARTER_SUPPRESSED_EXCEL_BASES = {
     "OutstandingSharesGrowthRate",
     "AssetsPerShare",
     "LiabilitiesPerShare",
+    "InterestBearingDebt",
+    "ROIC",
 }
 QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER = {
     "1Q": {
@@ -442,6 +448,20 @@ GROWTH_RATIO_BASES = {
     "InvestmentCashToNetSalesRatio",
     "InvestmentCashToOperatingCashRatio",
 }
+
+CALCULATED_VALUE_KIND_BASES = (
+    GROWTH_RATIO_BASES
+    | PERCENT_VALUE_BASES
+    | RATIO_VALUE_BASES
+    | PER_SHARE_BASES
+    | {
+        "EstimatedNetIncome",
+        "EPS",
+        "BPS",
+        "InterestBearingDebt",
+        "MarketCapitalization",
+    }
+)
 
 INDUSTRY_AGGREGATE_VALUE_BASES = set(INDUSTRY_AGGREGATE_ROW_BASES)
 
@@ -1714,6 +1734,44 @@ def _decision_label_for_row(row: MetricExcelRow) -> str:
     return _period_scope_label(row.period_scope)
 
 
+def _quarter_label_from_period_scope(period_scope: str) -> str:
+    if period_scope == "annual":
+        return "4Q"
+    if period_scope in {"half", "quarter"}:
+        return "2Q"
+    for prefix in ("quarter:", "quarter_standalone:"):
+        if period_scope.startswith(prefix):
+            quarter = period_scope[len(prefix):]
+            if quarter in {"1Q", "2Q", "3Q", "4Q"}:
+                return quarter
+    return ""
+
+
+def decision_label_for_excel(row: MetricExcelRow) -> str:
+    if row.segment_kind:
+        return _segment_decision_label(row.segment_kind)
+    if row.period_scope.startswith("forecast"):
+        return "\u4e88\u60f3"
+    quarter_label = _quarter_label_from_period_scope(row.period_scope)
+    if quarter_label:
+        return quarter_label
+    return _period_scope_label(row.period_scope)
+
+
+def value_kind_label_for_excel(row: MetricExcelRow) -> str:
+    if row.row_kind in {ROW_KIND_AVERAGE, ROW_KIND_MEDIAN}:
+        return row.row_kind
+    if row.segment_kind or row.period_scope.startswith("forecast"):
+        return VALUE_KIND_BASE
+    if row.row_kind == ROW_KIND_CHANGE_RATE:
+        return VALUE_KIND_CALCULATED
+    if row.period_scope.startswith("quarter_standalone"):
+        return VALUE_KIND_CALCULATED
+    if row.metric_base in CALCULATED_VALUE_KIND_BASES:
+        return VALUE_KIND_CALCULATED
+    return VALUE_KIND_BASE
+
+
 def _row_kind_for_metric_base(metric_base: str) -> str:
     if metric_base in CHANGE_RATE_ROW_KIND_BASES:
         return ROW_KIND_CHANGE_RATE
@@ -2442,7 +2500,7 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
             "company_name": row.company_name,
             "industry_33": row.industry_33,
             "market": row.market,
-            "period_scope": _decision_label_for_row(row),
+            "period_scope": decision_label_for_excel(row),
             "metric": row.metric_label,
         }
         if row.segment_kind or row.segment_name:
@@ -4368,7 +4426,7 @@ def _write_metric_sheet(
     base_headers.extend(
         [
         "\u6c7a\u7b97\u7a2e\u5225",
-        "\u884c\u7a2e\u5225",
+        "\u5024\u7a2e\u5225",
         "\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f",
         "\u6307\u6a19",
         ]
@@ -4434,8 +4492,8 @@ def _write_metric_sheet(
             values.extend([row.segment_kind, row.segment_name])
         values.extend(
             [
-            _decision_label_for_row(row),
-            row.row_kind,
+            decision_label_for_excel(row),
+            value_kind_label_for_excel(row),
             row.current_period_end,
             row.metric_label,
             ]

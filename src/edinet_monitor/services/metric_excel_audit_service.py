@@ -16,6 +16,7 @@ from edinet_monitor.config.settings import OPERATION_LOG_ROOT, PROJECT_ROOT
 from edinet_monitor.services.jquants.mapper import normalize_security_code
 from edinet_monitor.services.metric_excel_export_service import (
     ALL_PERIOD_SCOPES,
+    CALCULATED_VALUE_KIND_BASES,
     CONDITION_SHEET,
     GENERAL_SHEET,
     HALF_DISABLED_BASES,
@@ -23,15 +24,20 @@ from edinet_monitor.services.metric_excel_export_service import (
     OFFSET_BY_PERIOD_LABEL,
     PERIOD_LABEL_BY_OFFSET,
     ROW_KIND_AVERAGE,
+    ROW_KIND_CHANGE_RATE,
+    ROW_KIND_DETAIL,
     ROW_KIND_MEDIAN,
     SUMMARY_SHEET,
+    VALUE_KIND_BASE,
+    VALUE_KIND_CALCULATED,
     MetricExcelCondition,
     MetricExcelRow,
     _build_label_to_base_map,
-    _decision_label_for_row,
     _normalize_text,
     _parse_segment_mode,
     build_metric_excel_rows,
+    decision_label_for_excel,
+    value_kind_label_for_excel,
 )
 
 
@@ -45,6 +51,7 @@ HEADER_INDUSTRY = "\u696d\u7a2e"
 HEADER_MARKET = "\u5e02\u5834\u533a\u5206"
 HEADER_DECISION = "\u6c7a\u7b97\u7a2e\u5225"
 HEADER_ROW_KIND = "\u884c\u7a2e\u5225"
+HEADER_VALUE_KIND = "\u5024\u7a2e\u5225"
 HEADER_CURRENT_PERIOD_END = "\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f"
 HEADER_METRIC = "\u6307\u6a19"
 PERIOD_VALUE_SUFFIX = "\u6570\u5024"
@@ -56,6 +63,8 @@ DECISION_ANNUAL = "\u901a\u671f"
 DECISION_QUARTER = "\u56db\u534a\u671f"
 DECISION_QUARTER_STANDALONE = "\u56db\u534a\u671f\u5358\u72ec"
 DECISION_FORECAST = "\u4e88\u60f3"
+QUARTER_DECISION_LABELS = {"1Q", "2Q", "3Q", DECISION_QUARTER, DECISION_QUARTER_STANDALONE}
+HALF_DECISION_LABELS = {"2Q", DECISION_QUARTER}
 
 
 @dataclass(frozen=True)
@@ -251,8 +260,8 @@ def _expected_key(row: MetricExcelRow) -> _AuditRowKey:
     return _AuditRowKey(
         sheet_name=row.sheet_name,
         security_code=_normalized_code(row.security_code),
-        decision_label=_decision_label_for_row(row),
-        row_kind=_clean_text(row.row_kind),
+        decision_label=decision_label_for_excel(row),
+        row_kind=value_kind_label_for_excel(row),
         current_period_end=_clean_text(row.current_period_end),
         metric_label=_normalize_text(row.metric_label),
     )
@@ -326,10 +335,10 @@ def _issue_for_expected(
         security_code=_normalized_code(row.security_code),
         company_name=row.company_name,
         sheet_name=row.sheet_name,
-        period_scope=row.period_scope,
+        period_scope=decision_label_for_excel(row),
         metric_base=row.metric_base,
         metric_label=row.metric_label,
-        row_kind=row.row_kind,
+        row_kind=value_kind_label_for_excel(row),
         period_label=period_label,
         expected_value=expected_value,
         actual_value=actual_value,
@@ -368,6 +377,47 @@ def _issue_for_actual(
 
 def _header_map(header_row: tuple[Any, ...]) -> dict[str, int]:
     return {_clean_text(value): index for index, value in enumerate(header_row) if _clean_text(value)}
+
+
+def _value_kind_header_index(headers: dict[str, int]) -> int | None:
+    if HEADER_VALUE_KIND in headers:
+        return headers[HEADER_VALUE_KIND]
+    return headers.get(HEADER_ROW_KIND)
+
+
+def _actual_value_kind_label(raw_value: str, *, decision_label: str, metric_base: str) -> str:
+    if raw_value in {VALUE_KIND_BASE, VALUE_KIND_CALCULATED, ROW_KIND_AVERAGE, ROW_KIND_MEDIAN}:
+        return raw_value
+    if raw_value == ROW_KIND_CHANGE_RATE:
+        return VALUE_KIND_CALCULATED
+    if raw_value != ROW_KIND_DETAIL:
+        return raw_value
+    if decision_label == DECISION_FORECAST:
+        return VALUE_KIND_BASE
+    if decision_label == DECISION_QUARTER_STANDALONE:
+        return VALUE_KIND_CALCULATED
+    if metric_base in CALCULATED_VALUE_KIND_BASES:
+        return VALUE_KIND_CALCULATED
+    return VALUE_KIND_BASE
+
+
+def _quarter_label_from_period_values(periods_by_offset: dict[int, str]) -> str:
+    for value in periods_by_offset.values():
+        text = _clean_text(value)
+        match = re.match(r"^(1Q|2Q|3Q|4Q)(?:\s|$)", text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _actual_decision_label(raw_value: str, periods_by_offset: dict[int, str]) -> str:
+    if raw_value == DECISION_ANNUAL:
+        return "4Q"
+    if raw_value == DECISION_QUARTER:
+        return _quarter_label_from_period_values(periods_by_offset) or "2Q"
+    if raw_value == DECISION_QUARTER_STANDALONE:
+        return _quarter_label_from_period_values(periods_by_offset) or raw_value
+    return raw_value
 
 
 def _period_columns(headers: dict[str, int]) -> dict[int, dict[str, int]]:
@@ -485,7 +535,6 @@ def read_metric_excel_rows(
         HEADER_INDUSTRY,
         HEADER_MARKET,
         HEADER_DECISION,
-        HEADER_ROW_KIND,
         HEADER_CURRENT_PERIOD_END,
         HEADER_METRIC,
     }
@@ -500,7 +549,8 @@ def read_metric_excel_rows(
             except StopIteration:
                 continue
             headers = _header_map(header_row)
-            if not required_headers.issubset(headers):
+            value_kind_col = _value_kind_header_index(headers)
+            if not required_headers.issubset(headers) or value_kind_col is None:
                 continue
             period_cols = _period_columns(headers)
             if not period_cols:
@@ -513,7 +563,7 @@ def read_metric_excel_rows(
                 if target_codes and not security_code:
                     # Keep average/median rows, but drop fully blank trailing rows.
                     metric_label = _clean_text(_value_at(values, headers[HEADER_METRIC]))
-                    row_kind = _clean_text(_value_at(values, headers[HEADER_ROW_KIND]))
+                    row_kind = _clean_text(_value_at(values, value_kind_col))
                     if not metric_label and not row_kind:
                         continue
                 metric_label = _clean_text(_value_at(values, headers[HEADER_METRIC]))
@@ -530,6 +580,15 @@ def read_metric_excel_rows(
                     units_by_offset[offset] = _clean_text(_value_at(values, cols.get("unit")))
                     ratios_by_offset[offset] = _value_at(values, cols.get("ratio"))
                     ranks_by_offset[offset] = _clean_text(_value_at(values, cols.get("rank")))
+                raw_decision_label = _clean_text(_value_at(values, headers[HEADER_DECISION]))
+                decision_label = _actual_decision_label(raw_decision_label, periods_by_offset)
+                metric_base = _infer_metric_base(sheet_name, metric_label)
+                raw_row_kind = _clean_text(_value_at(values, value_kind_col))
+                row_kind = _actual_value_kind_label(
+                    raw_row_kind,
+                    decision_label=raw_decision_label,
+                    metric_base=metric_base,
+                )
                 rows.append(
                     _ActualExcelRow(
                         sheet_name=sheet_name,
@@ -538,13 +597,13 @@ def read_metric_excel_rows(
                         company_name=_clean_text(_value_at(values, headers[HEADER_COMPANY_NAME])),
                         industry_33=_clean_text(_value_at(values, headers[HEADER_INDUSTRY])),
                         market=_clean_text(_value_at(values, headers[HEADER_MARKET])),
-                        decision_label=_clean_text(_value_at(values, headers[HEADER_DECISION])),
-                        row_kind=_clean_text(_value_at(values, headers[HEADER_ROW_KIND])),
+                        decision_label=decision_label,
+                        row_kind=row_kind,
                         current_period_end=_clean_text(
                             _value_at(values, headers[HEADER_CURRENT_PERIOD_END])
                         ),
                         metric_label=metric_label,
-                        metric_base=_infer_metric_base(sheet_name, metric_label),
+                        metric_base=metric_base,
                         periods_by_offset=periods_by_offset,
                         values_by_offset=values_by_offset,
                         units_by_offset=units_by_offset,
@@ -613,7 +672,7 @@ def _add_missing_or_classification_issue(
         actual = decision_candidates[0]
         explained_actual_keys.add(_actual_key(actual))
         is_period_mixing = expected.period_scope == "annual" and (
-            actual.decision_label == DECISION_QUARTER or _has_2q_period(actual)
+            actual.decision_label in QUARTER_DECISION_LABELS or _has_2q_period(actual)
         )
         issues.append(
             _issue_for_expected(
@@ -624,7 +683,7 @@ def _add_missing_or_classification_issue(
                 actual_value=actual.decision_label,
                 message=(
                     "expected row was found with a different decision label: "
-                    f"expected={_decision_label_for_row(expected)} actual={actual.decision_label}"
+                    f"expected={decision_label_for_excel(expected)} actual={actual.decision_label}"
                 ),
                 detail={"actual_row_number": actual.row_number},
             )
@@ -771,7 +830,7 @@ def _compare_matched_row(
 
 def _is_half_disabled_actual(row: _ActualExcelRow) -> bool:
     return (
-        row.decision_label == DECISION_QUARTER
+        row.decision_label in HALF_DECISION_LABELS
         and row.metric_base in HALF_DISABLED_BASES
         and any(_clean_text(value).startswith("2Q") for value in row.periods_by_offset.values())
     )

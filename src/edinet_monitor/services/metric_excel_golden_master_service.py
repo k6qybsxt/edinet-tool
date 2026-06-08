@@ -21,6 +21,7 @@ from edinet_monitor.services.metric_excel_audit_service import (
     HEADER_METRIC,
     HEADER_ROW_KIND,
     HEADER_SECURITY_CODE,
+    HEADER_VALUE_KIND,
     PERIOD_PERIOD_SUFFIX,
     PERIOD_RANK_SUFFIX,
     PERIOD_RATIO_SUFFIX,
@@ -44,7 +45,6 @@ REQUIRED_METRIC_HEADERS = {
     HEADER_INDUSTRY,
     HEADER_MARKET,
     HEADER_DECISION,
-    HEADER_ROW_KIND,
     HEADER_CURRENT_PERIOD_END,
     HEADER_METRIC,
 }
@@ -142,6 +142,12 @@ def _header_map(header_row: tuple[Any, ...]) -> dict[str, int]:
     return {_clean_text(value): index for index, value in enumerate(header_row) if _clean_text(value)}
 
 
+def _value_kind_header_index(headers: dict[str, int]) -> int | None:
+    if HEADER_VALUE_KIND in headers:
+        return headers[HEADER_VALUE_KIND]
+    return headers.get(HEADER_ROW_KIND)
+
+
 def _value_at(values: tuple[Any, ...], index: int | None) -> Any:
     if index is None or index >= len(values):
         return None
@@ -197,7 +203,6 @@ def _base_row_values(values: tuple[Any, ...], headers: dict[str, int]) -> dict[s
         ("industry", HEADER_INDUSTRY),
         ("market", HEADER_MARKET),
         ("decision_label", HEADER_DECISION),
-        ("row_kind", HEADER_ROW_KIND),
         ("current_period_end", HEADER_CURRENT_PERIOD_END),
         ("metric_label", HEADER_METRIC),
     ]
@@ -206,6 +211,9 @@ def _base_row_values(values: tuple[Any, ...], headers: dict[str, int]) -> dict[s
         value = _value_at(values, headers.get(header))
         if not _is_blank(value):
             row[key] = _json_value(value)
+    row_kind = _value_at(values, _value_kind_header_index(headers))
+    if not _is_blank(row_kind):
+        row["row_kind"] = _json_value(row_kind)
     return row
 
 
@@ -236,7 +244,7 @@ def _normalize_metric_sheet(sheet_name: str, ws: Any) -> dict[str, Any] | None:
     except StopIteration:
         return None
     headers = _header_map(header_row)
-    if not REQUIRED_METRIC_HEADERS.issubset(headers):
+    if not REQUIRED_METRIC_HEADERS.issubset(headers) or _value_kind_header_index(headers) is None:
         return None
     period_columns = _period_columns(headers)
     rows: list[dict[str, Any]] = []

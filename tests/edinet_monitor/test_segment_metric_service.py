@@ -65,11 +65,11 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     _create_segment_metrics_table(conn.cursor())
 
 
-def _dimensions(member_qname: str) -> str:
+def _dimensions(member_qname: str, axis_qname: str = "jpcrp_cor:OperatingSegmentsAxis") -> str:
     return json.dumps(
         {
             "axis_members": {
-                "jpcrp_cor:OperatingSegmentsAxis": [member_qname],
+                axis_qname: [member_qname],
             }
         },
         ensure_ascii=False,
@@ -83,6 +83,7 @@ def _insert_raw_fact(
     member_qname: str,
     value_text: str,
     period_end: str = "2025-09-30",
+    axis_qname: str = "jpcrp_cor:OperatingSegmentsAxis",
 ) -> None:
     conn.execute(
         """
@@ -96,7 +97,7 @@ def _insert_raw_fact(
             ?, '{}', ?
         )
         """,
-        (tag_name, f"jpcrp_cor:{tag_name}", period_end, _dimensions(member_qname), value_text),
+        (tag_name, f"jpcrp_cor:{tag_name}", period_end, _dimensions(member_qname, axis_qname), value_text),
     )
 
 
@@ -230,6 +231,31 @@ class SegmentMetricServiceTest(unittest.TestCase):
         self.assertEqual(row_by_member["jpcrp_cor:JAPANReportableSegmentsMember"].segment_kind, "region")
         self.assertEqual(row_by_member["jpcrp_cor:JAPANReportableSegmentsMember"].segment_name, "日本")
         self.assertEqual(row_by_member["jpcrp_cor:ReportableSegmentsMember"].segment_kind, "total")
+
+    def test_business_member_containing_region_name_is_not_region(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp040300-ssr_E03217-000:UNIQLOJapanMember",
+            value_text="100000000",
+        )
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:JAPANMember",
+            value_text="200000000",
+            axis_qname="jpcrp_cor:GeographicalAreasAxis",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_member = {row.member_qname: row for row in result.rows}
+        self.assertEqual(
+            row_by_member["jpcrp040300-ssr_E03217-000:UNIQLOJapanMember"].segment_kind,
+            "business",
+        )
+        self.assertEqual(row_by_member["jpcrp_cor:JAPANMember"].segment_kind, "region")
 
     def test_context_ref_segment_member_is_used_when_dimensions_are_missing(self) -> None:
         _insert_raw_fact_context_ref(
