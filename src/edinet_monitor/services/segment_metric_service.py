@@ -50,6 +50,16 @@ TOTAL_MEMBER_MARKERS = (
     "TotalOfReportableSegmentsMember",
     "ReportableSegmentsMember",
 )
+SEGMENT_MEMBER_SUFFIXES = (
+    "ReportableSegmentsMember",
+    "ReportableSegmentMember",
+    "OperatingSegmentsMember",
+    "OperatingSegmentMember",
+    "BusinessUnitReportableSegmentsMember",
+    "BusinessUnitReportableSegmentMember",
+    "BusinessMember",
+    "Member",
+)
 REGION_MEMBER_LABELS = {
     "JAPAN": "日本",
     "INDIA": "インド",
@@ -395,16 +405,29 @@ def _is_total_member(member_qname: str) -> bool:
     )
 
 
+def _member_core(member_qname: str) -> str:
+    local = _local_name(member_qname)
+    local = re.sub(r"^[A-Z]\d{5}-\d{3}", "", local)
+    for suffix in SEGMENT_MEMBER_SUFFIXES:
+        if local.endswith(suffix):
+            return local[: -len(suffix)]
+    return local
+
+
+def _is_region_member(member_qname: str) -> bool:
+    core_upper = _member_core(member_qname).upper()
+    return any(core_upper == marker or core_upper.startswith(marker) for marker in REGION_MEMBER_LABELS)
+
+
 def _segment_kind(member_qname: str, axis_qname: str) -> str | None:
     text = f"{member_qname} {axis_qname}"
     if _is_total_member(member_qname):
         return "total"
     if _contains_any(text, EXCLUDED_MEMBER_MARKERS):
         return None
-    local_upper = _local_name(member_qname).upper()
-    if any(marker in local_upper for marker in REGION_MEMBER_LABELS):
-        return "region"
     if _contains_any(axis_qname, ("Geographical", "Geographic", "Region", "Area")):
+        return "region"
+    if _is_region_member(member_qname):
         return "region"
     return "business"
 

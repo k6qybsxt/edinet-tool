@@ -7,6 +7,8 @@ import unittest
 import uuid
 from pathlib import Path
 
+from openpyxl import load_workbook
+
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -19,7 +21,12 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     MetricExcelCondition,
     MetricExcelRow,
     ROW_KIND_DETAIL,
+    VALUE_KIND_BASE,
     write_metric_excel,
+)
+from edinet_monitor.services.metric_excel_audit_service import (  # noqa: E402
+    HEADER_ROW_KIND,
+    HEADER_VALUE_KIND,
 )
 from edinet_monitor.services.metric_excel_golden_master_service import (  # noqa: E402
     compare_metric_excel_golden_master,
@@ -77,7 +84,26 @@ class MetricExcelGoldenMasterServiceTest(unittest.TestCase):
         rows = normalized["sheets"][0]["rows"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["metric_label"], "4Q \u58f2\u4e0a\u9ad8")
+        self.assertEqual(rows[0]["row_kind"], VALUE_KIND_BASE)
         self.assertEqual(rows[0]["periods"], [{"label": "\u524d\u671f", "offset": 1, "period": "\u901a\u671f 2025-03", "unit": "\u767e\u4e07\u5186", "value": 123}])
+
+    def test_normalize_accepts_legacy_row_kind_header(self) -> None:
+        workbook_path = self.tmp_path / "legacy.xlsx"
+        self._write_workbook(workbook_path)
+        workbook = load_workbook(workbook_path)
+        try:
+            ws = workbook[GENERAL_SHEET]
+            headers = [cell.value for cell in ws[1]]
+            ws.cell(1, headers.index(HEADER_VALUE_KIND) + 1).value = HEADER_ROW_KIND
+            workbook.save(workbook_path)
+        finally:
+            workbook.close()
+
+        normalized = normalize_metric_excel_workbook(workbook_path)
+
+        rows = normalized["sheets"][0]["rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["row_kind"], VALUE_KIND_BASE)
 
     def test_write_metric_excel_normalized_json(self) -> None:
         workbook_path = self.tmp_path / "input.xlsx"

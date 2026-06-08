@@ -25,6 +25,8 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     ROW_KIND_DETAIL,
     ROW_KIND_MEDIAN,
     SUMMARY_SHEET,
+    VALUE_KIND_BASE,
+    VALUE_KIND_CALCULATED,
     _build_jquants_lookup_indexes,
     _build_quarter_standalone_lookup_indexes,
     _fetch_jquants_metric_rows,
@@ -485,6 +487,100 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u533a\u5206", headers)
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
         self.assertEqual(ws.cell(2, headers.index("\u6c7a\u7b97\u7a2e\u5225") + 1).value, "\u5730\u57df\u5225")
+        self.assertEqual(ws.cell(2, headers.index("\u5024\u7a2e\u5225") + 1).value, VALUE_KIND_BASE)
+
+    def test_write_metric_excel_uses_display_decision_and_value_kind_labels(self) -> None:
+        output_path = self.tmp_path / "display_labels.xlsx"
+        rows = [
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="1111",
+                company_name="A\u793e",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="annual",
+                current_period_end="2026-03-31",
+                metric_base="NetSales",
+                metric_label="annual_base",
+                periods_by_offset={0: "2026-03-31"},
+                values_by_offset={0: 100.0},
+                units_by_offset={0: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None},
+            ),
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="1111",
+                company_name="A\u793e",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="quarter:2Q",
+                current_period_end="2025-09-30",
+                metric_base="NetSalesGrowthRate",
+                metric_label="quarter_growth",
+                periods_by_offset={0: "2Q 2025-09"},
+                values_by_offset={0: 0.1},
+                units_by_offset={0: "%"},
+                ratios_by_offset={0: None},
+                row_kind=ROW_KIND_CHANGE_RATE,
+            ),
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="1111",
+                company_name="A\u793e",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="quarter_standalone:3Q",
+                current_period_end="2025-12-31",
+                metric_base="NetSales",
+                metric_label="standalone_base",
+                periods_by_offset={0: "3Q 2025-12"},
+                values_by_offset={0: 30.0},
+                units_by_offset={0: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None},
+            ),
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="",
+                company_name="",
+                industry_33="",
+                market="",
+                period_scope="annual",
+                current_period_end="2026-03-31",
+                metric_base="NetSales",
+                metric_label="annual_stat",
+                periods_by_offset={0: "2026-03-31"},
+                values_by_offset={0: 100.0},
+                units_by_offset={0: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None},
+                row_kind=ROW_KIND_AVERAGE,
+            ),
+        ]
+
+        write_metric_excel(
+            rows=rows,
+            condition=MetricExcelCondition(period_offsets=[0]),
+            output_path=output_path,
+            db_path=":memory:",
+            errors=[],
+            warnings=[],
+            target_companies=1,
+        )
+
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+        by_metric = {
+            ws.cell(row_idx, headers["\u6307\u6a19"]).value: (
+                ws.cell(row_idx, headers["\u6c7a\u7b97\u7a2e\u5225"]).value,
+                ws.cell(row_idx, headers["\u5024\u7a2e\u5225"]).value,
+            )
+            for row_idx in range(2, ws.max_row + 1)
+        }
+
+        self.assertEqual(by_metric["annual_base"], ("4Q", VALUE_KIND_BASE))
+        self.assertEqual(by_metric["quarter_growth"], ("2Q", VALUE_KIND_CALCULATED))
+        self.assertEqual(by_metric["standalone_base"], ("3Q", VALUE_KIND_CALCULATED))
+        self.assertEqual(by_metric["annual_stat"], ("4Q", ROW_KIND_AVERAGE))
 
     def test_write_metric_excel_records_non_overlapping_writer_spans(self) -> None:
         output_path = self.tmp_path / "spans.xlsx"
@@ -634,6 +730,70 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(segment_row.values_by_offset[0], 20.0)
         self.assertEqual(segment_row.periods_by_offset[1], "2Q 2024-09-30")
         self.assertEqual(segment_row.values_by_offset[1], 10.0)
+
+    def test_segment_rows_merge_sony_renamed_entertainment_segment(self) -> None:
+        current_name = (
+            "\u30a8\u30f3\u30bf\u30c6\u30a4\u30f3\u30e1\u30f3\u30c8\u30fb"
+            "\u30c6\u30af\u30ce\u30ed\u30b8\u30fc\uff06\u30b5\u30fc\u30d3\u30b9"
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO segment_metrics (
+                doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
+                fiscal_year, period_start, period_end, segment_kind, segment_name,
+                axis_qname, member_qname, metric_base, metric_key, value_kind,
+                value_num, value_unit, source_tag, tag_qname, context_ref, decimals,
+                calc_status, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, 'E00001', '1111', '030000', 'annual', '',
+                ?, ?, ?, 'business', ?,
+                'context_ref:OperatingSegmentsAxis', ?, 'NetSales', 'NetSalesCurrent', 'external',
+                ?, 'yen', 'RevenuesFromExternalCustomers', 'tag', 'context', '-6',
+                'ok', '{}', 'test', 'now', 'now'
+            )
+            """,
+            [
+                (
+                    "sony_old_segment",
+                    2022,
+                    "2021-04-01",
+                    "2022-03-31",
+                    "E01777-000Electronics Products And Solutions",
+                    "E01777-000ElectronicsProductsAndSolutionsReportableSegmentMember",
+                    10_000_000.0,
+                ),
+                (
+                    "sony_current_segment",
+                    2023,
+                    "2022-04-01",
+                    "2023-03-31",
+                    current_name,
+                    "E01777-000EntertainmentTechnologyAndServicesReportableSegmentMember",
+                    20_000_000.0,
+                ),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["\u58f2\u4e0a\u9ad8"],
+            period_scopes=["annual"],
+            period_offsets=[2, 1, 0],
+            segment_mode="business",
+        )
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        segment_rows = [
+            row
+            for row in _detail_rows(rows)
+            if row.segment_kind and row.metric_base == "NetSales"
+        ]
+        self.assertEqual(len(segment_rows), 1)
+        self.assertEqual(segment_rows[0].segment_name, current_name)
+        self.assertEqual(segment_rows[0].values_by_offset[1], 20.0)
+        self.assertEqual(segment_rows[0].values_by_offset[2], 10.0)
 
     def test_segment_rows_sort_by_linkbase_order(self) -> None:
         self.conn.executemany(
@@ -1111,6 +1271,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 "AverageLengthOfService",
                 "AverageAnnualSalary",
                 "OutstandingSharesGrowthRate",
+                "InterestBearingDebt",
+                "ROIC",
             ],
             period_scopes=["quarter"],
             period_offsets=[0],
@@ -1378,8 +1540,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         self.assertEqual(ws["E2"].value, "Prime")
-        self.assertEqual(ws["F2"].value, "通期")
-        self.assertEqual(ws["G2"].value, "明細")
+        self.assertEqual(ws["F2"].value, "4Q")
+        self.assertEqual(ws["G2"].value, VALUE_KIND_BASE)
         self.assertEqual(ws["I2"].value, "4Q ├売上原価")
         self.assertEqual(ws["J2"].value, "通期 2026-03")
         self.assertEqual(ws["K2"].value, 60.0)
@@ -1718,10 +1880,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
         self.assertEqual(ws["C1"].value, "\u30c6\u30f3\u30d0\u30ac\u30fc")
-        self.assertEqual(ws["G1"].value, "\u884c\u7a2e\u5225")
+        self.assertEqual(ws["F2"].value, "4Q")
+        self.assertEqual(ws["G1"].value, "\u5024\u7a2e\u5225")
         self.assertEqual(ws["N1"].value, "\u524d\u671f_\u9806\u4f4d")
         self.assertNotIn("\u524d\u671f_\u5897\u6e1b\u7387", [cell.value for cell in ws[1]])
-        self.assertEqual(ws["G2"].value, ROW_KIND_DETAIL)
+        self.assertEqual(ws["G2"].value, VALUE_KIND_BASE)
         self.assertEqual(ws["N2"].value, "1/2")
         self.assertEqual(ws["J1"].fill.fgColor.rgb, "00EAF4FF")
         self.assertEqual(ws["J2"].border.left.style, "thin")
@@ -2396,7 +2559,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         value_cells_by_label = {
             ws.cell(row=row_index, column=9).value: ws.cell(row=row_index, column=11)
             for row_index in range(2, ws.max_row + 1)
-            if ws.cell(row=row_index, column=7).value == ROW_KIND_DETAIL
+            if ws.cell(row=row_index, column=7).value == VALUE_KIND_BASE
         }
         up_color = value_cells_by_label["1Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb
         down_color = value_cells_by_label["2Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb

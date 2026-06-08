@@ -58,8 +58,11 @@ class CleanupObsoleteHalfMetricsTest(unittest.TestCase):
                 ("HALF1", "NetSalesGrowthRate5YearCurrent"),
                 ("HALF1", "NetSalesGrowthRate10YearCurrent"),
                 ("HALF2", "StockPriceGrowthRate10YearCurrent"),
+                ("HALF1", "InterestBearingDebtCurrent"),
+                ("HALF2", "ROICCurrent"),
                 ("HALF1", "NetSalesGrowthRateCurrent"),
                 ("ANNUAL1", "NetSalesGrowthRate5YearCurrent"),
+                ("ANNUAL1", "ROICCurrent"),
             ],
         )
         conn.executemany(
@@ -87,13 +90,13 @@ class CleanupObsoleteHalfMetricsTest(unittest.TestCase):
         )
 
         rows = count_obsolete_half_metrics(conn)
-        self.assertEqual(sum(int(row["row_count"]) for row in rows), 9)
+        self.assertEqual(sum(int(row["row_count"]) for row in rows), 11)
 
         deleted = delete_obsolete_half_metrics(conn)
 
-        self.assertEqual(deleted, 9)
+        self.assertEqual(deleted, 11)
         remaining = conn.execute("SELECT doc_id, metric_key FROM derived_metrics").fetchall()
-        self.assertEqual(len(remaining), 2)
+        self.assertEqual(len(remaining), 3)
         remaining_normalized = conn.execute("SELECT doc_id, metric_key FROM normalized_metrics").fetchall()
         self.assertEqual(len(remaining_normalized), 1)
         remaining_market = conn.execute("SELECT source_id, metric_key FROM market_derived_metrics").fetchall()

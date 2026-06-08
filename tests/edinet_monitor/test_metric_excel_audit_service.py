@@ -19,8 +19,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from edinet_monitor.services.metric_excel_audit_service import (  # noqa: E402
+    HEADER_DECISION,
     HEADER_METRIC,
     HEADER_ROW_KIND,
+    HEADER_VALUE_KIND,
     ExcelAuditOptions,
     audit_metric_excel,
     read_metric_excel_summary_options,
@@ -31,6 +33,7 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     MetricExcelRow,
     PERIOD_LABEL_BY_OFFSET,
     ROW_KIND_DETAIL,
+    VALUE_KIND_BASE,
     build_metric_excel_rows,
     write_metric_excel,
 )
@@ -301,6 +304,28 @@ class MetricExcelAuditServiceTest(unittest.TestCase):
 
         self.assertEqual(captured["period_offsets"], (1,))
         self.assertEqual(captured["segment_mode"], "all")
+        self.assertEqual(result.issue_count, 0)
+
+    def test_legacy_row_kind_header_and_values_are_normalized(self) -> None:
+        output_path = self.tmp_path / "legacy_row_kind.xlsx"
+        self._write_expected_workbook(output_path)
+        workbook = load_workbook(output_path)
+        try:
+            ws = workbook[GENERAL_SHEET]
+            decision_col = _header_index(ws, HEADER_DECISION)
+            value_kind_col = _header_index(ws, HEADER_VALUE_KIND)
+            ws.cell(1, value_kind_col).value = HEADER_ROW_KIND
+            for row_idx in range(2, ws.max_row + 1):
+                if ws.cell(row_idx, decision_col).value == "4Q":
+                    ws.cell(row_idx, decision_col).value = "\u901a\u671f"
+                if ws.cell(row_idx, value_kind_col).value == VALUE_KIND_BASE:
+                    ws.cell(row_idx, value_kind_col).value = ROW_KIND_DETAIL
+            workbook.save(output_path)
+        finally:
+            workbook.close()
+
+        result = audit_metric_excel(self.conn, self._options(output_path))
+
         self.assertEqual(result.issue_count, 0)
 
     def test_blank_value_cell_does_not_create_value_mismatch(self) -> None:
