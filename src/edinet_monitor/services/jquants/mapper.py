@@ -7,7 +7,7 @@ from typing import Any
 
 
 JQUANTS_RULE_VERSION = "jquants-2026-05-24-v3"
-ACTUAL_PERIODS = {"1Q", "2Q", "3Q"}
+ACTUAL_PERIODS = {"FY", "1Q", "2Q", "3Q"}
 FORECAST_TARGETS = ("FY", "2Q")
 _UNSET = object()
 FORECAST_STAGE_BY_PERIOD = {
@@ -494,6 +494,7 @@ def statement_metrics_from_row(
                 rule="first available profit before tax field",
             )
         )
+        metrics.append(_calculated_combined_expense_metric(row, period))
         metrics.append(_outstanding_shares_metric(row, period))
         metrics.append(_calculated_eps_metric(row, period))
         metrics.append(_calculated_bps_metric(row, period))
@@ -594,6 +595,51 @@ def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsState
                 "issued_raw_value": row.get(issued_field),
                 "treasury_raw_value": row.get(treasury_field),
                 "rule": "OutstandingShares = ShOutFY - TrShFY; blank or less-than-1000 treasury shares are treated as zero",
+            }
+        ),
+    )
+
+
+def _calculated_combined_expense_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
+    net_sales = _parse_decimal(row.get("Sales"))
+    operating_income = _parse_decimal(row.get("OP"))
+    value: Decimal | None = None
+    calc_status = "missing_input"
+    if net_sales is not None and operating_income is not None:
+        value = net_sales - operating_income
+        calc_status = "ok"
+    raw = build_statement_raw(row)
+    return JQuantsStatementMetric(
+        disclosure_number=raw.disclosure_number,
+        local_code=raw.local_code,
+        security_code=raw.security_code,
+        metric_kind="actual",
+        period_scope="quarter",
+        period_key=f"actual:{period}",
+        quarter_type=period,
+        forecast_target=None,
+        forecast_stage=None,
+        fiscal_year=raw.fiscal_year,
+        period_start=raw.current_period_start_date,
+        period_end=raw.current_period_end_date or raw.current_fiscal_year_end_date,
+        disclosed_date=raw.disclosed_date,
+        disclosed_time=raw.disclosed_time,
+        metric_key="CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent",
+        metric_base="CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+        metric_group="profitability",
+        value_num=_to_float(value),
+        value_unit="yen",
+        calc_status=calc_status,
+        source_field="calculated:Sales-OP",
+        source_detail_json=_json_dumps(
+            {
+                "source": "jquants",
+                "api_version": "v2",
+                "net_sales_field": "Sales",
+                "operating_income_field": "OP",
+                "net_sales_raw_value": row.get("Sales"),
+                "operating_income_raw_value": row.get("OP"),
+                "rule": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses = NetSales - OperatingIncome",
             }
         ),
     )

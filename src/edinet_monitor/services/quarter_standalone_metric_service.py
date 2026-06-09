@@ -14,11 +14,18 @@ QUARTER_STANDALONE_PERIOD_SCOPE = "quarter_standalone"
 
 FLOW_BASES = (
     "NetSales",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "OperatingIncome",
     "OrdinaryIncome",
     "ProfitBeforeTax",
     "ProfitLoss",
     "EstimatedNetIncome",
+    "OperatingCash",
+    "InvestmentCash",
+    "FinancingCash",
+    "FCF",
+)
+CASHFLOW_HALF_STANDALONE_BASES = (
     "OperatingCash",
     "InvestmentCash",
     "FinancingCash",
@@ -127,6 +134,16 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _growth_status(
+    *,
+    current_value: float | None,
+    prior_value: float | None,
+) -> tuple[float | None, str]:
+    if current_value is None or prior_value is None or prior_value == 0:
+        return None, "missing_input"
+    return current_value / prior_value, "ok"
 
 
 def _parse_year(value: Any) -> int | None:
@@ -509,6 +526,145 @@ def _derive_cumulative_values(cumulative: dict[tuple[str, int, str], dict[str, A
                 sources["EstimatedNetIncome"] = f"derived:{source_base}*0.7"
 
 
+def _append_cashflow_half_standalone_rows(
+    rows: list[QuarterStandaloneMetricRow],
+    *,
+    cumulative: dict[tuple[str, int, str], dict[str, Any]],
+    scope_keys: list[tuple[str, int]],
+) -> dict[tuple[str, int, str, str], float | None]:
+    standalone_values: dict[tuple[str, int, str, str], float | None] = {}
+    for security_code, fiscal_year in scope_keys:
+        q2_item = cumulative.get((security_code, fiscal_year, "2Q"))
+        q4_item = cumulative.get((security_code, fiscal_year, "4Q"))
+        bases_for_scope = sorted(
+            {
+                base
+                for item in (q2_item, q4_item)
+                if item is not None
+                for base in item.get("values", {})
+                if base in CASHFLOW_HALF_STANDALONE_BASES
+            }
+        )
+        for base in bases_for_scope:
+            q2_value = (
+                _to_float(q2_item["values"].get(base))
+                if q2_item is not None and base in q2_item.get("values", {})
+                else None
+            )
+            q4_value = (
+                _to_float(q4_item["values"].get(base))
+                if q4_item is not None and base in q4_item.get("values", {})
+                else None
+            )
+
+            if q2_item is not None:
+                standalone_values[(security_code, fiscal_year, "1~2Q", base)] = q2_value
+                source_detail = {
+                    "metric_base": base,
+                    "quarter_type": "1~2Q",
+                    "cumulative_value": q2_value,
+                    "source": q2_item.get("sources", {}).get(base),
+                    "rule": "1~2Q standalone cashflow = 2Q cumulative",
+                }
+                rows.append(
+                    QuarterStandaloneMetricRow(
+                        security_code=security_code,
+                        edinet_code=str(q2_item.get("edinet_code") or ""),
+                        fiscal_year=fiscal_year,
+                        quarter_type="1~2Q",
+                        period_end=str(q2_item.get("period_end") or ""),
+                        metric_key=_metric_key(base),
+                        metric_base=base,
+                        metric_group=_metric_group(base),
+                        value_num=q2_value,
+                        value_unit=_value_unit(base),
+                        calc_status="ok" if q2_value is not None else "missing_input",
+                        formula_name="half_standalone_1_2q_cumulative",
+                        source_detail_json=json.dumps(source_detail, ensure_ascii=False, sort_keys=True),
+                    )
+                )
+
+            if q4_item is not None:
+                value = q4_value - q2_value if q4_value is not None and q2_value is not None else None
+                standalone_values[(security_code, fiscal_year, "3~4Q", base)] = value
+                source_detail = {
+                    "metric_base": base,
+                    "quarter_type": "3~4Q",
+                    "q4_cumulative_value": q4_value,
+                    "q2_cumulative_value": q2_value,
+                    "q4_source": q4_item.get("sources", {}).get(base),
+                    "q2_source": q2_item.get("sources", {}).get(base) if q2_item is not None else None,
+                    "rule": "3~4Q standalone cashflow = 4Q cumulative - 2Q cumulative",
+                }
+                rows.append(
+                    QuarterStandaloneMetricRow(
+                        security_code=security_code,
+                        edinet_code=str(q4_item.get("edinet_code") or ""),
+                        fiscal_year=fiscal_year,
+                        quarter_type="3~4Q",
+                        period_end=str(q4_item.get("period_end") or ""),
+                        metric_key=_metric_key(base),
+                        metric_base=base,
+                        metric_group=_metric_group(base),
+                        value_num=value,
+                        value_unit=_value_unit(base),
+                        calc_status="ok" if value is not None else "missing_input",
+                        formula_name="half_standalone_3_4q_minus_1_2q",
+                        source_detail_json=json.dumps(source_detail, ensure_ascii=False, sort_keys=True),
+                    )
+                )
+    return standalone_values
+
+
+def _append_cashflow_half_standalone_growth_rows(
+    rows: list[QuarterStandaloneMetricRow],
+    *,
+    cumulative: dict[tuple[str, int, str], dict[str, Any]],
+    standalone_values: dict[tuple[str, int, str, str], float | None],
+    scope_keys: list[tuple[str, int]],
+) -> None:
+    for security_code, fiscal_year in scope_keys:
+        for quarter_type, source_quarter in (("1~2Q", "2Q"), ("3~4Q", "4Q")):
+            item = cumulative.get((security_code, fiscal_year, source_quarter), {})
+            for base in CASHFLOW_HALF_STANDALONE_BASES:
+                growth_base = GROWTH_BASE_BY_FLOW_BASE[base]
+                current_key = (security_code, fiscal_year, quarter_type, base)
+                if current_key not in standalone_values:
+                    continue
+                prior_key = (security_code, fiscal_year - 1, quarter_type, base)
+                current_value = standalone_values.get(current_key)
+                prior_value = standalone_values.get(prior_key)
+                value, calc_status = _growth_status(
+                    current_value=current_value,
+                    prior_value=prior_value,
+                )
+                source_detail = {
+                    "metric_base": growth_base,
+                    "source_metric_base": base,
+                    "quarter_type": quarter_type,
+                    "current_standalone": current_value,
+                    "prior_year_standalone": prior_value,
+                    "rule": "current half standalone / prior-year same-half standalone",
+                }
+                rows.append(
+                    QuarterStandaloneMetricRow(
+                        security_code=security_code,
+                        edinet_code=str(item.get("edinet_code") or ""),
+                        fiscal_year=fiscal_year,
+                        quarter_type=quarter_type,
+                        period_end=str(item.get("period_end") or ""),
+                        metric_key=_growth_metric_key(growth_base),
+                        metric_base=growth_base,
+                        metric_group=_metric_group(growth_base),
+                        value_num=value,
+                        value_unit=_value_unit(growth_base),
+                        calc_status=calc_status,
+                        formula_name="half_standalone_yoy_growth",
+                        source_detail_json=json.dumps(source_detail, ensure_ascii=False, sort_keys=True),
+                    )
+                )
+
+
 def _build_rows_from_cumulative(
     cumulative: dict[tuple[str, int, str], dict[str, Any]],
 ) -> list[QuarterStandaloneMetricRow]:
@@ -581,6 +737,18 @@ def _build_rows_from_cumulative(
                 standalone_values[(security_code, fiscal_year, quarter_type, base)] = standalone_value
                 previous_cumulative = cumulative_value
                 previous_quarter = quarter_type
+
+    half_standalone_values = _append_cashflow_half_standalone_rows(
+        rows,
+        cumulative=cumulative,
+        scope_keys=scope_keys,
+    )
+    _append_cashflow_half_standalone_growth_rows(
+        rows,
+        cumulative=cumulative,
+        standalone_values=half_standalone_values,
+        scope_keys=scope_keys,
+    )
 
     for security_code, fiscal_year in scope_keys:
         bases_for_scope = sorted(

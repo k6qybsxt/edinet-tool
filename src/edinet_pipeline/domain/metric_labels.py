@@ -38,6 +38,7 @@ METRIC_BASE_LABELS = {
     "FinancingCashPerShare": "1\u682a\u8ca1\u52d9CF",
     "FCFPerShare": "1\u682aFCF",
     "NetSalesGrowthRate": "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387(\u524d\u671f\u6bd4)",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate": "\u8cbb\u7528\u5408\u8a08\u5897\u6e1b\u7387(\u524d\u671f\u6bd4)",
     "OperatingIncomeGrowthRate": "\u55b6\u696d\u5229\u76ca\u5897\u76ca\u7387(\u524d\u671f\u6bd4)",
     "NetSalesGrowthRate5Year": "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387(\uff15\u5e74)",
     "NetSalesGrowthRate10Year": "\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387(10\u5e74)",

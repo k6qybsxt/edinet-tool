@@ -135,6 +135,8 @@ SEGMENT_VALUE_KIND_PRIORITY = {
 QUARTER_SUPPORTED_BASES = {
     "NetSales",
     "NetSalesGrowthRate",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate",
     "OperatingIncome",
     "OperatingIncomeGrowthRate",
     "OrdinaryIncome",
@@ -173,6 +175,7 @@ QUARTER_SUPPORTED_BASES = {
 }
 QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE = {
     "NetSalesGrowthRate": "NetSales",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate": "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "OperatingIncomeGrowthRate": "OperatingIncome",
     "OrdinaryIncomeGrowthRate": "OrdinaryIncome",
     "ProfitLossGrowthRate": "ProfitLoss",
@@ -194,6 +197,7 @@ QUARTER_STANDALONE_SUPPORTED_BASES = set(QUARTER_STANDALONE_FLOW_BASES) | set(
 )
 FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
 JQUANTS_QUARTER_TYPES = ("1Q", "2Q", "3Q")
+QUARTER_STANDALONE_EXCEL_QUARTERS = ("1Q", "2Q", "3Q", "4Q", "1~2Q", "3~4Q")
 JQUANTS_FORECAST_STAGES = ("initial", "1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGE_LABELS = {
     "initial": "0Q",
@@ -412,6 +416,7 @@ INTEGER_VALUE_BASES = {
 
 GROWTH_RATIO_BASES = {
     "NetSalesGrowthRate",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate",
     "OperatingIncomeGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
@@ -479,6 +484,7 @@ CHANGE_RATE_ROW_KIND_BASES = {
     "FCFGrowthRate",
     "FinancingCashGrowthRate",
     "InvestmentCashGrowthRate",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate",
     "NetSalesGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
@@ -539,6 +545,7 @@ FIXED_ROW_BASE_ORDER = [
     "HalfOrdinaryIncomeProgressRate",
     "HalfProfitProgressRate",
     "NetSalesGrowthRate",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate",
     "OperatingIncomeGrowthRate",
     "NetSalesGrowthRate5Year",
     "NetSalesGrowthRate10Year",
@@ -596,6 +603,7 @@ ROW_BASE_ORDER_INDEX = {
 }
 
 EXCEL_METRIC_LABEL_OVERRIDES = {
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate": "\u8cbb\u7528\u5408\u8a08\u5897\u6e1b\u7387(\u524d\u671f\u6bd4)",
     "ProfitBeforeTax": "\u7a0e\u5f15\u524d\u5229\u76ca",
     "CostOfSales": "├売上原価",
     "SellingExpenses": "└販管費",
@@ -1742,7 +1750,7 @@ def _quarter_label_from_period_scope(period_scope: str) -> str:
     for prefix in ("quarter:", "quarter_standalone:"):
         if period_scope.startswith(prefix):
             quarter = period_scope[len(prefix):]
-            if quarter in {"1Q", "2Q", "3Q", "4Q"}:
+            if quarter in {"1Q", "2Q", "3Q", "4Q", "1~2Q", "3~4Q"}:
                 return quarter
     return ""
 
@@ -2527,10 +2535,12 @@ def _row_sort_key(row: MetricExcelRow) -> tuple[int, int, int, int, int, str, st
         "quarter_standalone:2Q": 5,
         "quarter_standalone:3Q": 6,
         "quarter_standalone:4Q": 7,
-        "forecast:initial": 8,
-        "forecast:1Q": 9,
-        "forecast:2Q": 10,
-        "forecast:3Q": 11,
+        "quarter_standalone:1~2Q": 8,
+        "quarter_standalone:3~4Q": 9,
+        "forecast:initial": 10,
+        "forecast:1Q": 11,
+        "forecast:2Q": 12,
+        "forecast:3Q": 13,
     }.get(row.period_scope, 99)
     row_kind_order = {
         ROW_KIND_DETAIL: 0,
@@ -3666,7 +3676,7 @@ def _append_quarter_standalone_period_rows(
     if max_fiscal_year is None:
         return
     min_year = max_fiscal_year - max_offset
-    for quarter in ("1Q", "2Q", "3Q", "4Q"):
+    for quarter in QUARTER_STANDALONE_EXCEL_QUARTERS:
         period_scope = f"{QUARTER_STANDALONE_PERIOD_SCOPE}:{quarter}"
         for base in base_candidates:
             if base in QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER.get(quarter, set()):
