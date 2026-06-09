@@ -169,6 +169,11 @@ class JQuantsServicesTest(unittest.TestCase):
         by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
 
         self.assertEqual(by_key[("actual:1Q", None, "NetSales")].value_num, 100000000.0)
+        combined_expense = by_key[
+            ("actual:1Q", None, "CostOfSalesAndSellingGeneralAndAdministrativeExpenses")
+        ]
+        self.assertEqual(combined_expense.value_num, 88000000.0)
+        self.assertEqual(combined_expense.source_field, "calculated:Sales-OP")
         self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].calc_status, "missing")
         self.assertEqual(by_key[("actual:1Q", None, "OutstandingShares")].value_num, 1000000.0)
         self.assertEqual(by_key[("actual:1Q", None, "BPS")].value_num, 400.0)
@@ -228,6 +233,31 @@ class JQuantsServicesTest(unittest.TestCase):
 
         self.assertEqual(by_key[("actual:2Q", None, "NetSales")].value_num, 100000000.0)
         self.assertEqual(by_key[("actual:2Q", None, "OutstandingShares")].value_num, 1000000.0)
+        combined_expense = by_key[
+            ("actual:2Q", None, "CostOfSalesAndSellingGeneralAndAdministrativeExpenses")
+        ]
+        self.assertEqual(combined_expense.value_num, 88000000.0)
+
+    def test_statement_mapper_keeps_fy_combined_expense_actual(self) -> None:
+        metrics = statement_metrics_from_row(_statement_row("FY"), include_forecasts=False)
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
+
+        self.assertEqual(by_key[("actual:FY", None, "NetSales")].value_num, 100000000.0)
+        combined_expense = by_key[
+            ("actual:FY", None, "CostOfSalesAndSellingGeneralAndAdministrativeExpenses")
+        ]
+        self.assertEqual(combined_expense.value_num, 88000000.0)
+
+    def test_statement_mapper_marks_combined_expense_missing_when_inputs_missing(self) -> None:
+        row = _statement_row("1Q")
+        row["OP"] = ""
+
+        metrics = statement_metrics_from_row(row, include_forecasts=False)
+        by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
+
+        metric = by_key[("actual:1Q", None, "CostOfSalesAndSellingGeneralAndAdministrativeExpenses")]
+        self.assertIsNone(metric.value_num)
+        self.assertEqual(metric.calc_status, "missing_input")
 
     def test_statement_mapper_keeps_2q_full_year_forecasts(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("2Q"), include_forecasts=True)

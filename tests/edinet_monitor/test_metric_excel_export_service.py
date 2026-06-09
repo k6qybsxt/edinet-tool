@@ -36,8 +36,10 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     _quarter_standalone_period_end,
     _security_code_candidates,
     build_metric_excel_rows,
+    decision_label_for_excel,
     export_metric_excel,
     read_metric_excel_condition,
+    value_kind_label_for_excel,
     write_metric_excel,
 )
 
@@ -2286,6 +2288,47 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertAlmostEqual(row.values_by_offset[0], 1.2)
         self.assertEqual(row.units_by_offset[0], "%")
 
+    def test_jquants_quarter_combined_expense_growth_uses_prior_year_same_quarter(self) -> None:
+        metric_base = "CostOfSalesAndSellingGeneralAndAdministrativeExpenses"
+        growth_base = "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate"
+        self.conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (?, '11110', '1111', 'E00001', 'actual',
+                      'quarter', 'actual:1Q', '1Q', NULL, ?,
+                      ?, ?, ?, '15:00', 'CostOfSalesAndSellingGeneralAndAdministrativeExpensesCurrent',
+                      ?, 'profitability', ?, 'yen', 'ok', 'calculated:Sales-OP', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """,
+            [
+                ("actual_current", 2026, "2025-04-01", "2025-06-30", "2025-08-01", metric_base, 120_000_000.0),
+                ("actual_prior", 2025, "2024-04-01", "2024-06-30", "2024-08-01", metric_base, 100_000_000.0),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=[growth_base],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("jquants_metrics_not_found", warnings)
+        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
+        self.assertEqual(row.metric_base, growth_base)
+        self.assertAlmostEqual(row.values_by_offset[0], 1.2)
+        self.assertEqual(row.units_by_offset[0], "%")
+        self.assertEqual(value_kind_label_for_excel(row), VALUE_KIND_CALCULATED)
+
     def test_jquants_quarter_cash_balance_growth_uses_prior_year_same_quarter(self) -> None:
         self.conn.executemany(
             """
@@ -2474,6 +2517,101 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(row.metric_label, "2Q \u58f2\u4e0a\u9ad8 \u5358\u72ec")
         self.assertEqual(row.values_by_offset[0], 120.0)
         self.assertEqual(row.units_by_offset[0], "\u767e\u4e07\u5186")
+
+    def test_quarter_standalone_half_cashflow_rows_are_loaded(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            )
+            VALUES ('1111', 'E00001', 2026, ?, ?,
+                    'OperatingCashCurrent', 'OperatingCash', 'cashflow', ?, 'yen',
+                    'ok', 'fixture', '{}', 'test', 'now', 'now')
+            """,
+            [
+                ("1~2Q", "2025-09-30", 130_000_000.0),
+                ("3~4Q", "2026-03-31", 120_000_000.0),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["\u55b6\u696dCF"],
+            period_scopes=["quarter_standalone"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("quarter_standalone_metrics_not_ready", warnings)
+        by_scope = {
+            row.period_scope: row
+            for row in _detail_rows(rows)
+            if row.metric_base == "OperatingCash"
+        }
+        self.assertEqual(by_scope["quarter_standalone:1~2Q"].values_by_offset[0], 130.0)
+        self.assertEqual(by_scope["quarter_standalone:3~4Q"].values_by_offset[0], 120.0)
+        self.assertEqual(decision_label_for_excel(by_scope["quarter_standalone:1~2Q"]), "1~2Q")
+        self.assertEqual(decision_label_for_excel(by_scope["quarter_standalone:3~4Q"]), "3~4Q")
+        self.assertEqual(
+            value_kind_label_for_excel(by_scope["quarter_standalone:1~2Q"]),
+            VALUE_KIND_CALCULATED,
+        )
+        self.assertEqual(
+            value_kind_label_for_excel(by_scope["quarter_standalone:3~4Q"]),
+            VALUE_KIND_CALCULATED,
+        )
+
+    def test_quarter_standalone_half_cashflow_growth_rows_are_loaded(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            )
+            VALUES ('1111', 'E00001', 2026, ?, ?,
+                    'OperatingCashGrowthRateQuarterStandaloneCurrent',
+                    'OperatingCashGrowthRate', 'growth', ?, 'ratio',
+                    'ok', 'fixture', '{}', 'test', 'now', 'now')
+            """,
+            [
+                ("1~2Q", "2025-09-30", 1.3),
+                ("3~4Q", "2026-03-31", 1.2),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["OperatingCashGrowthRate"],
+            period_scopes=["quarter_standalone"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("quarter_standalone_metrics_not_ready", warnings)
+        by_scope = {
+            row.period_scope: row
+            for row in _detail_rows(rows)
+            if row.metric_base == "OperatingCashGrowthRate"
+        }
+        self.assertEqual(by_scope["quarter_standalone:1~2Q"].values_by_offset[0], 1.3)
+        self.assertEqual(by_scope["quarter_standalone:3~4Q"].values_by_offset[0], 1.2)
+        self.assertEqual(by_scope["quarter_standalone:1~2Q"].units_by_offset[0], "%")
+        self.assertEqual(by_scope["quarter_standalone:3~4Q"].units_by_offset[0], "%")
+        self.assertEqual(decision_label_for_excel(by_scope["quarter_standalone:1~2Q"]), "1~2Q")
+        self.assertEqual(decision_label_for_excel(by_scope["quarter_standalone:3~4Q"]), "3~4Q")
+        self.assertEqual(value_kind_label_for_excel(by_scope["quarter_standalone:1~2Q"]), VALUE_KIND_CALCULATED)
+        self.assertEqual(value_kind_label_for_excel(by_scope["quarter_standalone:3~4Q"]), VALUE_KIND_CALCULATED)
 
     def test_quarter_standalone_infers_4q_current_period_end(self) -> None:
         self.conn.executemany(

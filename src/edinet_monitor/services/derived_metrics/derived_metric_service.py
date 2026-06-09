@@ -731,21 +731,69 @@ def _gross_profit_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> 
     }
 
 
-def _combined_cost_and_sga_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
+def _combined_cost_and_sga_input(
+    metric_rows: dict[str, dict[str, Any]],
+    suffix: str,
+    *,
+    industry_33: str | None = None,
+) -> dict[str, Any]:
     combined_key = _build_metric_key("CostOfSalesAndSellingGeneralAndAdministrativeExpenses", suffix)
+    net_sales_key = _build_metric_key("NetSales", suffix)
+    operating_income_key = _build_metric_key("OperatingIncome", suffix)
     cost_of_sales_key = _build_metric_key("CostOfSales", suffix)
     selling_expenses_key = _build_metric_key("SellingExpenses", suffix)
 
     tag_value = _metric_value(metric_rows, combined_key)
     combined_source_tag = _metric_source_tag(metric_rows, combined_key)
+    net_sales = _metric_value(metric_rows, net_sales_key)
+    net_sales_source_tag = _metric_source_tag(metric_rows, net_sales_key)
+    operating_income = _metric_value(metric_rows, operating_income_key)
+    operating_income_source_tag = _metric_source_tag(metric_rows, operating_income_key)
     cost_of_sales = _metric_value(metric_rows, cost_of_sales_key)
     cost_of_sales_source_tag = _metric_source_tag(metric_rows, cost_of_sales_key)
     selling_expenses = _metric_value(metric_rows, selling_expenses_key)
     selling_expenses_source_tag = _metric_source_tag(metric_rows, selling_expenses_key)
+    net_sales_minus_operating_income, net_sales_minus_operating_status = _difference_status(
+        left_value=net_sales,
+        right_value=operating_income,
+    )
     calculated_value, calculated_status = _sum_status(
         left_value=cost_of_sales,
         right_value=selling_expenses,
     )
+
+    if str(industry_33 or "").strip() not in ROIC_EXCLUDED_INDUSTRIES:
+        return {
+            "value_num": net_sales_minus_operating_income,
+            "calc_status": net_sales_minus_operating_status,
+            "detail_inputs": {
+                net_sales_key: net_sales,
+                operating_income_key: operating_income,
+                combined_key: tag_value,
+                cost_of_sales_key: cost_of_sales,
+                selling_expenses_key: selling_expenses,
+            },
+            "reference_keys": [
+                net_sales_key,
+                operating_income_key,
+                combined_key,
+                cost_of_sales_key,
+                selling_expenses_key,
+            ],
+            "detail_extra": {
+                "selected_source": "net_sales_minus_operating_income",
+                "industry_33": industry_33,
+                "net_sales_source_tag": net_sales_source_tag,
+                "operating_income_source_tag": operating_income_source_tag,
+                "combined_source_tag": combined_source_tag,
+                "cost_of_sales_source_tag": cost_of_sales_source_tag,
+                "selling_expenses_source_tag": selling_expenses_source_tag,
+                "tag_value": tag_value,
+                "cost_of_sales_plus_selling_expenses_value": calculated_value,
+            },
+            "display_formula": "net_sales - operating_income",
+            "stored_formula": "net_sales - operating_income",
+        }
 
     if tag_value is not None and str(combined_source_tag or "") in SAFE_COMBINED_COST_AND_SGA_SOURCE_TAGS:
         difference_value = None
@@ -1297,12 +1345,13 @@ def _append_combined_cost_and_sga_rows(
     *,
     metric_rows: dict[str, dict[str, Any]],
     sample_row: dict[str, Any],
+    industry_33: str | None,
     accounting_standard: str,
     document_display_unit: str,
     rule_version: str,
 ) -> None:
     for suffix in FULL_SUFFIXES:
-        combined_inputs = _combined_cost_and_sga_input(metric_rows, suffix)
+        combined_inputs = _combined_cost_and_sga_input(metric_rows, suffix, industry_33=industry_33)
         reference_row = _pick_reference_row(
             metric_rows,
             combined_inputs["reference_keys"] + [sample_row["metric_key"]],
@@ -2313,6 +2362,25 @@ def calculate_derived_metrics(
         rule_version=rule_version,
         historical_growth_values=historical_growth_values,
     )
+    _append_growth_rows_from_inputs(
+        out_rows,
+        metric_rows=metric_rows,
+        sample_row=sample_row,
+        derived_metric_base="CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate",
+        metric_group="growth",
+        formula_name="combined_cost_and_sga_growth_rate",
+        display_formula="current_combined_cost_and_sga / prior_combined_cost_and_sga * 100",
+        input_builder=lambda rows, suffix: _combined_cost_and_sga_input(
+            rows,
+            suffix,
+            industry_33=industry_33,
+        ),
+        accounting_standard=accounting_standard,
+        document_display_unit=document_display_unit,
+        rule_version=rule_version,
+        source_metric_base="CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+        historical_growth_values=historical_growth_values,
+    )
     _append_growth_rows(
         out_rows,
         metric_rows=metric_rows,
@@ -2724,6 +2792,7 @@ def calculate_derived_metrics(
         out_rows,
         metric_rows=metric_rows,
         sample_row=sample_row,
+        industry_33=industry_33,
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

@@ -321,10 +321,10 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         self.assertTrue(result.output_path.exists())
 
     def test_suppresses_1q_to_3q_cashflow_standalone_rows(self) -> None:
-        for quarter, period_end, operating_cash, investment_cash in [
-            ("1Q", "2025-06-30", 100.0, -20.0),
-            ("2Q", "2025-09-30", 180.0, -50.0),
-            ("3Q", "2025-12-31", 240.0, -70.0),
+        for quarter, period_end, operating_cash, investment_cash, financing_cash in [
+            ("1Q", "2025-06-30", 100.0, -20.0, 30.0),
+            ("2Q", "2025-09-30", 180.0, -50.0, 40.0),
+            ("3Q", "2025-12-31", 240.0, -70.0, 60.0),
         ]:
             _insert_jquants_metric(
                 self.conn,
@@ -348,6 +348,17 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
                 metric_group="cashflow",
                 source_field="CFI",
             )
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2026{quarter}cff",
+                fiscal_year=2026,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=financing_cash,
+                metric_base="FinancingCash",
+                metric_group="cashflow",
+                source_field="CFF",
+            )
         _insert_edinet_metric(
             self.conn,
             doc_id="fy2026cfo",
@@ -366,13 +377,85 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
             metric_base="InvestmentCash",
             metric_group="cashflow",
         )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2026cff",
+            form_type="030000",
+            period_end="2026-03-31",
+            value=150.0,
+            metric_base="FinancingCash",
+            metric_group="cashflow",
+        )
+        for quarter, period_end, operating_cash, investment_cash, financing_cash in [
+            ("2Q", "2024-09-30", 90.0, -25.0, 20.0),
+        ]:
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2025{quarter}cfo",
+                fiscal_year=2025,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=operating_cash,
+                metric_base="OperatingCash",
+                metric_group="cashflow",
+                source_field="CFO",
+            )
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2025{quarter}cfi",
+                fiscal_year=2025,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=investment_cash,
+                metric_base="InvestmentCash",
+                metric_group="cashflow",
+                source_field="CFI",
+            )
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2025{quarter}cff",
+                fiscal_year=2025,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=financing_cash,
+                metric_base="FinancingCash",
+                metric_group="cashflow",
+                source_field="CFF",
+            )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2025cfo",
+            form_type="030000",
+            period_end="2025-03-31",
+            value=200.0,
+            metric_base="OperatingCash",
+            metric_group="cashflow",
+        )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2025cfi",
+            form_type="030000",
+            period_end="2025-03-31",
+            value=-75.0,
+            metric_base="InvestmentCash",
+            metric_group="cashflow",
+        )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2025cff",
+            form_type="030000",
+            period_end="2025-03-31",
+            value=75.0,
+            metric_base="FinancingCash",
+            metric_group="cashflow",
+        )
 
         result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
 
         rows = {
             (row.fiscal_year, row.quarter_type, row.metric_base): row
             for row in result.rows
-            if row.metric_base in {"OperatingCash", "InvestmentCash", "FCF"}
+            if row.metric_base in {"OperatingCash", "InvestmentCash", "FinancingCash", "FCF"}
         }
         self.assertNotIn((2026, "1Q", "OperatingCash"), rows)
         self.assertNotIn((2026, "2Q", "OperatingCash"), rows)
@@ -386,6 +469,72 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         self.assertNotIn((2026, "2Q", "FCF"), rows)
         self.assertNotIn((2026, "3Q", "FCF"), rows)
         self.assertNotIn((2026, "4Q", "FCF"), rows)
+        self.assertEqual(rows[(2026, "1~2Q", "OperatingCash")].value_num, 180.0)
+        self.assertEqual(rows[(2026, "3~4Q", "OperatingCash")].value_num, 220.0)
+        self.assertEqual(rows[(2026, "1~2Q", "InvestmentCash")].value_num, -50.0)
+        self.assertEqual(rows[(2026, "3~4Q", "InvestmentCash")].value_num, -100.0)
+        self.assertEqual(rows[(2026, "1~2Q", "FinancingCash")].value_num, 40.0)
+        self.assertEqual(rows[(2026, "3~4Q", "FinancingCash")].value_num, 110.0)
+        self.assertEqual(rows[(2026, "1~2Q", "FCF")].value_num, 130.0)
+        self.assertEqual(rows[(2026, "3~4Q", "FCF")].value_num, 120.0)
+        growth_rows = {
+            (row.fiscal_year, row.quarter_type, row.metric_base): row
+            for row in result.rows
+            if row.metric_base in {
+                "OperatingCashGrowthRate",
+                "InvestmentCashGrowthRate",
+                "FinancingCashGrowthRate",
+                "FCFGrowthRate",
+            }
+        }
+        self.assertEqual(growth_rows[(2026, "1~2Q", "OperatingCashGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "3~4Q", "OperatingCashGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "1~2Q", "InvestmentCashGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "3~4Q", "InvestmentCashGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "1~2Q", "FinancingCashGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "3~4Q", "FinancingCashGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "1~2Q", "FCFGrowthRate")].value_num, 2.0)
+        self.assertEqual(growth_rows[(2026, "3~4Q", "FCFGrowthRate")].value_num, 2.0)
+
+    def test_builds_quarter_standalone_combined_expense(self) -> None:
+        for quarter, period_end, value in [
+            ("1Q", "2025-06-30", 70.0),
+            ("2Q", "2025-09-30", 140.0),
+            ("3Q", "2025-12-31", 240.0),
+        ]:
+            _insert_jquants_metric(
+                self.conn,
+                disclosure_number=f"fy2026{quarter}expense",
+                fiscal_year=2026,
+                quarter_type=quarter,
+                period_end=period_end,
+                value=value,
+                metric_base="CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+                metric_group="profitability",
+                source_field="calculated:Sales-OP",
+            )
+        _insert_edinet_metric(
+            self.conn,
+            doc_id="fy2026expense",
+            form_type="030000",
+            period_end="2026-03-31",
+            value=360.0,
+            metric_base="CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+            metric_group="profitability",
+        )
+
+        result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
+
+        rows = {
+            (row.fiscal_year, row.quarter_type, row.metric_base): row
+            for row in result.rows
+            if row.metric_base == "CostOfSalesAndSellingGeneralAndAdministrativeExpenses"
+        }
+        base = "CostOfSalesAndSellingGeneralAndAdministrativeExpenses"
+        self.assertEqual(rows[(2026, "1Q", base)].value_num, 70.0)
+        self.assertEqual(rows[(2026, "2Q", base)].value_num, 70.0)
+        self.assertEqual(rows[(2026, "3Q", base)].value_num, 100.0)
+        self.assertEqual(rows[(2026, "4Q", base)].value_num, 120.0)
 
     def test_profit_before_tax_uses_ordinary_income_equivalent_when_missing(self) -> None:
         _insert_jquants_metric(
