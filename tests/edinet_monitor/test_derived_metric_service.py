@@ -1476,6 +1476,57 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["AssetsPerShareCurrent"]["period_key"], "actual:2Q")
         self.assertEqual(by_key["LiabilitiesPerShareCurrent"]["quarter_type"], "2Q")
 
+    def test_2q_assets_and_liabilities_per_share_fall_back_to_latest_annual_shares(self) -> None:
+        normalized_rows = [
+            build_normalized_row("IssuedSharesCurrent", 1_300),
+            build_normalized_row("TreasurySharesCurrent", 1_300),
+            build_normalized_row("NetSalesCurrent", 1_200_000),
+            build_normalized_row("OrdinaryIncomeCurrent", 100_000),
+            build_normalized_row("CostOfSalesCurrent", 400_000),
+            build_normalized_row("SellingExpensesCurrent", 200_000),
+            build_normalized_row("OperatingIncomeCurrent", 150_000),
+            build_normalized_row("CashAndCashEquivalentsCurrent", 100_000),
+            build_normalized_row("OperatingCashCurrent", 70_000),
+            build_normalized_row("InvestmentCashCurrent", -10_000),
+            build_normalized_row("TotalAssetsCurrent", 750_864_000_000),
+            build_normalized_row("NetAssetsCurrent", 346_997_000_000),
+        ]
+
+        rows = calculate_derived_metrics(
+            normalized_rows,
+            form_type="043A00",
+            accounting_standard="jpgaap",
+            document_display_unit="百万円",
+            half_progress_annual_values={
+                "IssuedShares": {
+                    "doc_id": "ANNUAL",
+                    "metric_key": "IssuedSharesCurrent",
+                    "period_end": "2025-03-31",
+                    "value_num": 177_976_280,
+                },
+                "TreasuryShares": {
+                    "doc_id": "ANNUAL",
+                    "metric_key": "TreasurySharesCurrent",
+                    "period_end": "2025-03-31",
+                    "value_num": 100,
+                },
+            },
+        )
+        by_key = {row["metric_key"]: row for row in rows}
+
+        self.assertAlmostEqual(
+            by_key["AssetsPerShareCurrent"]["value_num"],
+            750_864_000_000 / 177_976_280,
+        )
+        self.assertAlmostEqual(
+            by_key["LiabilitiesPerShareCurrent"]["value_num"],
+            (750_864_000_000 - 346_997_000_000) / 177_976_280,
+        )
+        self.assertEqual(
+            by_key["AssetsPerShareCurrent"]["source_detail_json"]["denominator_detail"]["selected_source"],
+            "latest_annual_issued_shares_minus_treasury_shares",
+        )
+
     def test_growth_rate_uses_null_when_prior_is_zero_or_negative(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

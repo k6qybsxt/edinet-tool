@@ -33,6 +33,15 @@ ROIC_EXCLUDED_INDUSTRIES = {
     "\u4fdd\u967a\u696d",
 }
 
+
+def _safe_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
 INTEREST_BEARING_LIABILITIES_TOTAL_BASES = [
     "InterestBearingLiabilitiesCurrent",
     "InterestBearingLiabilitiesNonCurrent",
@@ -580,6 +589,51 @@ def _outstanding_shares_input(
         },
         "display_formula": "issued_shares - treasury_shares (treat blank or <1000 treasury_shares as 0)",
         "stored_formula": "issued_shares - treasury_shares_effective",
+    }
+
+
+def _outstanding_shares_input_with_half_annual_fallback(
+    metric_rows: dict[str, dict[str, Any]],
+    suffix: str,
+    *,
+    half_progress_annual_values: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    current = _outstanding_shares_input(metric_rows, suffix)
+    if suffix != "Current":
+        return current
+    if current["value_num"] is not None and current["value_num"] > 1000:
+        return current
+
+    issued_detail = half_progress_annual_values.get("IssuedShares") or {}
+    treasury_detail = half_progress_annual_values.get("TreasuryShares") or {}
+    issued_value = _safe_float(issued_detail.get("value_num"))
+    treasury_value = _safe_float(treasury_detail.get("value_num"))
+    value_num, calc_status, effective_treasury_value = _outstanding_shares_status(
+        issued_shares=issued_value,
+        treasury_shares=treasury_value,
+    )
+    if value_num is None or value_num <= 0:
+        return current
+
+    return {
+        "value_num": value_num,
+        "calc_status": calc_status,
+        "detail_inputs": {
+            **current["detail_inputs"],
+            "AnnualIssuedSharesCurrent": issued_value,
+            "AnnualTreasurySharesCurrent": treasury_value,
+            "AnnualTreasurySharesCurrent_effective": effective_treasury_value,
+        },
+        "reference_keys": current["reference_keys"],
+        "detail_extra": {
+            "selected_source": "latest_annual_issued_shares_minus_treasury_shares",
+            "fallback_from_calc_status": current["calc_status"],
+            "annual_issued_shares_detail": issued_detail,
+            "annual_treasury_shares_detail": treasury_detail,
+            "effective_treasury_shares": effective_treasury_value,
+        },
+        "display_formula": current["display_formula"],
+        "stored_formula": "latest_annual_issued_shares - latest_annual_treasury_shares_effective",
     }
 
 
@@ -2702,7 +2756,11 @@ def calculate_derived_metrics(
         formula_name="assets_per_share",
         display_formula="total_assets / outstanding_shares",
         numerator_builder=lambda metric_rows, suffix: _single_metric("TotalAssets", suffix),
-        denominator_builder=_outstanding_shares_input,
+        denominator_builder=lambda metric_rows, suffix: _outstanding_shares_input_with_half_annual_fallback(
+            metric_rows,
+            suffix,
+            half_progress_annual_values=half_progress_annual_values,
+        ),
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
@@ -2723,7 +2781,11 @@ def calculate_derived_metrics(
             right_metric_base="NetAssets",
             suffix=suffix,
         ),
-        denominator_builder=_outstanding_shares_input,
+        denominator_builder=lambda metric_rows, suffix: _outstanding_shares_input_with_half_annual_fallback(
+            metric_rows,
+            suffix,
+            half_progress_annual_values=half_progress_annual_values,
+        ),
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,

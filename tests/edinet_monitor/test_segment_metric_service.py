@@ -241,6 +241,13 @@ class SegmentMetricServiceTest(unittest.TestCase):
         )
         _insert_raw_fact(
             self.conn,
+            tag_name="OperatingIncome",
+            member_qname="jpcrp040300-ssr_E03217-000:UNIQLOJAPANReportableSegmentMember",
+            value_text="120000000",
+            axis_qname="jpcrp_cor:GeographicalAreasAxis",
+        )
+        _insert_raw_fact(
+            self.conn,
             tag_name="NetSales",
             member_qname="jpcrp_cor:JAPANMember",
             value_text="200000000",
@@ -253,6 +260,10 @@ class SegmentMetricServiceTest(unittest.TestCase):
         row_by_member = {row.member_qname: row for row in result.rows}
         self.assertEqual(
             row_by_member["jpcrp040300-ssr_E03217-000:UNIQLOJapanMember"].segment_kind,
+            "business",
+        )
+        self.assertEqual(
+            row_by_member["jpcrp040300-ssr_E03217-000:UNIQLOJAPANReportableSegmentMember"].segment_kind,
             "business",
         )
         self.assertEqual(row_by_member["jpcrp_cor:JAPANMember"].segment_kind, "region")

@@ -419,12 +419,19 @@ def _is_region_member(member_qname: str) -> bool:
     return any(core_upper == marker or core_upper.startswith(marker) for marker in REGION_MEMBER_LABELS)
 
 
+def _is_known_business_member_with_region_name(member_qname: str) -> bool:
+    core_upper = _member_core(member_qname).upper()
+    return "UNIQLO" in core_upper and "JAPAN" in core_upper
+
+
 def _segment_kind(member_qname: str, axis_qname: str) -> str | None:
     text = f"{member_qname} {axis_qname}"
     if _is_total_member(member_qname):
         return "total"
     if _contains_any(text, EXCLUDED_MEMBER_MARKERS):
         return None
+    if _is_known_business_member_with_region_name(member_qname):
+        return "business"
     if _contains_any(axis_qname, ("Geographical", "Geographic", "Region", "Area")):
         return "region"
     if _is_region_member(member_qname):

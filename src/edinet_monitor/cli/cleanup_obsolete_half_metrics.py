@@ -27,8 +27,6 @@ OBSOLETE_HALF_DERIVED_METRIC_KEYS = [
     "StockPriceGrowthRate10YearCurrent",
     "TheoreticalSharePriceGrowthRate5YearCurrent",
     "TheoreticalSharePriceGrowthRate10YearCurrent",
-    "AssetsPerShareCurrent",
-    "LiabilitiesPerShareCurrent",
     "InterestBearingDebtCurrent",
     "ROICCurrent",
 ]

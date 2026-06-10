@@ -26,6 +26,10 @@ OUTSTANDING_SHARES_COMPONENT_KEYS = {
     "IssuedSharesCurrent",
     "TreasurySharesCurrent",
 }
+HALF_SHARE_REFERENCE_KEYS = {
+    "IssuedShares": "IssuedSharesCurrent",
+    "TreasuryShares": "TreasurySharesCurrent",
+}
 HALF_PROGRESS_ANNUAL_METRIC_KEYS = {
     "NetSales": "NetSalesCurrent",
     "OrdinaryIncome": "OrdinaryIncomeCurrent",
@@ -550,34 +554,74 @@ def fetch_half_progress_annual_values(
         """,
         (edinet_code, half_period_end.isoformat(), half_period_end.isoformat()),
     ).fetchone()
-    if not annual_doc:
-        return {}
+    out: dict[str, dict[str, Any]] = {}
+    if annual_doc:
+        metric_keys = tuple(HALF_PROGRESS_ANNUAL_METRIC_KEYS.values())
+        placeholders = ",".join("?" for _ in metric_keys)
+        rows = conn.execute(
+            f"""
+            SELECT metric_key, value_num, consolidation
+            FROM normalized_metrics
+            WHERE doc_id = ?
+              AND metric_key IN ({placeholders})
+            """,
+            (annual_doc["doc_id"], *metric_keys),
+        ).fetchall()
 
-    metric_keys = tuple(HALF_PROGRESS_ANNUAL_METRIC_KEYS.values())
-    placeholders = ",".join("?" for _ in metric_keys)
-    rows = conn.execute(
+        key_to_base = {
+            metric_key: metric_base
+            for metric_base, metric_key in HALF_PROGRESS_ANNUAL_METRIC_KEYS.items()
+        }
+        for row in rows:
+            metric_base = key_to_base.get(str(row["metric_key"] or ""))
+            if not metric_base:
+                continue
+            out[metric_base] = {
+                "doc_id": annual_doc["doc_id"],
+                "metric_key": row["metric_key"],
+                "period_end": annual_doc["period_end"],
+                "consolidation": row["consolidation"],
+                "value_num": _to_float(row["value_num"]),
+            }
+
+    share_doc = conn.execute(
+        """
+        SELECT doc_id, period_end
+        FROM filings
+        WHERE edinet_code = ?
+          AND form_type = '030000'
+          AND COALESCE(period_end, '') <= ?
+        ORDER BY period_end DESC, COALESCE(submit_date, '') DESC, doc_id DESC
+        LIMIT 1
+        """,
+        (edinet_code, half_period_end.isoformat()),
+    ).fetchone()
+    if not share_doc:
+        return out
+
+    share_keys = tuple(HALF_SHARE_REFERENCE_KEYS.values())
+    share_placeholders = ",".join("?" for _ in share_keys)
+    share_rows = conn.execute(
         f"""
         SELECT metric_key, value_num, consolidation
         FROM normalized_metrics
         WHERE doc_id = ?
-          AND metric_key IN ({placeholders})
+          AND metric_key IN ({share_placeholders})
         """,
-        (annual_doc["doc_id"], *metric_keys),
+        (share_doc["doc_id"], *share_keys),
     ).fetchall()
-
-    key_to_base = {
+    share_key_to_base = {
         metric_key: metric_base
-        for metric_base, metric_key in HALF_PROGRESS_ANNUAL_METRIC_KEYS.items()
+        for metric_base, metric_key in HALF_SHARE_REFERENCE_KEYS.items()
     }
-    out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        metric_base = key_to_base.get(str(row["metric_key"] or ""))
+    for row in share_rows:
+        metric_base = share_key_to_base.get(str(row["metric_key"] or ""))
         if not metric_base:
             continue
         out[metric_base] = {
-            "doc_id": annual_doc["doc_id"],
+            "doc_id": share_doc["doc_id"],
             "metric_key": row["metric_key"],
-            "period_end": annual_doc["period_end"],
+            "period_end": share_doc["period_end"],
             "consolidation": row["consolidation"],
             "value_num": _to_float(row["value_num"]),
         }
@@ -657,36 +701,86 @@ def fetch_half_progress_annual_values_bulk(
             annual_doc_to_requests.setdefault(annual_doc_id, []).append(request_doc_id)
 
         annual_doc_ids = [doc_id for doc_id in annual_doc_to_requests if doc_id]
-        if not annual_doc_ids:
-            continue
+        if annual_doc_ids:
+            metric_keys = tuple(HALF_PROGRESS_ANNUAL_METRIC_KEYS.values())
+            doc_placeholders = ",".join("?" for _ in annual_doc_ids)
+            metric_placeholders = ",".join("?" for _ in metric_keys)
+            rows = conn.execute(
+                f"""
+                SELECT doc_id, metric_key, value_num, consolidation
+                FROM normalized_metrics
+                WHERE doc_id IN ({doc_placeholders})
+                  AND metric_key IN ({metric_placeholders})
+                ORDER BY doc_id ASC, metric_key ASC
+                """,
+                (*annual_doc_ids, *metric_keys),
+            ).fetchall()
 
-        metric_keys = tuple(HALF_PROGRESS_ANNUAL_METRIC_KEYS.values())
-        doc_placeholders = ",".join("?" for _ in annual_doc_ids)
-        metric_placeholders = ",".join("?" for _ in metric_keys)
-        rows = conn.execute(
+            for row in rows:
+                annual_doc_id = str(row["doc_id"] or "")
+                metric_base = key_to_base.get(str(row["metric_key"] or ""))
+                if not metric_base:
+                    continue
+                for request_doc_id in annual_doc_to_requests.get(annual_doc_id, []):
+                    annual_doc = annual_by_request[request_doc_id]
+                    result.setdefault(request_doc_id, {})[metric_base] = {
+                        "doc_id": annual_doc["doc_id"],
+                        "metric_key": row["metric_key"],
+                        "period_end": annual_doc["period_end"],
+                        "consolidation": row["consolidation"],
+                        "value_num": _to_float(row["value_num"]),
+                    }
+
+        share_rows = conn.execute(
             f"""
-            SELECT doc_id, metric_key, value_num, consolidation
-            FROM normalized_metrics
-            WHERE doc_id IN ({doc_placeholders})
-              AND metric_key IN ({metric_placeholders})
-            ORDER BY doc_id ASC, metric_key ASC
+            WITH wanted(request_doc_id, edinet_code, half_period_end) AS (
+                VALUES {values_sql}
+            ),
+            ranked AS (
+                SELECT
+                    w.request_doc_id,
+                    f.doc_id AS annual_doc_id,
+                    f.period_end AS annual_period_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY w.request_doc_id
+                        ORDER BY f.period_end DESC, COALESCE(f.submit_date, '') DESC, f.doc_id DESC
+                    ) AS row_num
+                FROM wanted w
+                INNER JOIN filings f
+                    ON f.edinet_code = w.edinet_code
+                WHERE f.form_type = '030000'
+                  AND COALESCE(f.period_end, '') <= w.half_period_end
+            )
+            SELECT
+                ranked.request_doc_id,
+                ranked.annual_doc_id,
+                ranked.annual_period_end,
+                nm.metric_key,
+                nm.value_num,
+                nm.consolidation
+            FROM ranked
+            INNER JOIN normalized_metrics nm
+                ON nm.doc_id = ranked.annual_doc_id
+            WHERE ranked.row_num = 1
+              AND nm.metric_key IN ({",".join("?" for _ in HALF_SHARE_REFERENCE_KEYS)})
+            ORDER BY ranked.request_doc_id ASC, nm.metric_key ASC
             """,
-            (*annual_doc_ids, *metric_keys),
+            (*params, *HALF_SHARE_REFERENCE_KEYS.values()),
         ).fetchall()
-
-        for row in rows:
-            annual_doc_id = str(row["doc_id"] or "")
-            metric_base = key_to_base.get(str(row["metric_key"] or ""))
+        share_key_to_base = {
+            metric_key: metric_base
+            for metric_base, metric_key in HALF_SHARE_REFERENCE_KEYS.items()
+        }
+        for row in share_rows:
+            metric_base = share_key_to_base.get(str(row["metric_key"] or ""))
             if not metric_base:
                 continue
-            for request_doc_id in annual_doc_to_requests.get(annual_doc_id, []):
-                annual_doc = annual_by_request[request_doc_id]
-                result.setdefault(request_doc_id, {})[metric_base] = {
-                    "doc_id": annual_doc["doc_id"],
-                    "metric_key": row["metric_key"],
-                    "period_end": annual_doc["period_end"],
-                    "consolidation": row["consolidation"],
-                    "value_num": _to_float(row["value_num"]),
-                }
+            result.setdefault(str(row["request_doc_id"] or ""), {})[metric_base] = {
+                "doc_id": row["annual_doc_id"],
+                "metric_key": row["metric_key"],
+                "period_end": row["annual_period_end"],
+                "consolidation": row["consolidation"],
+                "value_num": _to_float(row["value_num"]),
+            }
 
     return result
