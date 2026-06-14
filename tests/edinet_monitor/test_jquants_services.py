@@ -30,6 +30,7 @@ from edinet_monitor.services.jquants.raw_rebuild_service import (  # noqa: E402
 )
 from edinet_monitor.services.jquants.repository import (  # noqa: E402
     record_ingest_progress,
+    upsert_cash_balance_growth_metrics,
     upsert_financial_metrics,
     upsert_quote,
 )
@@ -471,6 +472,91 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM jquants_daily_quotes").fetchone()[0], 1)
         conn.close()
 
+    def test_cash_balance_growth_metrics_use_prior_year_same_quarter(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE issuer_master (
+                edinet_code TEXT PRIMARY KEY,
+                security_code TEXT
+            );
+            INSERT INTO issuer_master VALUES ('E00001', '11110');
+            CREATE TABLE jquants_financial_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                disclosure_number TEXT NOT NULL,
+                local_code TEXT NOT NULL,
+                security_code TEXT,
+                edinet_code TEXT,
+                metric_kind TEXT NOT NULL,
+                period_scope TEXT NOT NULL,
+                period_key TEXT NOT NULL,
+                quarter_type TEXT,
+                forecast_target TEXT,
+                forecast_stage TEXT,
+                fiscal_year INTEGER,
+                period_start TEXT,
+                period_end TEXT,
+                disclosed_date TEXT,
+                disclosed_time TEXT,
+                metric_key TEXT NOT NULL,
+                metric_base TEXT NOT NULL,
+                metric_group TEXT NOT NULL,
+                value_num REAL,
+                value_unit TEXT NOT NULL,
+                calc_status TEXT NOT NULL,
+                source_field TEXT NOT NULL,
+                source_detail_json TEXT,
+                rule_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX uq_jquants_financial_metrics_scope
+            ON jquants_financial_metrics(disclosure_number, period_key, metric_key);
+            """
+        )
+        prior = _statement_row("1Q")
+        prior.update(
+            {
+                "DiscNo": "D-2025-1Q",
+                "DiscDate": "2025-08-01",
+                "CurPerSt": "2024-04-01",
+                "CurPerEn": "2024-06-30",
+                "CurFYSt": "2024-04-01",
+                "CurFYEn": "2025-03-31",
+                "CashEq": "100000000",
+            }
+        )
+        current = _statement_row("1Q")
+        current.update({"DiscNo": "D-2026-1Q", "CashEq": "250000000"})
+        missing_prior = _statement_row("2Q")
+        missing_prior.update({"DiscNo": "D-2026-2Q", "CashEq": "300000000"})
+
+        upsert_financial_metrics(conn, statement_metrics_from_row(prior, include_forecasts=False))
+        upsert_financial_metrics(conn, statement_metrics_from_row(current, include_forecasts=False))
+        upsert_financial_metrics(conn, statement_metrics_from_row(missing_prior, include_forecasts=False))
+        saved = upsert_cash_balance_growth_metrics(
+            conn,
+            disclosure_numbers=["D-2026-1Q", "D-2026-2Q"],
+        )
+
+        rows = {
+            row["period_key"]: row
+            for row in conn.execute(
+                """
+                SELECT period_key, value_num, calc_status
+                FROM jquants_financial_metrics
+                WHERE metric_base = 'CashBalanceGrowthRate'
+                """
+            ).fetchall()
+        }
+        self.assertEqual(saved, 2)
+        self.assertAlmostEqual(rows["actual:1Q"]["value_num"], 2.5)
+        self.assertEqual(rows["actual:1Q"]["calc_status"], "ok")
+        self.assertIsNone(rows["actual:2Q"]["value_num"])
+        self.assertEqual(rows["actual:2Q"]["calc_status"], "missing_input")
+        conn.close()
+
     def test_rebuild_metrics_from_raw_adds_forecast_operating_income(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -570,6 +656,15 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(result.raw_rows, 1)
         self.assertEqual(metric["value_num"], 50000000.0)
         self.assertEqual(metric["source_field"], "FOP")
+        growth = conn.execute(
+            """
+            SELECT value_num, calc_status
+            FROM jquants_financial_metrics
+            WHERE metric_base = 'CashBalanceGrowthRate'
+            """
+        ).fetchone()
+        self.assertIsNone(growth["value_num"])
+        self.assertEqual(growth["calc_status"], "missing_input")
         conn.close()
 
 

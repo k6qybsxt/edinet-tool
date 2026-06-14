@@ -7,7 +7,10 @@ from pathlib import Path
 import sqlite3
 
 from edinet_monitor.services.jquants.mapper import ACTUAL_PERIODS, statement_metrics_from_row
-from edinet_monitor.services.jquants.repository import upsert_financial_metrics
+from edinet_monitor.services.jquants.repository import (
+    upsert_cash_balance_growth_metrics,
+    upsert_financial_metrics,
+)
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,7 @@ def rebuild_jquants_financial_metrics_from_raw(
     skipped_rows = 0
     error_rows = 0
     sample_errors: list[str] = []
+    saved_disclosures: list[str] = []
 
     for row in rows:
         raw_rows += 1
@@ -139,8 +143,13 @@ def rebuild_jquants_financial_metrics_from_raw(
         metrics_built += len(metrics)
         if apply and metrics:
             metrics_saved += upsert_financial_metrics(conn, metrics)
+            saved_disclosures.append(str(row["disclosure_number"]))
 
     if apply:
+        metrics_saved += upsert_cash_balance_growth_metrics(
+            conn,
+            disclosure_numbers=saved_disclosures,
+        )
         conn.commit()
 
     output_path = None

@@ -308,16 +308,9 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
             output_dir=TMP_ROOT,
         )
 
-        rows = {
-            (row.fiscal_year, row.quarter_type, row.metric_base): row
-            for row in result.rows
-            if row.metric_base in {"NetSales", "NetSalesGrowthRate"}
-        }
-        self.assertEqual(rows[(2026, "1Q", "NetSales")].value_num, 100)
-        self.assertEqual(rows[(2026, "2Q", "NetSales")].value_num, 120)
-        self.assertEqual(rows[(2026, "3Q", "NetSales")].value_num, 150)
-        self.assertEqual(rows[(2026, "4Q", "NetSales")].value_num, 130)
-        self.assertAlmostEqual(rows[(2026, "2Q", "NetSalesGrowthRate")].value_num or 0, 1.2)
+        bases = {row.metric_base for row in result.rows}
+        self.assertNotIn("NetSales", bases)
+        self.assertNotIn("NetSalesGrowthRate", bases)
         self.assertTrue(result.output_path.exists())
 
     def test_suppresses_1q_to_3q_cashflow_standalone_rows(self) -> None:
@@ -493,8 +486,8 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         self.assertEqual(growth_rows[(2026, "3~4Q", "InvestmentCashGrowthRate")].value_num, 2.0)
         self.assertEqual(growth_rows[(2026, "1~2Q", "FinancingCashGrowthRate")].value_num, 2.0)
         self.assertEqual(growth_rows[(2026, "3~4Q", "FinancingCashGrowthRate")].value_num, 2.0)
-        self.assertEqual(growth_rows[(2026, "1~2Q", "FCFGrowthRate")].value_num, 2.0)
-        self.assertEqual(growth_rows[(2026, "3~4Q", "FCFGrowthRate")].value_num, 2.0)
+        self.assertNotIn((2026, "1~2Q", "FCFGrowthRate"), growth_rows)
+        self.assertNotIn((2026, "3~4Q", "FCFGrowthRate"), growth_rows)
 
     def test_builds_quarter_standalone_combined_expense(self) -> None:
         for quarter, period_end, value in [
@@ -525,16 +518,8 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
 
         result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
 
-        rows = {
-            (row.fiscal_year, row.quarter_type, row.metric_base): row
-            for row in result.rows
-            if row.metric_base == "CostOfSalesAndSellingGeneralAndAdministrativeExpenses"
-        }
-        base = "CostOfSalesAndSellingGeneralAndAdministrativeExpenses"
-        self.assertEqual(rows[(2026, "1Q", base)].value_num, 70.0)
-        self.assertEqual(rows[(2026, "2Q", base)].value_num, 70.0)
-        self.assertEqual(rows[(2026, "3Q", base)].value_num, 100.0)
-        self.assertEqual(rows[(2026, "4Q", base)].value_num, 120.0)
+        bases = {row.metric_base for row in result.rows}
+        self.assertNotIn("CostOfSalesAndSellingGeneralAndAdministrativeExpenses", bases)
 
     def test_profit_before_tax_uses_ordinary_income_equivalent_when_missing(self) -> None:
         _insert_jquants_metric(
@@ -573,17 +558,8 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
 
         result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
 
-        rows = {
-            (row.fiscal_year, row.quarter_type, row.metric_base): row
-            for row in result.rows
-            if row.metric_base == "ProfitBeforeTax"
-        }
-        self.assertEqual(rows[(2026, "1Q", "ProfitBeforeTax")].value_num, 100.0)
-        self.assertEqual(rows[(2026, "3Q", "ProfitBeforeTax")].value_num, 140.0)
-        self.assertIn(
-            "derived:OrdinaryIncome_as_ProfitBeforeTax_equivalent",
-            rows[(2026, "1Q", "ProfitBeforeTax")].source_detail_json,
-        )
+        bases = {row.metric_base for row in result.rows}
+        self.assertNotIn("ProfitBeforeTax", bases)
 
     def test_direct_profit_before_tax_takes_precedence_over_ordinary_income(self) -> None:
         _insert_jquants_metric(
@@ -611,16 +587,8 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
 
         result = save_quarter_standalone_metrics(self.conn, codes=["7203"], output_dir=TMP_ROOT)
 
-        rows = {
-            (row.fiscal_year, row.quarter_type, row.metric_base): row
-            for row in result.rows
-            if row.metric_base == "ProfitBeforeTax"
-        }
-        self.assertEqual(rows[(2026, "1Q", "ProfitBeforeTax")].value_num, 120.0)
-        self.assertNotIn(
-            "derived:OrdinaryIncome_as_ProfitBeforeTax_equivalent",
-            rows[(2026, "1Q", "ProfitBeforeTax")].source_detail_json,
-        )
+        bases = {row.metric_base for row in result.rows}
+        self.assertNotIn("ProfitBeforeTax", bases)
 
     def test_apply_is_idempotent(self) -> None:
         _insert_jquants_metric(
@@ -636,7 +604,7 @@ class QuarterStandaloneMetricServiceTest(unittest.TestCase):
         save_quarter_standalone_metrics(self.conn, codes=["7203"], apply=True, output_dir=TMP_ROOT)
 
         count = self.conn.execute("SELECT COUNT(*) FROM quarter_standalone_metrics").fetchone()[0]
-        self.assertEqual(count, 8)
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

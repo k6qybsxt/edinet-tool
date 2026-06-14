@@ -17,6 +17,7 @@ from edinet_monitor.services.jquants.raw_json_store import write_fins_summary_ra
 from edinet_monitor.services.jquants.repository import (
     record_ingest_progress,
     record_ingest_run,
+    upsert_cash_balance_growth_metrics,
     upsert_financial_metrics,
     upsert_quote,
     upsert_statement_raw,
@@ -100,6 +101,7 @@ def save_jquants_statements(
                 code_fetched = 0
                 code_saved = 0
                 code_skipped = 0
+                code_disclosures: list[str] = []
                 for item in client.iter_fin_summary(code=code):
                     raw, metrics = _convert_statement_item(
                         item,
@@ -114,9 +116,16 @@ def save_jquants_statements(
                         saved_count = upsert_financial_metrics(conn, metrics)
                         saved_total += saved_count
                         code_saved += saved_count
+                        code_disclosures.append(raw.disclosure_number)
                     else:
                         skipped_total += 1
                         code_skipped += 1
+                growth_saved = upsert_cash_balance_growth_metrics(
+                    conn,
+                    disclosure_numbers=code_disclosures,
+                )
+                saved_total += growth_saved
+                code_saved += growth_saved
                 record_ingest_progress(
                     conn,
                     run_id=run_id,
@@ -155,6 +164,7 @@ def save_jquants_statements(
                 day_fetched = 0
                 day_saved = 0
                 day_rows: list[dict] = []
+                day_disclosures: list[str] = []
                 for item in client.iter_fin_summary(date=api_date):
                     raw, metrics = _convert_statement_item(
                         item,
@@ -168,6 +178,13 @@ def save_jquants_statements(
                     saved_count = upsert_financial_metrics(conn, metrics)
                     saved_total += saved_count
                     day_saved += saved_count
+                    day_disclosures.append(raw.disclosure_number)
+                growth_saved = upsert_cash_balance_growth_metrics(
+                    conn,
+                    disclosure_numbers=day_disclosures,
+                )
+                saved_total += growth_saved
+                day_saved += growth_saved
                 if save_raw_json:
                     raw_written = write_fins_summary_raw_jsonl(
                         day_rows,

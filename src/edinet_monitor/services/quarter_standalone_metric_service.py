@@ -7,6 +7,13 @@ import json
 import sqlite3
 from typing import Any
 
+from edinet_monitor.services.obsolete_quarter_metric_service import (
+    FCF_GROWTH_BASE,
+    OBSOLETE_QUARTER_STANDALONE_BASES,
+    STANDALONE_QUARTER_TYPES,
+    is_obsolete_quarter_standalone_metric,
+)
+
 
 QUARTER_STANDALONE_RULE_VERSION = "quarter-standalone-2026-05-15-v1"
 QUARTER_TYPES = ("1Q", "2Q", "3Q", "4Q")
@@ -818,6 +825,31 @@ def _delete_obsolete_quarter_standalone_rows(conn: sqlite3.Connection) -> None:
           )
         """
     )
+    placeholders = ",".join("?" for _ in OBSOLETE_QUARTER_STANDALONE_BASES)
+    conn.execute(
+        f"""
+        DELETE FROM quarter_standalone_metrics
+        WHERE quarter_type IN ('1Q', '2Q', '3Q', '4Q')
+          AND metric_base IN ({placeholders})
+        """,
+        tuple(sorted(OBSOLETE_QUARTER_STANDALONE_BASES)),
+    )
+    conn.execute(
+        """
+        DELETE FROM quarter_standalone_metrics
+        WHERE metric_base = ?
+        """,
+        (FCF_GROWTH_BASE,),
+    )
+
+
+def _filter_obsolete_rows(rows: list[QuarterStandaloneMetricRow]) -> list[QuarterStandaloneMetricRow]:
+    return [
+        row
+        for row in rows
+        if not is_obsolete_quarter_standalone_metric(row.metric_base, row.quarter_type)
+        and not (row.metric_base == FCF_GROWTH_BASE and row.quarter_type not in STANDALONE_QUARTER_TYPES)
+    ]
 
 
 def _save_rows(conn: sqlite3.Connection, rows: list[QuarterStandaloneMetricRow]) -> int:
@@ -954,7 +986,7 @@ def save_quarter_standalone_metrics(
         date_to=date_to,
     )
     cumulative = _merge_cumulative_sources(jquants_values, edinet_values)
-    rows = _build_rows_from_cumulative(cumulative)
+    rows = _filter_obsolete_rows(_build_rows_from_cumulative(cumulative))
 
     saved_rows = 0
     if apply:

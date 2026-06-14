@@ -36,6 +36,10 @@ from edinet_monitor.services.market_derived_metric_service import (
     MARKET_METRIC_BASES,
     market_derived_table_exists,
 )
+from edinet_monitor.services.obsolete_quarter_metric_service import (
+    FCF_GROWTH_BASE,
+    OBSOLETE_QUARTER_STANDALONE_BASES,
+)
 from edinet_monitor.services.quarter_standalone_metric_service import (
     FLOW_BASES as QUARTER_STANDALONE_FLOW_BASES,
     GROWTH_BASE_BY_FLOW_BASE as QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE,
@@ -260,7 +264,7 @@ ROW_KIND_MEDIAN = "\u4e2d\u592e\u5024"
 VALUE_KIND_BASE = "\u57fa\u6e96\u5024"
 VALUE_KIND_CALCULATED = "\u8a08\u7b97\u5024"
 DETAIL_ROW_KINDS = {ROW_KIND_DETAIL, ROW_KIND_CHANGE_RATE}
-SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES) | {"ProfitBeforeTax", "SegmentProfit"}
+SUPPRESSED_EXCEL_BASES = set(HALF_ONLY_BASES) | {"ProfitBeforeTax", "SegmentProfit", FCF_GROWTH_BASE}
 QUARTER_SUPPRESSED_EXCEL_BASES = {
     "OutstandingSharesGrowthRate",
     "AssetsPerShare",
@@ -310,6 +314,10 @@ QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER = {
         "FCFGrowthRate",
     },
 }
+for _quarter_type in ("1Q", "2Q", "3Q", "4Q"):
+    QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER.setdefault(_quarter_type, set()).update(
+        OBSOLETE_QUARTER_STANDALONE_BASES | {FCF_GROWTH_BASE}
+    )
 PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
 PERIOD_BLOCK_BORDER_COLOR = "9FBAD0"
@@ -1263,13 +1271,30 @@ def _display_base_for_accounting_standard(metric_base: str, accounting_standard:
     return metric_base
 
 
-def _quarter_standalone_label(metric_base: str, industry_33: str | None, quarter: str) -> str:
+def _metric_label_base_for_excel(
+    metric_base: str,
+    industry_33: str | None,
+    accounting_standard: str | None = None,
+) -> str:
+    if metric_base == "OrdinaryIncomeGrowthRate" and is_ifrs_or_us_gaap(accounting_standard):
+        return f"{_base_metric_label_for_excel('ProfitBeforeTax', industry_33)}\u5897\u76ca\u7387(\u524d\u671f\u6bd4)"
+    display_base = _display_base_for_accounting_standard(metric_base, accounting_standard)
+    return _base_metric_label_for_excel(display_base, industry_33)
+
+
+def _quarter_standalone_label(
+    metric_base: str,
+    industry_33: str | None,
+    quarter: str,
+    accounting_standard: str | None = None,
+) -> str:
     reverse_growth_map = {
         growth_base: source_base
         for source_base, growth_base in QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE.items()
     }
     if metric_base in reverse_growth_map:
         source_base = reverse_growth_map[metric_base]
+        source_base = _display_base_for_accounting_standard(source_base, accounting_standard)
         source_label = _base_metric_label_for_excel(source_base, industry_33)
         if source_base in {"NetSales", "CashAndCashEquivalents"}:
             growth_word = "\u5897\u53ce\u7387"
@@ -1278,7 +1303,8 @@ def _quarter_standalone_label(metric_base: str, industry_33: str | None, quarter
         else:
             growth_word = "\u5897\u76ca\u7387"
         return f"{quarter} {source_label}{growth_word} \u5358\u72ec(\u524d\u671f\u6bd4)"
-    label = _base_metric_label_for_excel(metric_base, industry_33)
+    display_base = _display_base_for_accounting_standard(metric_base, accounting_standard)
+    label = _base_metric_label_for_excel(display_base, industry_33)
     return f"{quarter} {label} \u5358\u72ec"
 
 
@@ -1289,8 +1315,7 @@ def _metric_label_for_excel(
     period_scope: str = "annual",
     accounting_standard: str | None = None,
 ) -> str:
-    display_base = _display_base_for_accounting_standard(metric_base, accounting_standard)
-    label = _base_metric_label_for_excel(display_base, industry_33)
+    label = _metric_label_base_for_excel(metric_base, industry_33, accounting_standard)
     if period_scope == "annual":
         return f"4Q {label}"
     if period_scope.startswith("quarter:"):
@@ -1298,7 +1323,7 @@ def _metric_label_for_excel(
         return f"{quarter} {label}"
     if period_scope.startswith("quarter_standalone:"):
         quarter = period_scope.split(":", 1)[1]
-        return _quarter_standalone_label(display_base, industry_33, quarter)
+        return _quarter_standalone_label(metric_base, industry_33, quarter, accounting_standard)
     if period_scope.startswith("forecast:"):
         stage = period_scope.split(":", 1)[1]
         stage_label = JQUANTS_FORECAST_STAGE_LABELS.get(stage, stage)
@@ -1334,8 +1359,13 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
             mapping[_normalize_text(f"{quarter} {metric_base_to_display_name(base)}")] = base
             mapping[_normalize_text(f"{quarter} {_base_metric_label_for_excel(base, sheet_name)}")] = base
             mapping[_normalize_text(_quarter_standalone_label(base, sheet_name, quarter))] = base
+            if base == "OrdinaryIncomeGrowthRate":
+                mapping[_normalize_text(f"{quarter} 税引前利益増益率(前期比)")] = base
+                mapping[_normalize_text(f"{quarter} 税引前利益増益率 単独(前期比)")] = base
         mapping[_normalize_text(f"2Q {metric_base_to_display_name(base)}")] = base
         mapping[_normalize_text(f"2Q {_base_metric_label_for_excel(base, sheet_name)}")] = base
+        if base == "OrdinaryIncomeGrowthRate":
+            mapping[_normalize_text("税引前利益増益率(前期比)")] = base
         for forecast_stage, stage_label in JQUANTS_FORECAST_STAGE_LABELS.items():
             mapping[_normalize_text(f"{stage_label} {metric_base_to_display_name(base)} \u4e88\u60f3")] = base
             mapping[_normalize_text(f"{stage_label} {_base_metric_label_for_excel(base, sheet_name)} \u4e88\u60f3")] = base
@@ -3282,6 +3312,18 @@ def _jquants_display_row_and_value(
     forecast_stage: str | None,
     accounting_standard: str | None = None,
 ) -> tuple[sqlite3.Row | None, float | None]:
+    if metric_base == "CashBalanceGrowthRate" and period_scope.startswith("quarter"):
+        row = _jquants_latest_row(
+            latest,
+            security_code=security_code,
+            period_scope=period_scope,
+            metric_base=metric_base,
+            fiscal_year=fiscal_year,
+            period_key=period_key,
+            forecast_stage=forecast_stage,
+        )
+        if row is not None:
+            return row, _jquants_ok_value(row)
     if metric_base in QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE and period_scope.startswith("quarter"):
         source_base = QUARTER_CUMULATIVE_GROWTH_SOURCE_BY_BASE[metric_base]
         current_row, current_value = _jquants_display_row_and_value(
@@ -3736,12 +3778,12 @@ def _append_quarter_standalone_period_rows(
                     row_kind=_row_kind_for_metric_base(base),
                     current_period_end=current_period_end,
                     metric_base=base,
-                    metric_label=_metric_label_for_excel(
-                        base,
-                        company["industry_33"],
-                        period_scope=period_scope,
-                        accounting_standard=str(company["accounting_standard"] or ""),
-                    ),
+                metric_label=_metric_label_for_excel(
+                    base,
+                    company["industry_33"],
+                    period_scope=period_scope,
+                    accounting_standard=str(company["accounting_standard"] or ""),
+                ),
                     periods_by_offset=periods_by_offset,
                     values_by_offset=values_by_offset,
                     units_by_offset=units_by_offset,
@@ -3871,22 +3913,22 @@ def _append_jquants_period_rows(
                 row_kind=_row_kind_for_metric_base(base),
                 current_period_end=current_period_end,
                 metric_base=base,
-                    metric_label=_metric_label_for_excel(
-                        base,
-                        company["industry_33"],
-                        period_scope=period_scope,
-                        accounting_standard=str(company["accounting_standard"] or ""),
-                    ),
+                metric_label=_metric_label_for_excel(
+                    base,
+                    company["industry_33"],
+                    period_scope=period_scope,
+                    accounting_standard=str(company["accounting_standard"] or ""),
+                ),
                 periods_by_offset=periods_by_offset,
                 values_by_offset=values_by_offset,
                 units_by_offset=units_by_offset,
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
                 ratio_kinds_by_offset=ratio_kinds_by_offset,
-                    value_kinds_by_offset=value_kinds_by_offset,
-                    accounting_standard=str(company["accounting_standard"] or ""),
-                )
+                value_kinds_by_offset=value_kinds_by_offset,
+                accounting_standard=str(company["accounting_standard"] or ""),
             )
+        )
         detail_rows_by_key[(security_code, period_scope, base)] = rows[-1]
 
 

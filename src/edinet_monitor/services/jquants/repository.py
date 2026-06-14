@@ -14,6 +14,9 @@ from edinet_monitor.services.jquants.mapper import (
 from edinet_monitor.services.jquants.audit_mapper import JQuantsListedInfoRaw
 
 
+CASH_BALANCE_GROWTH_PERIOD_KEYS = ("actual:1Q", "actual:2Q", "actual:3Q")
+
+
 @dataclass(frozen=True)
 class SaveCounts:
     raw_saved: int = 0
@@ -283,6 +286,122 @@ def upsert_listed_info_raw(conn: sqlite3.Connection, rows: list[JQuantsListedInf
         ],
     )
     return len(rows)
+
+
+def build_cash_balance_growth_metrics(
+    conn: sqlite3.Connection,
+    *,
+    disclosure_numbers: list[str] | tuple[str, ...] | None = None,
+) -> list[JQuantsStatementMetric]:
+    clean_disclosures = [str(value) for value in (disclosure_numbers or []) if str(value or "")]
+    if disclosure_numbers is not None and not clean_disclosures:
+        return []
+    where = [
+        "cur.metric_kind = 'actual'",
+        "cur.metric_base = 'CashAndCashEquivalents'",
+        f"cur.period_key IN ({','.join('?' for _ in CASH_BALANCE_GROWTH_PERIOD_KEYS)})",
+    ]
+    params: list[str] = [*CASH_BALANCE_GROWTH_PERIOD_KEYS]
+    if clean_disclosures:
+        where.append(f"cur.disclosure_number IN ({','.join('?' for _ in clean_disclosures)})")
+        params.extend(clean_disclosures)
+    rows = conn.execute(
+        f"""
+        SELECT
+          cur.disclosure_number,
+          cur.local_code,
+          cur.security_code,
+          cur.metric_kind,
+          cur.period_scope,
+          cur.period_key,
+          cur.quarter_type,
+          cur.fiscal_year,
+          cur.period_start,
+          cur.period_end,
+          cur.disclosed_date,
+          cur.disclosed_time,
+          cur.value_num AS current_value,
+          cur.calc_status AS current_status,
+          prior.disclosure_number AS prior_disclosure_number,
+          prior.period_end AS prior_period_end,
+          prior.value_num AS prior_value,
+          prior.calc_status AS prior_status
+        FROM jquants_financial_metrics cur
+        LEFT JOIN jquants_financial_metrics prior
+          ON prior.id = (
+            SELECT p.id
+            FROM jquants_financial_metrics p
+            WHERE p.metric_kind = 'actual'
+              AND p.metric_base = 'CashAndCashEquivalents'
+              AND p.period_key = cur.period_key
+              AND COALESCE(p.local_code, '') = COALESCE(cur.local_code, '')
+              AND p.fiscal_year = cur.fiscal_year - 1
+            ORDER BY COALESCE(p.disclosed_date, '') DESC,
+                     COALESCE(p.disclosed_time, '') DESC,
+                     p.id DESC
+            LIMIT 1
+          )
+        WHERE {' AND '.join(where)}
+        ORDER BY cur.local_code, cur.period_key, cur.fiscal_year
+        """,
+        params,
+    ).fetchall()
+    metrics: list[JQuantsStatementMetric] = []
+    for row in rows:
+        current_value = row["current_value"]
+        prior_value = row["prior_value"]
+        current_ok = str(row["current_status"] or "") == "ok" and current_value is not None
+        prior_ok = str(row["prior_status"] or "") == "ok" and prior_value is not None and float(prior_value) > 0
+        value_num = float(current_value) / float(prior_value) if current_ok and prior_ok else None
+        calc_status = "ok" if value_num is not None else "missing_input"
+        source_detail = {
+            "source": "jquants",
+            "api_version": "v2",
+            "source_metric_base": "CashAndCashEquivalents",
+            "current_value": current_value,
+            "current_calc_status": row["current_status"],
+            "prior_value": prior_value,
+            "prior_calc_status": row["prior_status"],
+            "prior_disclosure_number": row["prior_disclosure_number"],
+            "prior_period_end": row["prior_period_end"],
+            "rule": "current same-quarter cash balance / prior-year same-quarter cash balance",
+        }
+        metrics.append(
+            JQuantsStatementMetric(
+                disclosure_number=row["disclosure_number"],
+                local_code=row["local_code"],
+                security_code=row["security_code"],
+                metric_kind="actual",
+                period_scope="quarter",
+                period_key=row["period_key"],
+                quarter_type=row["quarter_type"],
+                forecast_target=None,
+                forecast_stage=None,
+                fiscal_year=row["fiscal_year"],
+                period_start=row["period_start"],
+                period_end=row["period_end"],
+                disclosed_date=row["disclosed_date"],
+                disclosed_time=row["disclosed_time"],
+                metric_key="CashBalanceGrowthRateCurrent",
+                metric_base="CashBalanceGrowthRate",
+                metric_group="growth",
+                value_num=value_num,
+                value_unit="ratio",
+                calc_status=calc_status,
+                source_field="calculated:CashAndCashEquivalents/prior_year_same_quarter",
+                source_detail_json=json.dumps(source_detail, ensure_ascii=False, sort_keys=True),
+            )
+        )
+    return metrics
+
+
+def upsert_cash_balance_growth_metrics(
+    conn: sqlite3.Connection,
+    *,
+    disclosure_numbers: list[str] | tuple[str, ...] | None = None,
+) -> int:
+    metrics = build_cash_balance_growth_metrics(conn, disclosure_numbers=disclosure_numbers)
+    return upsert_financial_metrics(conn, metrics)
 
 
 def record_ingest_run(
