@@ -1817,6 +1817,11 @@ def calculate_derived_metrics(
         source_key = _build_metric_key(estimated_profit_base, suffix)
         source_value = _metric_value(metric_rows, source_key)
         value_num, calc_status = _scaled_status(value_num=source_value, scale=0.7)
+        estimated_profit_label = (
+            "estimated_profit_before_tax"
+            if estimated_profit_base == "ProfitBeforeTax"
+            else "estimated_net_income"
+        )
         return {
             "value_num": value_num,
             "calc_status": calc_status,
@@ -1824,18 +1829,21 @@ def calculate_derived_metrics(
             "reference_keys": [source_key],
             "detail_extra": {
                 "selected_profit_base": estimated_profit_base,
+                "estimated_profit_label": estimated_profit_label,
                 "profit_base_role": "ordinary_income_equivalent",
             },
         }
 
     def _eps_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
-        estimated_net_income_inputs = _estimated_net_income_input(metric_rows, suffix)
+        estimated_profit_inputs = _estimated_net_income_input(metric_rows, suffix)
         outstanding_shares_inputs = _outstanding_shares_input(metric_rows, suffix)
         source_detail_extra: dict[str, Any] = {}
+        if estimated_profit_inputs.get("detail_extra"):
+            source_detail_extra["numerator_detail"] = estimated_profit_inputs["detail_extra"]
         if outstanding_shares_inputs.get("detail_extra"):
             source_detail_extra["denominator_detail"] = outstanding_shares_inputs["detail_extra"]
         value_num, calc_status = _ratio_status(
-            numerator=estimated_net_income_inputs["value_num"],
+            numerator=estimated_profit_inputs["value_num"],
             denominator=outstanding_shares_inputs["value_num"],
             require_positive_denominator=True,
         )
@@ -1843,21 +1851,21 @@ def calculate_derived_metrics(
             "value_num": value_num,
             "calc_status": calc_status,
             "detail_inputs": {
-                **estimated_net_income_inputs["detail_inputs"],
+                **estimated_profit_inputs["detail_inputs"],
                 **outstanding_shares_inputs["detail_inputs"],
             },
             "reference_keys": [
-                *estimated_net_income_inputs["reference_keys"],
+                *estimated_profit_inputs["reference_keys"],
                 *outstanding_shares_inputs["reference_keys"],
             ],
             "detail_extra": source_detail_extra or None,
         }
 
     def _roa_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
-        estimated_net_income_inputs = _estimated_net_income_input(metric_rows, suffix)
+        estimated_profit_inputs = _estimated_net_income_input(metric_rows, suffix)
         total_assets_inputs = _single_metric("TotalAssets", suffix)
         value_num, calc_status = _ratio_status(
-            numerator=estimated_net_income_inputs["value_num"],
+            numerator=estimated_profit_inputs["value_num"],
             denominator=total_assets_inputs["value_num"],
             require_positive_denominator=False,
         )
@@ -1865,13 +1873,16 @@ def calculate_derived_metrics(
             "value_num": value_num,
             "calc_status": calc_status,
             "detail_inputs": {
-                **estimated_net_income_inputs["detail_inputs"],
+                **estimated_profit_inputs["detail_inputs"],
                 **total_assets_inputs["detail_inputs"],
             },
             "reference_keys": [
-                *estimated_net_income_inputs["reference_keys"],
+                *estimated_profit_inputs["reference_keys"],
                 *total_assets_inputs["reference_keys"],
             ],
+            "detail_extra": {
+                "numerator_detail": estimated_profit_inputs.get("detail_extra"),
+            },
         }
 
     def _equity_ratio_input(metric_rows: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any]:
@@ -2722,7 +2733,7 @@ def calculate_derived_metrics(
         derived_metric_base="EPS",
         metric_group="share",
         formula_name="eps",
-        display_formula="estimated_net_income / outstanding_shares",
+        display_formula="estimated_profit / outstanding_shares",
         numerator_builder=_estimated_net_income_input,
         denominator_builder=_outstanding_shares_input,
         accounting_standard=accounting_standard,
@@ -2947,12 +2958,15 @@ def calculate_derived_metrics(
         metric_group="profitability",
         formula_name="estimated_net_income",
         scale=0.7,
-        display_formula="ordinary_income * 0.7",
+        display_formula="ordinary_income_or_profit_before_tax * 0.7",
         accounting_standard=accounting_standard,
         document_display_unit=document_display_unit,
         rule_version=rule_version,
         source_detail_extra={
             "selected_profit_base": estimated_profit_base,
+            "estimated_profit_label": "estimated_profit_before_tax"
+            if estimated_profit_base == "ProfitBeforeTax"
+            else "estimated_net_income",
             "profit_base_role": "ordinary_income_equivalent",
         },
     )

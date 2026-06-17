@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 
-JQUANTS_RULE_VERSION = "jquants-2026-05-24-v3"
+JQUANTS_RULE_VERSION = "jquants-2026-06-17-v2"
 ACTUAL_PERIODS = {"FY", "1Q", "2Q", "3Q"}
 FORECAST_TARGETS = ("FY", "2Q")
 _UNSET = object()
@@ -165,6 +165,14 @@ def _parse_decimal(value: Any) -> Decimal | None:
         return Decimal(text.replace(",", ""))
     except InvalidOperation:
         return None
+
+
+def _first_decimal(row: dict[str, Any], fields: tuple[str, ...]) -> tuple[str | None, Decimal | None]:
+    for field in fields:
+        value = _parse_decimal(row.get(field))
+        if value is not None:
+            return field, value
+    return None, None
 
 
 def _to_float(value: Decimal | None) -> float | None:
@@ -533,18 +541,6 @@ def statement_metrics_from_row(
     return metrics
 
 
-def _eps_profit_base_value(row: dict[str, Any]) -> tuple[Decimal | None, str | None, str | None]:
-    for field_name in ORDINARY_INCOME_ACTUAL_FIELDS:
-        value = _parse_decimal(row.get(field_name))
-        if value is not None:
-            return value, field_name, "OrdinaryIncome"
-    for field_name in PROFIT_BEFORE_TAX_ACTUAL_FIELDS:
-        value = _parse_decimal(row.get(field_name))
-        if value is not None:
-            return value, field_name, "ProfitBeforeTax"
-    return None, None, None
-
-
 def _outstanding_shares_value(row: dict[str, Any]) -> tuple[Decimal | None, str]:
     issued = _parse_decimal(row.get("ShOutFY"))
     treasury = _parse_decimal(row.get("TrShFY"))
@@ -645,17 +641,35 @@ def _calculated_combined_expense_metric(row: dict[str, Any], period: str) -> JQu
     )
 
 
+def _estimated_profit_for_eps(
+    row: dict[str, Any],
+) -> tuple[Decimal | None, str | None, str | None, str | None]:
+    field, profit_before_tax = _first_decimal(row, PROFIT_BEFORE_TAX_ACTUAL_FIELDS)
+    if profit_before_tax is not None:
+        return (
+            profit_before_tax * Decimal("0.7"),
+            "ProfitBeforeTax",
+            field,
+            "estimated_profit_before_tax",
+        )
+    ordinary_income = _parse_decimal(row.get("OdP"))
+    if ordinary_income is not None:
+        return (
+            ordinary_income * Decimal("0.7"),
+            "OrdinaryIncome",
+            "OdP",
+            "estimated_net_income",
+        )
+    return None, None, None, None
+
+
 def _calculated_eps_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
-    profit_base_value, profit_source_field, selected_profit_base = _eps_profit_base_value(row)
+    estimated_profit, profit_base, profit_field, estimated_profit_label = _estimated_profit_for_eps(row)
     outstanding_shares, shares_status = _outstanding_shares_value(row)
     value: Decimal | None = None
     calc_status = "missing"
-    if (
-        profit_base_value is not None
-        and outstanding_shares is not None
-        and outstanding_shares > 0
-    ):
-        value = profit_base_value * Decimal("0.7") / outstanding_shares
+    if estimated_profit is not None and outstanding_shares is not None and outstanding_shares > 0:
+        value = estimated_profit / outstanding_shares
         calc_status = "ok"
     raw = build_statement_raw(row)
     return JQuantsStatementMetric(
@@ -679,16 +693,22 @@ def _calculated_eps_metric(row: dict[str, Any], period: str) -> JQuantsStatement
         value_num=_to_float(value),
         value_unit="yen_per_share",
         calc_status=calc_status,
-        source_field=f"calculated:{selected_profit_base or 'OrdinaryIncome'}*0.7/OutstandingShares",
+        source_field=(
+            f"calculated:{profit_field}*0.7/OutstandingShares"
+            if profit_field
+            else "calculated:estimated_profit/OutstandingShares"
+        ),
         source_detail_json=_json_dumps(
             {
                 "source": "jquants",
                 "api_version": "v2",
-                "selected_profit_base": selected_profit_base,
-                "profit_base_role": "ordinary_income_equivalent",
-                "profit_base_field": profit_source_field,
+                "profit_base": profit_base,
+                "profit_field": profit_field,
+                "profit_raw_value": row.get(profit_field) if profit_field else None,
+                "estimated_profit_value": _to_float(estimated_profit),
+                "estimated_profit_label": estimated_profit_label,
                 "shares_status": shares_status,
-                "rule": "EPS = OrdinaryIncome * 0.7 / OutstandingShares",
+                "rule": "EPS = estimated_profit / OutstandingShares; estimated_profit = ProfitBeforeTax * 0.7 when available, otherwise OrdinaryIncome * 0.7",
             }
         ),
     )

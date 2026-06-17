@@ -181,6 +181,7 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(by_key[("actual:1Q", None, "OfficialBPS")].value_num, 500.12)
         self.assertEqual(by_key[("actual:1Q", None, "OfficialEPS")].value_num, 12.34)
         self.assertEqual(by_key[("actual:1Q", None, "AverageShares")].calc_status, "missing")
+        self.assertIsNone(by_key[("actual:1Q", None, "EPS")].value_num)
         self.assertEqual(by_key[("actual:1Q", None, "EPS")].calc_status, "missing")
         self.assertEqual(by_key[("forecast:FY", "1Q", "NetSales")].value_num, 400000000.0)
         self.assertEqual(by_key[("forecast:FY", "1Q", "OperatingIncome")].value_num, 50000000.0)
@@ -188,7 +189,7 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertNotIn(("forecast:FY", "1Q", "EPS"), by_key)
         self.assertNotIn(("forecast:2Q", "1Q", "EPS"), by_key)
 
-    def test_statement_mapper_keeps_profit_before_tax_separate_and_uses_it_for_eps(self) -> None:
+    def test_statement_mapper_uses_profit_before_tax_estimate_for_eps(self) -> None:
         row = _statement_row("1Q")
         row["ProfitBeforeTax"] = "48000000"
         row["EPS"] = "999.99"
@@ -205,28 +206,25 @@ class JQuantsServicesTest(unittest.TestCase):
             by_key[("actual:1Q", None, "EPS")].source_field,
             "calculated:ProfitBeforeTax*0.7/OutstandingShares",
         )
-        self.assertEqual(
-            json.loads(by_key[("actual:1Q", None, "EPS")].source_detail_json)["selected_profit_base"],
-            "ProfitBeforeTax",
-        )
+        eps_detail = json.loads(by_key[("actual:1Q", None, "EPS")].source_detail_json)
+        self.assertEqual(eps_detail["profit_base"], "ProfitBeforeTax")
+        self.assertEqual(eps_detail["estimated_profit_label"], "estimated_profit_before_tax")
         self.assertEqual(by_key[("actual:1Q", None, "BPS")].value_num, 400.0)
         self.assertEqual(by_key[("actual:1Q", None, "BPS")].source_field, "calculated:Eq/OutstandingShares")
 
-    def test_statement_mapper_prefers_odp_for_eps_when_available(self) -> None:
+    def test_statement_mapper_uses_ordinary_income_estimate_for_eps(self) -> None:
         row = _statement_row("1Q")
         row["OdP"] = "30000000"
-        row["ProfitBeforeTax"] = "48000000"
 
         metrics = statement_metrics_from_row(row, include_forecasts=False)
         by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
 
         self.assertEqual(by_key[("actual:1Q", None, "OrdinaryIncome")].value_num, 30000000.0)
-        self.assertEqual(by_key[("actual:1Q", None, "ProfitBeforeTax")].value_num, 48000000.0)
+        self.assertEqual(by_key[("actual:1Q", None, "ProfitBeforeTax")].calc_status, "missing")
         self.assertAlmostEqual(by_key[("actual:1Q", None, "EPS")].value_num, 21.0)
-        self.assertEqual(
-            json.loads(by_key[("actual:1Q", None, "EPS")].source_detail_json)["selected_profit_base"],
-            "OrdinaryIncome",
-        )
+        eps_detail = json.loads(by_key[("actual:1Q", None, "EPS")].source_detail_json)
+        self.assertEqual(eps_detail["profit_base"], "OrdinaryIncome")
+        self.assertEqual(eps_detail["estimated_profit_label"], "estimated_net_income")
 
     def test_statement_mapper_keeps_2q_actuals(self) -> None:
         metrics = statement_metrics_from_row(_statement_row("2Q"), include_forecasts=False)

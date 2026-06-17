@@ -55,9 +55,34 @@ class DbReflectionItemsCliTest(unittest.TestCase):
                 "SELECT COUNT(*) FROM schema_migrations",
                 "--related-migration-id",
                 "003_add_db_reflection_items",
+                "--source-path",
+                "plans/test.md",
+                "--source-key",
+                "schema_migration_test",
             ]
         )
         self.assertIn("item_id=1", add_output)
+        self.assertIn("source_key=schema_migration_test", add_output)
+
+        duplicate_output = self._run_cli(
+            [
+                "add",
+                "--db-path",
+                str(self.db_path),
+                "--title",
+                "Duplicate title ignored",
+                "--category",
+                "schema",
+                "--required-command",
+                "python -m edinet_monitor.cli.apply_schema_migrations",
+                "--verification-sql",
+                "SELECT COUNT(*) FROM schema_migrations",
+                "--source-key",
+                "schema_migration_test",
+            ]
+        )
+        self.assertIn("item_id=1", duplicate_output)
+        self.assertIn("title=Apply schema migration", duplicate_output)
 
         list_output = self._run_cli(["list", "--db-path", str(self.db_path)])
         self.assertIn("1\tschema\tApply schema migration", list_output)
@@ -66,6 +91,8 @@ class DbReflectionItemsCliTest(unittest.TestCase):
         self.assertIn("required_command_1=python -m edinet_monitor.cli.apply_schema_migrations", show_output)
         self.assertIn("verification_sql_1=SELECT COUNT(*) FROM schema_migrations", show_output)
         self.assertIn("related_migration_id_1=003_add_db_reflection_items", show_output)
+        self.assertIn("source_path=plans/test.md", show_output)
+        self.assertIn("source_key=schema_migration_test", show_output)
 
         complete_output = self._run_cli(["complete", "--db-path", str(self.db_path), "--item-id", "1"])
         self.assertIn("completed_item_id=1", complete_output)

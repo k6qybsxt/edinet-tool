@@ -248,9 +248,10 @@ class DerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_key["TheoreticalSharePriceCurrent"]["metric_group"], "valuation")
         self.assertEqual(by_key["GrossProfitCurrent"]["document_display_unit"], "百万円")
 
-    def test_ifrs_estimated_net_income_and_eps_use_profit_before_tax(self) -> None:
+    def test_ifrs_estimated_profit_input_uses_profit_before_tax_for_eps(self) -> None:
         normalized_rows = [
             build_normalized_row("ProfitBeforeTaxCurrent", 300_000),
+            build_normalized_row("ProfitLossCurrent", 180_000),
             build_normalized_row("IssuedSharesCurrent", 1_000_000),
             build_normalized_row("TreasurySharesCurrent", 100_000),
         ]
@@ -269,9 +270,10 @@ class DerivedMetricServiceTest(unittest.TestCase):
             by_key["EstimatedNetIncomeCurrent"]["source_detail_json"]["selected_profit_base"],
             "ProfitBeforeTax",
         )
+        self.assertEqual(by_key["EPSCurrent"]["source_detail_json"]["inputs"]["ProfitBeforeTaxCurrent"], 300_000.0)
         self.assertEqual(
-            by_key["EPSCurrent"]["source_detail_json"]["numerator_detail"]["selected_profit_base"],
-            "ProfitBeforeTax",
+            by_key["EPSCurrent"]["source_detail_json"]["numerator_detail"]["estimated_profit_label"],
+            "estimated_profit_before_tax",
         )
 
     def test_financial_leverage_adjustment_matches_formula(self) -> None:
@@ -465,6 +467,7 @@ class DerivedMetricServiceTest(unittest.TestCase):
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),
             build_normalized_row("OrdinaryIncomeCurrent", 240_000),
+            build_normalized_row("ProfitLossCurrent", 180_000),
             build_normalized_row("CashAndCashEquivalentsCurrent", 300_000),
             build_normalized_row("NetAssetsCurrent", 1_000_000),
             build_normalized_row("IssuedSharesCurrent", 1_000_000),
@@ -594,6 +597,7 @@ class DerivedMetricServiceTest(unittest.TestCase):
     def test_financial_leverage_adjustment_returns_zero_when_balance_sheet_product_is_nonpositive(self) -> None:
         normalized_rows = [
             build_normalized_row("OrdinaryIncomeCurrent", 120_000_000),
+            build_normalized_row("ProfitLossCurrent", 84_000_000),
             build_normalized_row("NetAssetsCurrent", -100_000_000),
             build_normalized_row("TotalAssetsCurrent", 600_000_000),
             build_normalized_row("IssuedSharesCurrent", 1_000_000),

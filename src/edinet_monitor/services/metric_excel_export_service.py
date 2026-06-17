@@ -46,6 +46,10 @@ from edinet_monitor.services.quarter_standalone_metric_service import (
     QUARTER_STANDALONE_PERIOD_SCOPE,
     quarter_standalone_table_exists,
 )
+from edinet_monitor.services.quarter_source_policy_service import (
+    EDINET_SEGMENT_QUARTERS,
+    JQUANTS_ACTUAL_FINANCIAL_QUARTERS,
+)
 from edinet_monitor.services.segment_metric_service import (
     SEGMENT_EXCEL_METRIC_LABELS,
     segment_metrics_table_exists,
@@ -200,7 +204,7 @@ QUARTER_STANDALONE_SUPPORTED_BASES = set(QUARTER_STANDALONE_FLOW_BASES) | set(
     QUARTER_STANDALONE_GROWTH_BASE_BY_FLOW_BASE.values()
 )
 FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
-JQUANTS_QUARTER_TYPES = ("1Q", "2Q", "3Q")
+JQUANTS_QUARTER_TYPES = JQUANTS_ACTUAL_FINANCIAL_QUARTERS
 QUARTER_STANDALONE_EXCEL_QUARTERS = ("1Q", "2Q", "3Q", "4Q", "1~2Q", "3~4Q")
 JQUANTS_FORECAST_STAGES = ("initial", "1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGE_LABELS = {
@@ -613,6 +617,10 @@ ROW_BASE_ORDER_INDEX = {
 EXCEL_METRIC_LABEL_OVERRIDES = {
     "CostOfSalesAndSellingGeneralAndAdministrativeExpensesGrowthRate": "\u8cbb\u7528\u5408\u8a08\u5897\u6e1b\u7387(\u524d\u671f\u6bd4)",
     "ProfitBeforeTax": "\u7a0e\u5f15\u524d\u5229\u76ca",
+    "OutstandingShares": "実質発行株数",
+    "OutstandingSharesGrowthRate": "実質発行株数増加率(前期比)",
+    "OutstandingSharesGrowthRate5Year": "実質発行株数増加率(５年)",
+    "OutstandingSharesGrowthRate10Year": "実質発行株数増加率(10年)",
     "CostOfSales": "├売上原価",
     "SellingExpenses": "└販管費",
     "GeneralAndAdministrativeExpenses": "　├ 一般管理費",
@@ -2092,6 +2100,13 @@ def _fetch_segment_metric_rows(
         f"sm.period_scope IN ({','.join('?' for _ in scope_filters)})",
     ]
     params: list[Any] = [*metric_bases, *scope_filters]
+    if "quarter" in scope_filters:
+        where.append(
+            "(sm.period_scope <> 'quarter' OR sm.quarter_type IN ("
+            + ",".join("?" for _ in EDINET_SEGMENT_QUARTERS)
+            + "))"
+        )
+        params.extend(EDINET_SEGMENT_QUARTERS)
     segment_kinds = [
         kind
         for kind in ("region", "business", "total")

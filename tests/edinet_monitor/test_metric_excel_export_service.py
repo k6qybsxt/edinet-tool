@@ -734,6 +734,48 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(segment_row.periods_by_offset[1], "2Q 2024-09-30")
         self.assertEqual(segment_row.values_by_offset[1], 10.0)
 
+    def test_segment_rows_exclude_1q_and_3q_saved_rows(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO segment_metrics (
+                doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
+                fiscal_year, period_start, period_end, segment_kind, segment_name,
+                axis_qname, member_qname, metric_base, metric_key, value_kind,
+                value_num, value_unit, source_tag, tag_qname, context_ref, decimals,
+                calc_status, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, 'E00001', '1111', '043A00', 'quarter', ?,
+                2026, '2025-04-01', ?, 'business', 'Paint',
+                'axis', 'member', 'NetSales', 'NetSalesCurrent', 'external',
+                ?, 'yen', 'RevenuesFromExternalCustomers', 'tag', 'context', '-6',
+                'ok', '{}', 'test', 'now', 'now'
+            )
+            """,
+            [
+                ("segment_q1", "1Q", "2025-06-30", 10_000_000.0),
+                ("segment_q2", "2Q", "2025-09-30", 20_000_000.0),
+                ("segment_q3", "3Q", "2025-12-31", 30_000_000.0),
+            ],
+        )
+        self.conn.commit()
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(
+            self.conn,
+            MetricExcelCondition(
+                security_codes=["1111"],
+                metric_labels=["\u58f2\u4e0a\u9ad8"],
+                period_scopes=["quarter"],
+                period_offsets=[0],
+                segment_mode="business",
+            ),
+        )
+
+        self.assertEqual(errors, [])
+        segment_rows = [row for row in _detail_rows(rows) if row.segment_kind]
+        self.assertEqual([row.period_scope for row in segment_rows], ["quarter:2Q"])
+        self.assertEqual(segment_rows[0].periods_by_offset[0], "2Q 2025-09-30")
+        self.assertEqual(segment_rows[0].values_by_offset[0], 20.0)
+
     def test_segment_rows_merge_sony_renamed_entertainment_segment(self) -> None:
         current_name = (
             "\u30a8\u30f3\u30bf\u30c6\u30a4\u30f3\u30e1\u30f3\u30c8\u30fb"
@@ -2156,6 +2198,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         by_base = {row.metric_base: row for row in _detail_rows(rows)}
         self.assertEqual(by_base["MarketCapitalization"].values_by_offset[1], 47760)
         self.assertEqual(by_base["MarketCapitalization"].units_by_offset[1], "\u5104\u5186")
+        self.assertEqual(by_base["OutstandingShares"].metric_label, "4Q 実質発行株数")
         self.assertEqual(by_base["OutstandingShares"].values_by_offset[1], 2771561)
         self.assertEqual(by_base["OutstandingShares"].units_by_offset[1], "\u5343\u682a")
 
@@ -2427,9 +2470,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(by_scope["quarter:1Q"].metric_label, "1Q \u671f\u672b\u6b8b\u9ad8\u5897\u52a0\u7387(\u524d\u671f\u6bd4)")
         self.assertAlmostEqual(by_scope["quarter:1Q"].values_by_offset[0], 2.0)
         self.assertEqual(by_scope["quarter:1Q"].units_by_offset[0], "%")
-        self.assertEqual(by_scope["quarter:2Q"].metric_label, "2Q \u671f\u672b\u6b8b\u9ad8\u5897\u52a0\u7387(\u524d\u671f\u6bd4)")
-        self.assertAlmostEqual(by_scope["quarter:2Q"].values_by_offset[0], 1.5)
-        self.assertEqual(by_scope["quarter:2Q"].units_by_offset[0], "%")
+        self.assertNotIn("quarter:2Q", by_scope)
         self.assertEqual(by_scope["quarter:3Q"].metric_label, "3Q \u671f\u672b\u6b8b\u9ad8\u5897\u52a0\u7387(\u524d\u671f\u6bd4)")
         self.assertAlmostEqual(by_scope["quarter:3Q"].values_by_offset[0], 2.0)
         self.assertEqual(by_scope["quarter:3Q"].units_by_offset[0], "%")
@@ -2546,8 +2587,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 metric_base, metric_group, value_num, value_unit, calc_status,
                 source_field, source_detail_json, rule_version, created_at, updated_at
             ) VALUES (?, '11110', '1111', 'E00001', 'actual',
-                      'quarter', 'actual:2Q', '2Q', NULL, 2026,
-                      '2025-04-01', '2025-09-30', '2025-11-01', '15:00', ?,
+                      'quarter', 'actual:1Q', '1Q', NULL, 2026,
+                      '2025-04-01', '2025-06-30', '2025-08-01', '15:00', ?,
                       ?, ?, ?, ?, ?, 'field', '{}', 'v1',
                       '2026-05-06', '2026-05-06')
             """,
@@ -2570,8 +2611,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(target, 1)
         self.assertNotIn("jquants_metrics_not_found", warnings)
-        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:2Q")
-        self.assertEqual(row.metric_label, "2Q BPS")
+        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
+        self.assertEqual(row.metric_label, "1Q BPS")
         self.assertEqual(row.values_by_offset[0], 5.0)
         self.assertEqual(row.units_by_offset[0], "円")
 

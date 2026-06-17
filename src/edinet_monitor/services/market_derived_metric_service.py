@@ -7,8 +7,11 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from edinet_monitor.services.quarter_source_policy_service import (
+    JQUANTS_ACTUAL_FINANCIAL_QUARTERS,
+)
 
-MARKET_DERIVED_RULE_VERSION = "market-derived-2026-05-24-v2"
+MARKET_DERIVED_RULE_VERSION = "market-derived-2026-06-17-v2"
 MARKET_METRIC_BASES = {
     "StockPrice",
     "MarketCapitalization",
@@ -33,6 +36,7 @@ JQUANTS_INPUT_BASES = {
     "NetSales",
     "OperatingIncome",
     "OrdinaryIncome",
+    "ProfitBeforeTax",
     "ProfitLoss",
     "EPS",
     "TotalAssets",
@@ -252,15 +256,24 @@ def _financial_leverage_adjustment(netassets: float | None, totalassets: float |
     return value
 
 
-def _quarter_theoretical_share_price(values: dict[str, float | None]) -> tuple[float | None, dict[str, Any]]:
+def _estimated_profit(values: dict[str, float | None]) -> tuple[float | None, str | None, str | None]:
+    profit_before_tax = values.get("ProfitBeforeTax")
+    if profit_before_tax is not None:
+        return profit_before_tax * 0.7, "ProfitBeforeTax", "estimated_profit_before_tax"
     ordinary_income = values.get("OrdinaryIncome")
+    if ordinary_income is not None:
+        return ordinary_income * 0.7, "OrdinaryIncome", "estimated_net_income"
+    return None, None, None
+
+
+def _quarter_theoretical_share_price(values: dict[str, float | None]) -> tuple[float | None, dict[str, Any]]:
+    estimated_profit, profit_base, estimated_profit_label = _estimated_profit(values)
     total_assets = values.get("TotalAssets")
     net_assets = values.get("NetAssets")
     outstanding_shares = values.get("OutstandingShares")
-    estimated_net_income = ordinary_income * 0.7 if ordinary_income is not None else None
-    eps, eps_status = _ratio(estimated_net_income, outstanding_shares)
+    eps, eps_status = _ratio(estimated_profit, outstanding_shares)
     bps, bps_status = _ratio(net_assets, outstanding_shares)
-    roa, roa_status = _ratio(estimated_net_income, total_assets, require_positive_denominator=False)
+    roa, roa_status = _ratio(estimated_profit, total_assets, require_positive_denominator=False)
     equity = _equity_ratio(values)
     discount = _discount_rate(equity)
     leverage = _financial_leverage_adjustment(net_assets, total_assets)
@@ -273,8 +286,9 @@ def _quarter_theoretical_share_price(values: dict[str, float | None]) -> tuple[f
         else None
     )
     return value, {
-        "ordinary_income": ordinary_income,
-        "estimated_net_income": estimated_net_income,
+        "estimated_profit": estimated_profit,
+        "selected_profit_base": profit_base,
+        "estimated_profit_label": estimated_profit_label,
         "outstanding_shares": outstanding_shares,
         "eps": eps,
         "eps_status": eps_status,
@@ -408,9 +422,11 @@ def _fetch_jquants_sources(
     where = [
         "metric_kind = 'actual'",
         "period_scope = 'quarter'",
-        "period_key IN ('actual:1Q', 'actual:3Q')",
+        "period_key IN ("
+        + ",".join("?" for _ in JQUANTS_ACTUAL_FINANCIAL_QUARTERS)
+        + ")",
     ]
-    params: list[Any] = []
+    params: list[Any] = [f"actual:{quarter}" for quarter in JQUANTS_ACTUAL_FINANCIAL_QUARTERS]
     if date_from:
         where.append("period_end >= ?")
         params.append(date_from)

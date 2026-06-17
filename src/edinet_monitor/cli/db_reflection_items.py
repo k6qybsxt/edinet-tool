@@ -34,6 +34,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--required-command", action="append", default=[])
     add_parser.add_argument("--verification-sql", action="append", default=[])
     add_parser.add_argument("--related-migration-id", action="append", default=[])
+    add_parser.add_argument("--source-path", default="")
+    add_parser.add_argument("--source-key", default="")
     add_parser.add_argument("--notes", default="")
 
     subparsers.add_parser("list", parents=[parent])
@@ -93,11 +95,14 @@ def main() -> None:
                 required_commands=args.required_command,
                 verification_sql=args.verification_sql,
                 related_migration_ids=args.related_migration_id,
+                source_path=args.source_path,
+                source_key=args.source_key,
                 notes=args.notes,
             )
             print(f"item_id={item.item_id}")
             print(f"title={item.title}")
             print(f"category={item.category}")
+            print(f"source_key={item.source_key}")
         elif args.command == "list":
             items = list_db_reflection_items(conn)
             if not items:

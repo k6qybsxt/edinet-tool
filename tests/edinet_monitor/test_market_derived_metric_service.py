@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import shutil
 import sys
@@ -376,6 +377,7 @@ class MarketDerivedMetricServiceTest(unittest.TestCase):
         ):
             for base, value in (
                 ("OrdinaryIncome", ordinary_income),
+                ("ProfitLoss", 123_000),
                 ("EPS", 70),
                 ("TotalAssets", 10_000_000),
                 ("NetAssets", 5_000_000),
@@ -402,6 +404,25 @@ class MarketDerivedMetricServiceTest(unittest.TestCase):
         self.assertEqual(by_base["StockPriceGrowthRate"]["value_num"], 1.5)
         self.assertGreater(by_base["TheoreticalSharePrice"]["value_num"], 0)
         self.assertEqual(by_base["TheoreticalSharePriceGrowthRate"]["calc_status"], "ok")
+        theoretical_detail = json.loads(by_base["TheoreticalSharePrice"]["source_detail_json"])
+        self.assertEqual(theoretical_detail["selected_profit_base"], "OrdinaryIncome")
+        self.assertEqual(theoretical_detail["estimated_profit"], 700_000)
+
+    def test_jquants_second_quarter_actuals_are_not_market_sources(self) -> None:
+        for base, value in (
+            ("ProfitLoss", 700_000),
+            ("EPS", 70),
+            ("TotalAssets", 10_000_000),
+            ("NetAssets", 5_000_000),
+            ("BPS", 500),
+            ("OutstandingShares", 10_000),
+        ):
+            _insert_jquants_metric(self.conn, "DISC2026Q2", 2026, "2Q", "2026-09-30", base, value)
+        _insert_quote(self.conn, "1111", "2026-09-30", 900)
+
+        rows, _, _ = build_market_derived_metrics(self.conn, period_scopes={"quarter"})
+
+        self.assertNotIn("DISC2026Q2", {row["source_id"] for row in rows})
 
     def test_upsert_is_idempotent_and_report_is_written(self) -> None:
         _insert_filing(self.conn, "DOC2026", "2026-03-31")
