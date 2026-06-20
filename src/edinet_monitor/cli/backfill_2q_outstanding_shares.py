@@ -4,6 +4,10 @@ import argparse
 
 from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.half_outstanding_shares_backfill_service import (
     backfill_2q_outstanding_shares,
 )
@@ -24,6 +28,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = None
+    if args.apply:
+        guard_result = run_db_reflection_preflight_guard(
+            cli_name="backfill_2q_outstanding_shares"
+        )
     create_tables()
     conn = get_connection()
     try:
@@ -43,6 +52,8 @@ def main() -> None:
     print(f"ok_rate={result['ok_rate'] * 100:.1f}%")
     if result.get("report_path"):
         print(f"report_path={result['report_path']}")
+    if args.apply:
+        mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

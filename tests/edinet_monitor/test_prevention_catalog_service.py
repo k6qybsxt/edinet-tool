@@ -19,6 +19,7 @@ from edinet_monitor.services.prevention_catalog_service import (  # noqa: E402
     filter_prevention_catalog_items,
     load_prevention_catalog,
     review_prevention_catalog,
+    update_prevention_catalog_statuses,
 )
 
 
@@ -118,6 +119,31 @@ class PreventionCatalogServiceTest(unittest.TestCase):
         message = str(context.exception)
         self.assertIn("duplicate item id: duplicate", message)
         self.assertIn("title must be a non-empty string", message)
+
+    def test_update_statuses_updates_only_requested_source_statuses(self) -> None:
+        _write_catalog(
+            self.catalog_path,
+            [
+                _item("active", status="active"),
+                _item("monitoring", status="monitoring"),
+                _item("triggered", status="triggered"),
+                _item("retired", status="retired"),
+            ],
+        )
+
+        result = update_prevention_catalog_statuses(
+            self.catalog_path,
+            item_ids=["active", "monitoring", "triggered", "missing"],
+            from_statuses=["active", "monitoring"],
+            to_status="triggered",
+        )
+
+        self.assertEqual(result.updated_ids, ("active", "monitoring"))
+        by_id = {item.item_id: item.status for item in load_prevention_catalog(self.catalog_path)}
+        self.assertEqual(by_id["active"], "triggered")
+        self.assertEqual(by_id["monitoring"], "triggered")
+        self.assertEqual(by_id["triggered"], "triggered")
+        self.assertEqual(by_id["retired"], "retired")
 
 
 if __name__ == "__main__":

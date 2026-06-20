@@ -4,6 +4,10 @@ import argparse
 
 from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.market_derived_metric_service import save_market_derived_metrics
 
 
@@ -38,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    guard_result = None
+    if args.apply:
+        guard_result = run_db_reflection_preflight_guard(
+            cli_name="save_market_derived_metrics"
+        )
     if args.apply:
         create_tables()
     conn = get_connection()
@@ -60,6 +69,8 @@ def main() -> None:
     print(f"missing_quotes={result.missing_quotes}")
     print(f"warnings={len(result.warnings)}")
     print(f"output_path={result.output_path}")
+    if args.apply:
+        mark_db_reflection_preflight_guard_success(guard_result)
     if not args.apply:
         print("dry_run_only=1")
         print("hint=DBへ保存する場合は --apply を付けてください。")

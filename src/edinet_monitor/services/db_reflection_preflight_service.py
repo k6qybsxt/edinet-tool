@@ -112,6 +112,8 @@ class DbReflectionPreflightOptions:
     catalog_path: Path = DEFAULT_PREVENTION_CATALOG_PATH
     item_id: int | None = None
     output_dir: Path = DEFAULT_DB_REFLECTION_PREFLIGHT_OUTPUT_DIR
+    pipeline_failure_policy: str = "report_only"
+    guard_cli_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -588,12 +590,17 @@ def build_db_reflection_preflight(
 
     counts = _counts_by_severity(issues)
     status = _status_from_counts(counts)
+    db_reflection_blocked = (
+        options.pipeline_failure_policy == "block_on_critical"
+        and counts.get("critical", 0) > 0
+    )
     summary = {
         "preflight_id": preflight_id,
         "generated_at": generated_at,
         "status": status,
-        "pipeline_failure_policy": "report_only",
-        "db_reflection_blocked": False,
+        "pipeline_failure_policy": options.pipeline_failure_policy,
+        "db_reflection_blocked": db_reflection_blocked,
+        "guard_cli_name": options.guard_cli_name,
         "db_path": options.db_path or "",
         "catalog_path": Path(options.catalog_path),
         "item_id": options.item_id or "",

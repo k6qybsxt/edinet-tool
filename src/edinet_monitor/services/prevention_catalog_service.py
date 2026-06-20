@@ -71,6 +71,15 @@ class PreventionCatalogReviewResult:
         return self.counts_by_severity.get("critical", 0) + self.counts_by_severity.get("warning", 0)
 
 
+@dataclass(frozen=True)
+class PreventionCatalogStatusUpdateResult:
+    catalog_path: Path
+    target_status: str
+    requested_ids: tuple[str, ...]
+    updated_ids: tuple[str, ...]
+    skipped_ids: tuple[str, ...]
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -188,6 +197,74 @@ def load_prevention_catalog(catalog_path: str | Path = DEFAULT_PREVENTION_CATALO
     if errors:
         raise ValueError("; ".join(errors))
     return items
+
+
+def update_prevention_catalog_statuses(
+    catalog_path: str | Path,
+    *,
+    item_ids: tuple[str, ...] | list[str],
+    from_statuses: tuple[str, ...] | list[str],
+    to_status: str,
+) -> PreventionCatalogStatusUpdateResult:
+    path = Path(catalog_path)
+    requested_ids = tuple(dict.fromkeys(_clean_token(item_id) for item_id in item_ids if _clean_token(item_id)))
+    from_status_set = set(_normalize_filter_values(from_statuses))
+    clean_to_status = _clean_token(to_status)
+    if clean_to_status not in ALLOWED_PREVENTION_STATUSES:
+        raise ValueError(f"unknown prevention catalog status: {clean_to_status}")
+    unknown_from_statuses = from_status_set - ALLOWED_PREVENTION_STATUSES
+    if unknown_from_statuses:
+        raise ValueError(f"unknown prevention catalog status: {', '.join(sorted(unknown_from_statuses))}")
+    if not requested_ids:
+        return PreventionCatalogStatusUpdateResult(
+            catalog_path=path,
+            target_status=clean_to_status,
+            requested_ids=(),
+            updated_ids=(),
+            skipped_ids=(),
+        )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    # Validate the original catalog before mutating the raw JSON payload.
+    load_prevention_catalog(path)
+    requested_id_set = set(requested_ids)
+    updated_ids: list[str] = []
+    for raw_item in payload.get("items", []):
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = _clean_token(raw_item.get("id"))
+        if item_id in requested_id_set and _clean_token(raw_item.get("status")) in from_status_set:
+            raw_item["status"] = clean_to_status
+            updated_ids.append(item_id)
+    skipped_ids = [item_id for item_id in requested_ids if item_id not in set(updated_ids)]
+    if not updated_ids:
+        return PreventionCatalogStatusUpdateResult(
+            catalog_path=path,
+            target_status=clean_to_status,
+            requested_ids=requested_ids,
+            updated_ids=(),
+            skipped_ids=tuple(skipped_ids),
+        )
+
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+        # Validate the would-be final catalog before replacing the original file.
+        load_prevention_catalog(tmp_path)
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return PreventionCatalogStatusUpdateResult(
+        catalog_path=path,
+        target_status=clean_to_status,
+        requested_ids=requested_ids,
+        updated_ids=tuple(updated_ids),
+        skipped_ids=tuple(skipped_ids),
+    )
 
 
 def _normalize_filter_values(values: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:

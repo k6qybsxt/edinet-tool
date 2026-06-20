@@ -82,7 +82,12 @@ class CleanupObsoleteQuarterMetricsCliTest(unittest.TestCase):
             str(self.db_path),
             *args,
         ]
-        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout):
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch("edinet_monitor.cli.cleanup_obsolete_quarter_metrics.run_db_reflection_preflight_guard"),
+            mock.patch("edinet_monitor.cli.cleanup_obsolete_quarter_metrics.mark_db_reflection_preflight_guard_success"),
+            contextlib.redirect_stdout(stdout),
+        ):
             main()
         return stdout.getvalue()
 

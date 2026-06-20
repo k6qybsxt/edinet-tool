@@ -7,6 +7,10 @@ from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.jquants.raw_rebuild_service import (
     rebuild_jquants_financial_metrics_from_raw,
 )
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 
 
 def _split_csv(value: str) -> list[str]:
@@ -32,6 +36,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = None
+    if args.apply:
+        guard_result = run_db_reflection_preflight_guard(
+            cli_name="rebuild_jquants_metrics_from_raw"
+        )
     if args.apply:
         create_tables()
     conn = get_connection()
@@ -56,6 +65,8 @@ def main() -> None:
     print(f"skipped_rows={result.skipped_rows}")
     print(f"error_rows={result.error_rows}")
     print(f"output_path={result.output_path}")
+    if args.apply:
+        mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

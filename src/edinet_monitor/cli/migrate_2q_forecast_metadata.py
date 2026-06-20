@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 
 from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.quarter_forecast_metadata_migration_service import (
     migrate_quarter_forecast_metadata,
 )
@@ -19,6 +23,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = None
+    if args.apply:
+        guard_result = run_db_reflection_preflight_guard(
+            cli_name="migrate_2q_forecast_metadata"
+        )
     create_tables()
     conn = get_connection()
     try:
@@ -41,6 +50,8 @@ def main() -> None:
     print(f"obsolete_forecast_deleted={result.obsolete_forecast_deleted}")
     if result.output_path:
         print(f"output_path={result.output_path}")
+    if args.apply:
+        mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":
