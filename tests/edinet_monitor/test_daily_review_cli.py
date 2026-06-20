@@ -40,6 +40,10 @@ class DailyReviewCliTest(unittest.TestCase):
                     "pipeline_failed": False,
                     "schema_missing_count": 1,
                     "db_reflection_pending_count": 2,
+                    "preflight_blocked_count": 10,
+                    "preflight_warning_run_count": 11,
+                    "preflight_incomplete_count": 12,
+                    "preflight_catalog_triggered_count": 13,
                     "data_quality_critical_count": 3,
                     "data_quality_warning_count": 4,
                     "excel_audit_critical_count": 5,
@@ -50,6 +54,7 @@ class DailyReviewCliTest(unittest.TestCase):
                 },
                 schema_migrations={},
                 db_reflection_items={},
+                preflight_history={},
                 data_quality_report={},
                 excel_audit_results={},
                 golden_master_diff_results={},
@@ -83,6 +88,10 @@ class DailyReviewCliTest(unittest.TestCase):
             self.assertIn("pipeline_failed=False", output)
             self.assertIn("schema_missing=1", output)
             self.assertIn("db_reflection_pending=2", output)
+            self.assertIn("preflight_blocked=10", output)
+            self.assertIn("preflight_warning_runs=11", output)
+            self.assertIn("preflight_incomplete=12", output)
+            self.assertIn("preflight_catalog_triggered=13", output)
             self.assertIn("data_quality_critical=3", output)
             self.assertIn("excel_audit_critical=5", output)
             self.assertIn("golden_master_warning=8", output)

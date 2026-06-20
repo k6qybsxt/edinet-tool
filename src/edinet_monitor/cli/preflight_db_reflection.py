@@ -5,11 +5,13 @@ from pathlib import Path
 import sqlite3
 
 from edinet_monitor.config.settings import DB_PATH
+from edinet_monitor.db.schema import get_connection
 from edinet_monitor.services.db_reflection_preflight_service import (
     DEFAULT_DB_REFLECTION_PREFLIGHT_OUTPUT_DIR,
     DbReflectionPreflightOptions,
     build_db_reflection_preflight,
 )
+from edinet_monitor.services.preflight_history_service import save_preflight_history
 from edinet_monitor.services.prevention_catalog_service import DEFAULT_PREVENTION_CATALOG_PATH
 
 
@@ -50,6 +52,12 @@ def main() -> None:
     finally:
         conn.close()
 
+    history_conn = get_connection(db_path)
+    try:
+        history_save = save_preflight_history(history_conn, result, report_only=True)
+    finally:
+        history_conn.close()
+
     print(f"preflight_id={result.preflight_id}")
     print(f"status={result.status}")
     print(f"pipeline_failure_policy={result.summary.get('pipeline_failure_policy', '')}")
@@ -60,6 +68,9 @@ def main() -> None:
     print(f"info={result.counts_by_severity.get('info', 0)}")
     print(f"json_path={result.json_path}")
     print(f"excel_path={result.excel_path}")
+    print(f"history_saved={history_save.history_saved}")
+    print(f"history_status={history_save.status}")
+    print(f"history_preflight_id={history_save.preflight_id}")
     preview_limit = max(int(args.limit_preview), 0)
     for issue in result.issues[:preview_limit]:
         print(

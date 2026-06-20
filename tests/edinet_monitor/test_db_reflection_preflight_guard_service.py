@@ -9,6 +9,7 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -155,6 +156,8 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
         self.assertIn("command_names=save_derived_metrics", output)
         self.assertIn("matched_pending_count=1", output)
         self.assertIn("db_reflection_blocked=False", output)
+        self.assertIn("history_saved=True", output)
+        self.assertIn("history_status=passed_with_warnings", output)
         by_id = {item.item_id: item.status for item in load_prevention_catalog(self.catalog_path)}
         self.assertEqual(by_id["active_item"], "triggered")
         self.assertEqual(by_id["monitoring_item"], "triggered")
@@ -169,9 +172,14 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         try:
             after = conn.execute("SELECT COUNT(*) FROM db_reflection_items").fetchone()[0]
+            history_status = conn.execute(
+                "SELECT status FROM preflight_runs WHERE preflight_id = ?",
+                (result.preflight.preflight_id,),
+            ).fetchone()[0]
         finally:
             conn.close()
         self.assertEqual(before, after)
+        self.assertEqual(history_status, "completed")
         self.assertTrue(result.preflight.json_path.exists())
         self.assertTrue(result.preflight.excel_path.exists())
 
@@ -198,11 +206,44 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
         self.assertEqual(context.exception.code, 2)
         output = stdout.getvalue()
         self.assertIn("db_reflection_blocked=True", output)
+        self.assertIn("history_status=blocked", output)
         self.assertIn("preflight_blocked=critical", output)
         by_id = {item.item_id: item.status for item in load_prevention_catalog(self.catalog_path)}
         self.assertEqual(by_id["active_item"], "triggered")
         self.assertEqual(by_id["monitoring_item"], "triggered")
         self.assertEqual(by_id["retired_item"], "retired")
+
+    def test_history_save_failure_stops_before_catalog_status_update(self) -> None:
+        conn = _create_db(self.db_path)
+        try:
+            _insert_item(
+                conn,
+                commands=["python -m edinet_monitor.cli.test_cli --run-all"],
+                verification_sql=[
+                    "SELECT COUNT(*) AS target_count FROM derived_metrics WHERE calc_status = 'ok' AND value_num IS NOT NULL"
+                ],
+            )
+        finally:
+            conn.close()
+
+        with (
+            patch(
+                "edinet_monitor.services.db_reflection_preflight_guard_service.save_preflight_history",
+                side_effect=RuntimeError("history failed"),
+            ),
+            self.assertRaises(RuntimeError),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            run_db_reflection_preflight_guard(
+                cli_name="test_cli",
+                db_path=self.db_path,
+                catalog_path=self.catalog_path,
+                output_dir=self.output_dir,
+            )
+
+        by_id = {item.item_id: item.status for item in load_prevention_catalog(self.catalog_path)}
+        self.assertEqual(by_id["active_item"], "active")
+        self.assertEqual(by_id["monitoring_item"], "monitoring")
 
     def test_catalog_updates_are_limited_to_related_catalog_area(self) -> None:
         self.catalog_path.write_text(

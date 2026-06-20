@@ -175,6 +175,73 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             """,
         ),
     ),
+    SchemaMigration(
+        migration_id="005_add_preflight_history_tables",
+        description="Add persisted DB reflection preflight run and issue history tables.",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS preflight_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                preflight_id TEXT NOT NULL UNIQUE,
+                generated_at TEXT NOT NULL,
+                cli_name TEXT NOT NULL,
+                command_names_json TEXT NOT NULL,
+                pipeline_failure_policy TEXT NOT NULL,
+                db_reflection_blocked INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL CHECK (
+                    status IN ('blocked', 'passed', 'passed_with_warnings', 'completed', 'report_only')
+                ),
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                matched_pending_count INTEGER NOT NULL DEFAULT 0,
+                critical_count INTEGER NOT NULL DEFAULT 0,
+                warning_count INTEGER NOT NULL DEFAULT 0,
+                json_path TEXT NOT NULL,
+                excel_path TEXT NOT NULL,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS preflight_run_issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                preflight_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                check_name TEXT NOT NULL,
+                item_id TEXT,
+                title TEXT,
+                message TEXT NOT NULL,
+                detail_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_preflight_runs_generated_at
+            ON preflight_runs(generated_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_preflight_runs_cli_generated
+            ON preflight_runs(cli_name, generated_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_preflight_runs_status_generated
+            ON preflight_runs(status, generated_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_preflight_runs_blocked_generated
+            ON preflight_runs(db_reflection_blocked, generated_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_preflight_run_issues_preflight_id
+            ON preflight_run_issues(preflight_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_preflight_run_issues_severity
+            ON preflight_run_issues(severity, category, check_name)
+            """,
+        ),
+    ),
 )
 
 

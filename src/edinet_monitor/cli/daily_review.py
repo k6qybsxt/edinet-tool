@@ -14,6 +14,7 @@ from edinet_monitor.services.daily_review_service import (
     build_daily_review,
 )
 from edinet_monitor.services.metric_excel_audit_service import DEFAULT_TARGET_CONFIG_PATH
+from edinet_monitor.services.prevention_catalog_service import DEFAULT_PREVENTION_CATALOG_PATH
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -26,6 +27,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--normal-golden-json", default=str(DEFAULT_NORMAL_GOLDEN_JSON_PATH))
     parser.add_argument("--known-issue-golden-json", default=str(DEFAULT_KNOWN_ISSUE_GOLDEN_JSON_PATH))
     parser.add_argument("--target-config", default=str(DEFAULT_TARGET_CONFIG_PATH))
+    parser.add_argument("--catalog-path", default=str(DEFAULT_PREVENTION_CATALOG_PATH))
     parser.add_argument("--output-dir", default=str(DEFAULT_DAILY_REVIEW_OUTPUT_DIR))
     parser.add_argument("--retention-count", type=int, default=DEFAULT_DAILY_REVIEW_RETENTION_COUNT)
     parser.add_argument("--limit-preview", type=int, default=20)
@@ -61,6 +63,7 @@ def main() -> None:
                 normal_golden_json_path=Path(args.normal_golden_json),
                 known_issue_golden_json_path=Path(args.known_issue_golden_json),
                 target_config_path=Path(args.target_config),
+                catalog_path=Path(args.catalog_path),
                 output_dir=Path(args.output_dir),
                 retention_count=int(args.retention_count),
                 issue_preview_limit=max(int(args.limit_preview), 0),
@@ -78,6 +81,10 @@ def main() -> None:
     print(f"pipeline_failed={summary.get('pipeline_failed', False)}")
     print(f"schema_missing={summary.get('schema_missing_count', 0)}")
     print(f"db_reflection_pending={summary.get('db_reflection_pending_count', 0)}")
+    print(f"preflight_blocked={summary.get('preflight_blocked_count', 0)}")
+    print(f"preflight_warning_runs={summary.get('preflight_warning_run_count', 0)}")
+    print(f"preflight_incomplete={summary.get('preflight_incomplete_count', 0)}")
+    print(f"preflight_catalog_triggered={summary.get('preflight_catalog_triggered_count', 0)}")
     print(f"data_quality_critical={summary.get('data_quality_critical_count', 0)}")
     print(f"data_quality_warning={summary.get('data_quality_warning_count', 0)}")
     print(f"excel_audit_critical={summary.get('excel_audit_critical_count', 0)}")

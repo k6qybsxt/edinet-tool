@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -24,6 +24,10 @@ from edinet_monitor.services.metric_excel_audit_service import (
 from edinet_monitor.services.metric_excel_golden_master_service import (
     DEFAULT_GOLDEN_MASTER_DIR,
     compare_metric_excel_golden_master,
+)
+from edinet_monitor.services.prevention_catalog_service import (
+    DEFAULT_PREVENTION_CATALOG_PATH,
+    load_prevention_catalog,
 )
 
 
@@ -49,6 +53,7 @@ class DailyReviewOptions:
     normal_golden_json_path: Path = DEFAULT_NORMAL_GOLDEN_JSON_PATH
     known_issue_golden_json_path: Path = DEFAULT_KNOWN_ISSUE_GOLDEN_JSON_PATH
     target_config_path: Path = DEFAULT_TARGET_CONFIG_PATH
+    catalog_path: Path = DEFAULT_PREVENTION_CATALOG_PATH
     output_dir: Path = DEFAULT_DAILY_REVIEW_OUTPUT_DIR
     retention_count: int = DEFAULT_DAILY_REVIEW_RETENTION_COUNT
     issue_preview_limit: int = 20
@@ -66,6 +71,7 @@ class DailyReviewResult:
     summary: dict[str, Any]
     schema_migrations: dict[str, Any]
     db_reflection_items: dict[str, Any]
+    preflight_history: dict[str, Any]
     data_quality_report: dict[str, Any]
     excel_audit_results: dict[str, Any]
     golden_master_diff_results: dict[str, Any]
@@ -255,6 +261,110 @@ def _build_db_reflection_section(conn: sqlite3.Connection) -> dict[str, Any]:
         "total_count": len(rows),
         "category_counts": _counts_by_key(normalized_rows, "category"),
         "rows": normalized_rows,
+    }
+
+
+def _build_preflight_history_section(
+    conn: sqlite3.Connection,
+    *,
+    generated_at: str,
+    catalog_path: Path,
+    preview_limit: int,
+) -> dict[str, Any]:
+    cutoff = datetime.fromisoformat(generated_at) - timedelta(days=1)
+    runs: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    if _table_exists(conn, "preflight_runs"):
+        run_rows = conn.execute(
+            """
+            SELECT *
+            FROM preflight_runs
+            WHERE generated_at >= ?
+            ORDER BY generated_at DESC, id DESC
+            LIMIT 200
+            """,
+            (cutoff.isoformat(timespec="seconds"),),
+        ).fetchall()
+        for row in run_rows:
+            run = _row_to_dict(row)
+            run["command_names_json"] = _json_loads(run.get("command_names_json")) or []
+            run["db_reflection_blocked"] = bool(run.get("db_reflection_blocked"))
+            runs.append(run)
+        preflight_ids = [str(run.get("preflight_id") or "") for run in runs if run.get("preflight_id")]
+        if preflight_ids and _table_exists(conn, "preflight_run_issues"):
+            placeholders = ",".join("?" for _ in preflight_ids)
+            issue_rows = conn.execute(
+                f"""
+                SELECT preflight_id, severity, category, check_name, item_id,
+                       title, message, detail_json, created_at
+                FROM preflight_run_issues
+                WHERE preflight_id IN ({placeholders})
+                ORDER BY
+                    CASE severity
+                        WHEN 'critical' THEN 0
+                        WHEN 'warning' THEN 1
+                        WHEN 'info' THEN 2
+                        ELSE 9
+                    END,
+                    preflight_id,
+                    category,
+                    check_name
+                LIMIT ?
+                """,
+                [*preflight_ids, max(int(preview_limit), 0)],
+            ).fetchall()
+            for row in issue_rows:
+                issue = _row_to_dict(row)
+                issue["detail_json"] = _json_loads(issue.get("detail_json"))
+                issues.append(issue)
+        history_status = "ok"
+    else:
+        history_status = "no_table"
+
+    triggered_all: list[dict[str, Any]] = []
+    triggered_items: list[dict[str, Any]] = []
+    catalog_error = ""
+    try:
+        catalog_items = load_prevention_catalog(Path(catalog_path))
+        triggered_all = [
+            item.to_dict()
+            for item in catalog_items
+            if item.status == "triggered"
+        ]
+        triggered_items = triggered_all[: max(int(preview_limit), 0)]
+    except Exception as exc:
+        catalog_error = str(exc)
+
+    blocked_count = sum(1 for run in runs if bool(run.get("db_reflection_blocked")) or run.get("status") == "blocked")
+    warning_run_count = sum(1 for run in runs if int(run.get("warning_count") or 0) > 0)
+    incomplete_count = sum(
+        1
+        for run in runs
+        if run.get("status") in {"passed", "passed_with_warnings"} and not run.get("completed_at")
+    )
+    cli_counts = _counts_by_key(runs, "cli_name")
+    if catalog_error:
+        status = "review_required"
+    elif blocked_count or warning_run_count or incomplete_count or triggered_all:
+        status = "review_required"
+    else:
+        status = history_status
+    return {
+        "status": status,
+        "history_status": history_status,
+        "run_count": len(runs),
+        "blocked_count": blocked_count,
+        "warning_run_count": warning_run_count,
+        "incomplete_count": incomplete_count,
+        "critical_count": sum(int(run.get("critical_count") or 0) for run in runs),
+        "warning_count": sum(int(run.get("warning_count") or 0) for run in runs),
+        "cli_counts": cli_counts,
+        "runs": runs,
+        "issues": issues,
+        "catalog_path": Path(catalog_path),
+        "catalog_triggered_count": len(triggered_all),
+        "catalog_triggered_items": triggered_items,
+        "catalog_error": catalog_error,
     }
 
 
@@ -567,6 +677,7 @@ def _build_summary(
     options: DailyReviewOptions,
     schema_migrations: dict[str, Any],
     db_reflection_items: dict[str, Any],
+    preflight_history: dict[str, Any],
     data_quality_report: dict[str, Any],
     excel_audit_results: dict[str, Any],
     golden_master_diff_results: dict[str, Any],
@@ -578,6 +689,11 @@ def _build_summary(
         [
             int(schema_migrations.get("missing_count") or 0),
             int(db_reflection_items.get("pending_count") or 0),
+            int(preflight_history.get("blocked_count") or 0),
+            int(preflight_history.get("warning_run_count") or 0),
+            int(preflight_history.get("incomplete_count") or 0),
+            int(preflight_history.get("catalog_triggered_count") or 0),
+            1 if preflight_history.get("catalog_error") else 0,
             int(data_quality_report.get("critical_count") or 0),
             int(data_quality_report.get("warning_count") or 0),
             int(excel_audit_results.get("critical_count") or 0),
@@ -600,6 +716,11 @@ def _build_summary(
         "schema_applied_count": int(schema_migrations.get("applied_count") or 0),
         "schema_known_count": int(schema_migrations.get("known_count") or 0),
         "db_reflection_pending_count": int(db_reflection_items.get("pending_count") or 0),
+        "preflight_run_count": int(preflight_history.get("run_count") or 0),
+        "preflight_blocked_count": int(preflight_history.get("blocked_count") or 0),
+        "preflight_warning_run_count": int(preflight_history.get("warning_run_count") or 0),
+        "preflight_incomplete_count": int(preflight_history.get("incomplete_count") or 0),
+        "preflight_catalog_triggered_count": int(preflight_history.get("catalog_triggered_count") or 0),
         "data_quality_critical_count": int(data_quality_report.get("critical_count") or 0),
         "data_quality_warning_count": int(data_quality_report.get("warning_count") or 0),
         "excel_audit_critical_count": int(excel_audit_results.get("critical_count") or 0),
@@ -639,6 +760,7 @@ def _write_json_report(result: DailyReviewResult) -> None:
         "summary": result.summary,
         "schema_migrations": result.schema_migrations,
         "db_reflection_items": result.db_reflection_items,
+        "preflight_history": result.preflight_history,
         "data_quality_report": result.data_quality_report,
         "excel_audit_results": result.excel_audit_results,
         "golden_master_diff_results": result.golden_master_diff_results,
@@ -686,6 +808,48 @@ def _write_excel_report(result: DailyReviewResult) -> None:
             "updated_at",
         ],
         rows=result.db_reflection_items.get("rows", []),
+    )
+    preflight_rows: list[dict[str, Any]] = []
+    for run in result.preflight_history.get("runs", []):
+        preflight_rows.append({**run, "kind": "run"})
+    for issue in result.preflight_history.get("issues", []):
+        preflight_rows.append({**issue, "kind": "issue"})
+    for item in result.preflight_history.get("catalog_triggered_items", []):
+        preflight_rows.append(
+            {
+                "kind": "catalog_triggered",
+                "preflight_id": item.get("id", ""),
+                "status": item.get("status", ""),
+                "severity": item.get("severity", ""),
+                "category": ",".join(item.get("areas", [])),
+                "check_name": ",".join(item.get("triggers", [])),
+                "title": item.get("title", ""),
+                "message": item.get("problem", ""),
+            }
+        )
+    _write_table(
+        workbook,
+        title="Preflight_History",
+        headers=[
+            "kind",
+            "preflight_id",
+            "generated_at",
+            "cli_name",
+            "status",
+            "db_reflection_blocked",
+            "critical_count",
+            "warning_count",
+            "completed_at",
+            "severity",
+            "category",
+            "check_name",
+            "item_id",
+            "title",
+            "message",
+            "json_path",
+            "excel_path",
+        ],
+        rows=preflight_rows,
     )
     data_quality_rows: list[dict[str, Any]] = []
     run = result.data_quality_report.get("run")
@@ -842,6 +1006,12 @@ def build_daily_review(conn: sqlite3.Connection, options: DailyReviewOptions) ->
 
     schema_migrations = _build_schema_migrations_section(conn)
     db_reflection_items = _build_db_reflection_section(conn)
+    preflight_history = _build_preflight_history_section(
+        conn,
+        generated_at=generated_at,
+        catalog_path=Path(options.catalog_path),
+        preview_limit=options.issue_preview_limit,
+    )
     data_quality_report = _build_data_quality_section(conn)
     excel_audit_results = _run_excel_audits(conn, options, excel_sets)
     golden_master_diff_results = _run_golden_master_diffs(options, excel_sets)
@@ -851,6 +1021,7 @@ def build_daily_review(conn: sqlite3.Connection, options: DailyReviewOptions) ->
         options=options,
         schema_migrations=schema_migrations,
         db_reflection_items=db_reflection_items,
+        preflight_history=preflight_history,
         data_quality_report=data_quality_report,
         excel_audit_results=excel_audit_results,
         golden_master_diff_results=golden_master_diff_results,
@@ -864,6 +1035,7 @@ def build_daily_review(conn: sqlite3.Connection, options: DailyReviewOptions) ->
         summary=summary,
         schema_migrations=schema_migrations,
         db_reflection_items=db_reflection_items,
+        preflight_history=preflight_history,
         data_quality_report=data_quality_report,
         excel_audit_results=excel_audit_results,
         golden_master_diff_results=golden_master_diff_results,

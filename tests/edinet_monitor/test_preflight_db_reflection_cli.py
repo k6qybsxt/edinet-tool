@@ -126,7 +126,19 @@ class PreflightDbReflectionCliTest(unittest.TestCase):
         self.assertIn("critical=2", output)
         self.assertIn("json_path=", output)
         self.assertIn("excel_path=", output)
+        self.assertIn("history_saved=True", output)
+        self.assertIn("history_status=report_only", output)
         self.assertIn("issue=critical|db_reflection_item|missing_required_command", output)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT status, critical_count FROM preflight_runs"
+            ).fetchone()
+            self.assertEqual(row[0], "report_only")
+            self.assertEqual(row[1], 2)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

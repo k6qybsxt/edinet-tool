@@ -167,10 +167,33 @@ class DailyReviewServiceTest(unittest.TestCase):
         self.known_excel = self.tmp_path / "known.xlsx"
         self.normal_golden = self.tmp_path / "normal.normalized.json"
         self.known_golden = self.tmp_path / "known.normalized.json"
+        self.catalog_path = self.tmp_path / "prevention_catalog.json"
         for path in (self.normal_excel, self.known_excel):
             path.write_bytes(b"placeholder")
         for path in (self.normal_golden, self.known_golden):
             path.write_text("{}", encoding="utf-8")
+        self.catalog_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "items": [
+                        {
+                            "id": "active_item",
+                            "title": "Active",
+                            "status": "active",
+                            "severity": "warning",
+                            "areas": ["db_reflection"],
+                            "triggers": ["pre_db_reflection"],
+                            "problem": "problem",
+                            "prevention": "prevention",
+                            "review_points": ["point"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp_path, ignore_errors=True)
@@ -233,6 +256,7 @@ class DailyReviewServiceTest(unittest.TestCase):
                         known_issue_excel_path=self.known_excel,
                         normal_golden_json_path=self.normal_golden,
                         known_issue_golden_json_path=self.known_golden,
+                        catalog_path=self.catalog_path,
                         output_dir=self.output_dir,
                         retention_count=20,
                     ),
@@ -248,6 +272,8 @@ class DailyReviewServiceTest(unittest.TestCase):
         self.assertFalse(result.summary["pipeline_failed"])
         self.assertEqual(result.summary["schema_missing_count"], 1)
         self.assertEqual(result.summary["db_reflection_pending_count"], 1)
+        self.assertEqual(result.summary["preflight_blocked_count"], 0)
+        self.assertEqual(result.summary["preflight_catalog_triggered_count"], 0)
         self.assertEqual(result.summary["data_quality_warning_count"], 1)
         self.assertEqual(result.summary["excel_audit_critical_count"], 1)
         self.assertEqual(result.summary["golden_master_warning_count"], 1)
@@ -307,6 +333,7 @@ class DailyReviewServiceTest(unittest.TestCase):
                         db_path=self.db_path,
                         normal_excel_path=self.normal_excel,
                         normal_golden_json_path=self.normal_golden,
+                        catalog_path=self.catalog_path,
                         output_dir=self.output_dir,
                         retention_count=3,
                     ),
@@ -324,6 +351,7 @@ class DailyReviewServiceTest(unittest.TestCase):
                 conn,
                 DailyReviewOptions(
                     db_path=self.db_path,
+                    catalog_path=self.catalog_path,
                     output_dir=self.output_dir,
                 ),
             )
@@ -334,6 +362,113 @@ class DailyReviewServiceTest(unittest.TestCase):
         self.assertEqual(result.summary["review_error_count"], 2)
         self.assertEqual(result.excel_audit_results["status"], "not_configured")
         self.assertEqual(result.golden_master_diff_results["status"], "not_configured")
+
+    def test_preflight_history_and_triggered_catalog_are_reported(self) -> None:
+        conn = self._connect()
+        conn.executescript(
+            """
+            CREATE TABLE preflight_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                preflight_id TEXT NOT NULL UNIQUE,
+                generated_at TEXT NOT NULL,
+                cli_name TEXT NOT NULL,
+                command_names_json TEXT NOT NULL,
+                pipeline_failure_policy TEXT NOT NULL,
+                db_reflection_blocked INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                matched_pending_count INTEGER NOT NULL DEFAULT 0,
+                critical_count INTEGER NOT NULL DEFAULT 0,
+                warning_count INTEGER NOT NULL DEFAULT 0,
+                json_path TEXT NOT NULL,
+                excel_path TEXT NOT NULL,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE preflight_run_issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                preflight_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                check_name TEXT NOT NULL,
+                item_id TEXT,
+                title TEXT,
+                message TEXT NOT NULL,
+                detail_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO preflight_runs (
+                preflight_id, generated_at, cli_name, command_names_json,
+                pipeline_failure_policy, db_reflection_blocked, status,
+                pending_count, matched_pending_count, critical_count, warning_count,
+                json_path, excel_path, completed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "pf_blocked",
+                "2999-01-01T00:00:00",
+                "save_derived_metrics",
+                "[\"save_derived_metrics\"]",
+                "block_on_critical",
+                1,
+                "blocked",
+                1,
+                1,
+                1,
+                0,
+                "pf.json",
+                "pf.xlsx",
+                "",
+                "2999-01-01T00:00:00",
+                "2999-01-01T00:00:00",
+            ),
+        )
+        self.catalog_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "items": [
+                        {
+                            "id": "triggered_item",
+                            "title": "Triggered",
+                            "status": "triggered",
+                            "severity": "critical",
+                            "areas": ["db_reflection"],
+                            "triggers": ["pre_db_reflection"],
+                            "problem": "problem",
+                            "prevention": "prevention",
+                            "review_points": ["point"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            result = build_daily_review(
+                conn,
+                DailyReviewOptions(
+                    db_path=self.db_path,
+                    catalog_path=self.catalog_path,
+                    output_dir=self.output_dir,
+                    run_excel_audit=False,
+                    run_golden_master_diff=False,
+                ),
+            )
+        finally:
+            conn.close()
+
+        self.assertEqual(result.summary["preflight_blocked_count"], 1)
+        self.assertEqual(result.summary["preflight_catalog_triggered_count"], 1)
+        self.assertEqual(result.preflight_history["run_count"], 1)
+        payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["preflight_history"]["catalog_triggered_count"], 1)
 
 
 if __name__ == "__main__":

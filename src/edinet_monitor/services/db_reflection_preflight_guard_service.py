@@ -5,11 +5,17 @@ from pathlib import Path
 import sqlite3
 
 from edinet_monitor.config.settings import DB_PATH
+from edinet_monitor.db.schema import get_connection
 from edinet_monitor.services.db_reflection_preflight_service import (
     DEFAULT_DB_REFLECTION_PREFLIGHT_OUTPUT_DIR,
     DbReflectionPreflightOptions,
     DbReflectionPreflightResult,
     build_db_reflection_preflight,
+)
+from edinet_monitor.services.preflight_history_service import (
+    PreflightHistorySaveResult,
+    mark_preflight_history_completed,
+    save_preflight_history,
 )
 from edinet_monitor.services.prevention_catalog_service import (
     DEFAULT_PREVENTION_CATALOG_PATH,
@@ -41,6 +47,7 @@ CLI_PREVENTION_CATALOG_AREAS: dict[str, tuple[str, ...]] = {
 class DbReflectionPreflightGuardResult:
     preflight: DbReflectionPreflightResult
     trigger_update: PreventionCatalogStatusUpdateResult
+    history_save: PreflightHistorySaveResult
 
     @property
     def blocked(self) -> bool:
@@ -72,6 +79,9 @@ def _print_guard_summary(result: DbReflectionPreflightGuardResult) -> None:
     print(f"warning={preflight.counts_by_severity.get('warning', 0)}")
     print(f"json_path={preflight.json_path}")
     print(f"excel_path={preflight.excel_path}")
+    print(f"history_saved={result.history_save.history_saved}")
+    print(f"history_status={result.history_save.status}")
+    print(f"history_preflight_id={result.history_save.preflight_id}")
     if preflight.counts_by_severity.get("warning", 0) > 0:
         print("preflight_warning=1")
     if result.blocked:
@@ -119,6 +129,12 @@ def run_db_reflection_preflight_guard(
     finally:
         conn.close()
 
+    history_conn = get_connection(resolved_db_path)
+    try:
+        history_save = save_preflight_history(history_conn, preflight)
+    finally:
+        history_conn.close()
+
     trigger_update = update_prevention_catalog_statuses(
         resolved_catalog_path,
         item_ids=tuple(item.item_id for item in preflight.catalog_items),
@@ -128,6 +144,7 @@ def run_db_reflection_preflight_guard(
     result = DbReflectionPreflightGuardResult(
         preflight=preflight,
         trigger_update=trigger_update,
+        history_save=history_save,
     )
     _print_guard_summary(result)
     if result.blocked:
@@ -140,7 +157,18 @@ def mark_db_reflection_preflight_guard_success(
     *,
     catalog_path: str | Path = DEFAULT_PREVENTION_CATALOG_PATH,
 ) -> PreventionCatalogStatusUpdateResult | None:
-    if result is None or not result.triggered_item_ids:
+    if result is None:
+        return None
+    db_path = Path(result.preflight.summary.get("db_path") or DB_PATH)
+    history_conn = get_connection(db_path)
+    try:
+        mark_preflight_history_completed(
+            history_conn,
+            preflight_id=result.preflight.preflight_id,
+        )
+    finally:
+        history_conn.close()
+    if not result.triggered_item_ids:
         return None
     return update_prevention_catalog_statuses(
         catalog_path,
