@@ -114,6 +114,9 @@ class DbReflectionPreflightOptions:
     output_dir: Path = DEFAULT_DB_REFLECTION_PREFLIGHT_OUTPUT_DIR
     pipeline_failure_policy: str = "report_only"
     guard_cli_name: str = ""
+    command_names: tuple[str, ...] = ()
+    catalog_areas: tuple[str, ...] = ()
+    catalog_triggers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -311,6 +314,27 @@ def _lower_text(*parts: Any) -> str:
     return "\n".join(str(part or "") for part in parts).lower()
 
 
+def _normalized_tuple(values: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    if not values:
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _filter_pending_items_by_command(
+    items: list[DbReflectionPreflightItem],
+    command_names: tuple[str, ...],
+) -> list[DbReflectionPreflightItem]:
+    normalized_command_names = tuple(name.lower() for name in _normalized_tuple(command_names))
+    if not normalized_command_names:
+        return list(items)
+    matched_items: list[DbReflectionPreflightItem] = []
+    for item in items:
+        command_text = "\n".join(item.required_commands).lower()
+        if any(command_name in command_text for command_name in normalized_command_names):
+            matched_items.append(item)
+    return matched_items
+
+
 def _has_target_count_check(item: DbReflectionPreflightItem) -> bool:
     text = _lower_text(item.description, item.notes, *item.required_commands, *item.verification_sql)
     return any(keyword in text for keyword in TARGET_COUNT_KEYWORDS)
@@ -432,6 +456,9 @@ def _add_item_preflight_issues(item: DbReflectionPreflightItem, issues: list[DbR
 def _load_db_reflection_catalog_items(
     catalog_path: Path,
     issues: list[DbReflectionPreflightIssue],
+    *,
+    areas: tuple[str, ...] = (),
+    triggers: tuple[str, ...] = (),
 ) -> list[PreventionCatalogItem]:
     try:
         items = load_prevention_catalog(catalog_path)
@@ -447,11 +474,19 @@ def _load_db_reflection_catalog_items(
         )
         return []
     active_statuses = set(ACTIVE_PREVENTION_STATUSES)
+    filter_areas = set(_normalized_tuple(areas))
+    filter_triggers = set(_normalized_tuple(triggers))
+    if not filter_areas and not filter_triggers:
+        filter_areas = {"db_reflection"}
+        filter_triggers = {"pre_db_reflection"}
     return [
         item
         for item in items
         if item.status in active_statuses
-        and ("db_reflection" in item.areas or "pre_db_reflection" in item.triggers)
+        and (
+            bool(filter_areas.intersection(item.areas))
+            or bool(filter_triggers.intersection(item.triggers))
+        )
     ]
 
 
@@ -583,8 +618,22 @@ def build_db_reflection_preflight(
     json_path = output_dir / f"{preflight_id}.json"
     excel_path = output_dir / f"{preflight_id}.xlsx"
     issues: list[DbReflectionPreflightIssue] = []
-    pending_items = _load_pending_items(conn, item_id=options.item_id, issues=issues)
-    catalog_items = _load_db_reflection_catalog_items(Path(options.catalog_path), issues)
+    load_issues: list[DbReflectionPreflightIssue] = []
+    all_pending_items = _load_pending_items(conn, item_id=options.item_id, issues=load_issues)
+    command_names = _normalized_tuple(options.command_names)
+    pending_items = _filter_pending_items_by_command(all_pending_items, command_names)
+    matched_item_ids = {item.item_id for item in pending_items}
+    for issue in load_issues:
+        if not command_names or issue.item_id in ("", 0) or issue.item_id in matched_item_ids:
+            issues.append(issue)
+    catalog_areas = _normalized_tuple(options.catalog_areas)
+    catalog_triggers = _normalized_tuple(options.catalog_triggers)
+    catalog_items = _load_db_reflection_catalog_items(
+        Path(options.catalog_path),
+        issues,
+        areas=catalog_areas,
+        triggers=catalog_triggers,
+    )
     for item in pending_items:
         _add_item_preflight_issues(item, issues)
 
@@ -601,10 +650,14 @@ def build_db_reflection_preflight(
         "pipeline_failure_policy": options.pipeline_failure_policy,
         "db_reflection_blocked": db_reflection_blocked,
         "guard_cli_name": options.guard_cli_name,
+        "command_names": command_names,
+        "catalog_areas": catalog_areas,
+        "catalog_triggers": catalog_triggers,
         "db_path": options.db_path or "",
         "catalog_path": Path(options.catalog_path),
         "item_id": options.item_id or "",
-        "pending_count": len(pending_items),
+        "pending_count": len(all_pending_items),
+        "matched_pending_count": len(pending_items),
         "catalog_item_count": len(catalog_items),
         "critical": counts.get("critical", 0),
         "warning": counts.get("warning", 0),

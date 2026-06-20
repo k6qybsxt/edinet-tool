@@ -31,6 +31,10 @@ from edinet_monitor.services.collector.issuer_master_csv_service import load_all
 from edinet_monitor.services.collector.document_filter_service import normalize_form_codes
 from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.download_wave_service import validate_download_workers
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.storage.raw_retention_service import cleanup_old_raw_storage
 from edinet_monitor.services.storage.manifest_service import (
     build_manifest_path,
@@ -788,6 +792,7 @@ def main() -> None:
         submit_time_to_text=args.download_submit_time_to,
     )
 
+    guard_result = run_db_reflection_preflight_guard(cli_name="run_zip_backfill")
     run_zip_backfill(
         api_key=api_key,
         start_date=start_date,
@@ -820,6 +825,7 @@ def main() -> None:
         download_submit_time_to_text=download_submit_time_to_text,
         raw_retention_cleanup_func=cleanup_old_raw_storage,
     )
+    mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

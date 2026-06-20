@@ -6,6 +6,10 @@ from datetime import datetime
 from edinet_monitor.config.settings import TSE_LISTING_MASTER_CSV_PATH
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.issuer_store_service import upsert_issuers
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 
 
 CSV_PATH = str(TSE_LISTING_MASTER_CSV_PATH)
@@ -38,6 +42,7 @@ def row_to_issuer_record(row: dict) -> dict:
     }
 
 def main() -> None:
+    guard_result = run_db_reflection_preflight_guard(cli_name="import_tse_listing_master")
     create_tables()
 
     rows = load_csv_rows(CSV_PATH)
@@ -52,6 +57,7 @@ def main() -> None:
     print(f"csv_path={CSV_PATH}")
     print(f"csv_rows={len(rows)}")
     print(f"saved_count={saved_count}")
+    mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

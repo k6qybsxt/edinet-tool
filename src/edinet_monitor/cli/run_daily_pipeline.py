@@ -18,6 +18,10 @@ from edinet_monitor.config.settings import XBRL_RETENTION_ENABLED, XBRL_RETENTIO
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.edinet_api_key_guard import validate_edinet_api_key
 from edinet_monitor.services.collector.target_date_service import resolve_target_dates
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.storage.pipeline_run_store_service import (
     upsert_pipeline_run,
     upsert_pipeline_run_chunk,
@@ -99,7 +103,7 @@ def _execute_stage(
     try:
         summary = dict(stage_func(**kwargs) or {})
         return summary
-    except Exception as exc:
+    except BaseException as exc:
         stage_status = "failed"
         stage_error = repr(exc)
         raise
@@ -181,6 +185,8 @@ def run_daily_pipeline(
     derived_func: Callable[..., dict[str, Any]] = run_save_derived_metrics,
     screening_func: Callable[..., dict[str, Any]] = run_screening,
     xbrl_retention_func: Callable[..., dict[str, Any]] = cleanup_old_xbrl_storage,
+    preflight_guard_func: Callable[..., Any] = run_db_reflection_preflight_guard,
+    preflight_success_func: Callable[..., Any] = mark_db_reflection_preflight_guard_success,
     create_tables_func: Callable[[], None] = create_tables,
     connection_factory: Callable[[], Any] = get_connection,
     timestamp_now_func: Callable[[], datetime] = datetime.now,
@@ -218,6 +224,15 @@ def run_daily_pipeline(
     derived_summary: dict[str, Any] = {}
     screening_summary: dict[str, Any] = {}
     xbrl_retention_summary: dict[str, Any] = {}
+
+    def _guarded_stage(cli_name: str, stage_func: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+        def _run_guarded_stage(**kwargs: Any) -> dict[str, Any]:
+            guard_result = preflight_guard_func(cli_name=cli_name)
+            summary = dict(stage_func(**kwargs) or {})
+            preflight_success_func(guard_result)
+            return summary
+
+        return _run_guarded_stage
 
     try:
         collect_summary = _execute_stage(
@@ -285,7 +300,7 @@ def run_daily_pipeline(
         raw_summary = _execute_stage(
             run_id=run_id,
             stage_key="save_raw_facts",
-            stage_func=raw_func,
+            stage_func=_guarded_stage("save_raw_facts", raw_func),
             chunk_rows=chunk_rows,
             stage_summary_by_key=stage_summary_by_key,
             timer_func=timer_func,
@@ -306,7 +321,7 @@ def run_daily_pipeline(
         normalized_summary = _execute_stage(
             run_id=run_id,
             stage_key="save_normalized_metrics",
-            stage_func=normalized_func,
+            stage_func=_guarded_stage("save_normalized_metrics", normalized_func),
             chunk_rows=chunk_rows,
             stage_summary_by_key=stage_summary_by_key,
             timer_func=timer_func,
@@ -328,7 +343,7 @@ def run_daily_pipeline(
         derived_summary = _execute_stage(
             run_id=run_id,
             stage_key="save_derived_metrics",
-            stage_func=derived_func,
+            stage_func=_guarded_stage("save_derived_metrics", derived_func),
             chunk_rows=chunk_rows,
             stage_summary_by_key=stage_summary_by_key,
             timer_func=timer_func,
@@ -347,7 +362,7 @@ def run_daily_pipeline(
         screening_summary = _execute_stage(
             run_id=run_id,
             stage_key="screening",
-            stage_func=screening_func,
+            stage_func=_guarded_stage("run_screening", screening_func),
             chunk_rows=chunk_rows,
             stage_summary_by_key=stage_summary_by_key,
             timer_func=timer_func,
@@ -376,7 +391,7 @@ def run_daily_pipeline(
         xbrl_retention_summary = _execute_stage(
             run_id=run_id,
             stage_key="xbrl_retention",
-            stage_func=_run_xbrl_retention_stage,
+            stage_func=_guarded_stage("run_xbrl_retention_cleanup", _run_xbrl_retention_stage),
             chunk_rows=chunk_rows,
             stage_summary_by_key=stage_summary_by_key,
             timer_func=timer_func,
@@ -387,7 +402,7 @@ def run_daily_pipeline(
             chunk_rows[-1]["downloaded_total"] = int(xbrl_retention_summary.get("deleted_total", 0) or 0)
             chunk_rows[-1]["error_total"] = int(xbrl_retention_summary.get("error_total", 0) or 0)
             chunk_rows[-1]["summary"] = dict(xbrl_retention_summary)
-    except Exception as exc:
+    except BaseException as exc:
         run_status = "failed"
         run_error = repr(exc)
         raise

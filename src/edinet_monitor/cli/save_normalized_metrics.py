@@ -19,6 +19,10 @@ from edinet_monitor.services.normalizer.normalized_metric_store_service import (
     insert_normalized_metrics,
 )
 from edinet_monitor.services.performance_log_service import PerformanceLog
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 
 
 RAW_FACT_WANTED_COLUMNS = [
@@ -380,6 +384,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = run_db_reflection_preflight_guard(cli_name="save_normalized_metrics")
     run_save_normalized_metrics(
         batch_size=args.batch_size,
         form_codes=normalize_form_codes(args.form_codes or None),
@@ -388,6 +393,7 @@ def main() -> None:
         workers=args.workers,
         normalize_chunk_size=args.normalize_chunk_size,
     )
+    mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

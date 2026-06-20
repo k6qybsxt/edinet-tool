@@ -4,6 +4,10 @@ import argparse
 
 from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.jquants.client import JQuantsClient
 from edinet_monitor.services.jquants.ingestion_service import save_jquants_statements
 
@@ -33,6 +37,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = run_db_reflection_preflight_guard(cli_name="save_jquants_statements")
     create_tables()
     conn = get_connection()
     try:
@@ -54,6 +59,7 @@ def main() -> None:
         )
     finally:
         conn.close()
+    mark_db_reflection_preflight_guard_success(guard_result)
 
     print(f"run_id={result.run_id}")
     print(f"fetched_total={result.fetched_total}")

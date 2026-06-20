@@ -114,6 +114,16 @@ class DbReflectionPreflightServiceTest(unittest.TestCase):
             output_dir=self.tmp_path / "reports",
         )
 
+    def _guard_options(self, *command_names: str) -> DbReflectionPreflightOptions:
+        return DbReflectionPreflightOptions(
+            db_path=self.db_path,
+            catalog_path=self.catalog_path,
+            output_dir=self.tmp_path / "reports",
+            pipeline_failure_policy="block_on_critical",
+            guard_cli_name=command_names[0] if command_names else "",
+            command_names=tuple(command_names),
+        )
+
     def test_pending_none_is_ok(self) -> None:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -197,6 +207,76 @@ class DbReflectionPreflightServiceTest(unittest.TestCase):
         self.assertEqual(len(result.pending_items), 1)
         self.assertTrue(result.json_path.exists())
         self.assertTrue(result.excel_path.exists())
+
+    def test_command_names_filter_pending_items_and_summary_counts(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _create_reflection_table(conn)
+            _insert_item(
+                conn,
+                title="Raw facts",
+                commands=["python -m edinet_monitor.cli.save_raw_facts --run-all"],
+                verification_sql=[
+                    "SELECT COUNT(*) AS target_count FROM raw_facts"
+                ],
+            )
+            _insert_item(
+                conn,
+                title="Derived",
+                commands=["python -m edinet_monitor.cli.save_derived_metrics --run-all"],
+                verification_sql=[
+                    "SELECT COUNT(*) AS target_count FROM derived_metrics WHERE calc_status = 'ok' AND value_num IS NOT NULL"
+                ],
+            )
+            result = build_db_reflection_preflight(conn, self._guard_options("save_raw_facts"))
+        finally:
+            conn.close()
+
+        self.assertEqual(result.summary["pending_count"], 2)
+        self.assertEqual(result.summary["matched_pending_count"], 1)
+        self.assertEqual([item.title for item in result.pending_items], ["Raw facts"])
+        self.assertEqual(result.summary["command_names"], ("save_raw_facts",))
+
+    def test_unrelated_critical_pending_item_does_not_block_command_guard(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _create_reflection_table(conn)
+            _insert_item(
+                conn,
+                title="Unrelated critical",
+                commands=["python -m edinet_monitor.cli.save_derived_metrics --run-all"],
+                verification_sql=[],
+            )
+            result = build_db_reflection_preflight(conn, self._guard_options("save_raw_facts"))
+        finally:
+            conn.close()
+
+        self.assertEqual(result.summary["pending_count"], 1)
+        self.assertEqual(result.summary["matched_pending_count"], 0)
+        self.assertFalse(result.summary["db_reflection_blocked"])
+        self.assertEqual(result.counts_by_severity["critical"], 0)
+
+    def test_related_critical_pending_item_blocks_command_guard(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _create_reflection_table(conn)
+            _insert_item(
+                conn,
+                title="Related critical",
+                commands=["python -m edinet_monitor.cli.save_raw_facts --run-all"],
+                verification_sql=[],
+            )
+            result = build_db_reflection_preflight(conn, self._guard_options("save_raw_facts"))
+        finally:
+            conn.close()
+
+        self.assertEqual(result.summary["pending_count"], 1)
+        self.assertEqual(result.summary["matched_pending_count"], 1)
+        self.assertTrue(result.summary["db_reflection_blocked"])
+        self.assertGreater(result.counts_by_severity["critical"], 0)
 
 
 if __name__ == "__main__":

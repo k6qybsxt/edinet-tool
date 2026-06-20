@@ -19,6 +19,22 @@ from edinet_monitor.services.prevention_catalog_service import (
 
 
 TRIGGERABLE_PREVENTION_STATUSES = ("active", "monitoring")
+DEFAULT_PREVENTION_CATALOG_TRIGGERS = ("pre_db_reflection",)
+CLI_PREVENTION_CATALOG_AREAS: dict[str, tuple[str, ...]] = {
+    "save_raw_facts": ("raw_facts", "xbrl_parse", "db_reflection"),
+    "save_normalized_metrics": ("normalization", "normalized_metrics", "db_reflection"),
+    "save_derived_metrics": ("derived_metrics", "db_reflection"),
+    "save_jquants_statements": ("jquants", "db_reflection"),
+    "save_jquants_daily_quotes": ("jquants", "market_data", "db_reflection"),
+    "save_jquants_listed_info": ("jquants", "issuer_master", "db_reflection"),
+    "import_manifest_filings_to_db": ("edinet_download", "filings", "issuer_master", "db_reflection"),
+    "collect_document_list_to_db": ("edinet_download", "filings", "db_reflection"),
+    "import_tse_listing_master": ("issuer_master", "db_reflection"),
+    "run_jquants_backfill": ("jquants", "market_data", "db_reflection"),
+    "run_zip_backfill": ("edinet_download", "db_reflection"),
+    "run_screening": ("screening", "db_reflection"),
+    "run_xbrl_retention_cleanup": ("storage_retention", "db_reflection"),
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +63,10 @@ def _print_guard_summary(result: DbReflectionPreflightGuardResult) -> None:
     preflight = result.preflight
     print(f"preflight_id={preflight.preflight_id}")
     print(f"pipeline_failure_policy={preflight.summary.get('pipeline_failure_policy', '')}")
+    print(f"guard_cli_name={preflight.summary.get('guard_cli_name', '')}")
+    print(f"command_names={','.join(preflight.summary.get('command_names', ()))}")
+    print(f"pending_count={preflight.summary.get('pending_count', 0)}")
+    print(f"matched_pending_count={preflight.summary.get('matched_pending_count', 0)}")
     print(f"db_reflection_blocked={preflight.summary.get('db_reflection_blocked', False)}")
     print(f"critical={preflight.counts_by_severity.get('critical', 0)}")
     print(f"warning={preflight.counts_by_severity.get('warning', 0)}")
@@ -61,12 +81,26 @@ def _print_guard_summary(result: DbReflectionPreflightGuardResult) -> None:
 def run_db_reflection_preflight_guard(
     *,
     cli_name: str,
+    command_names: tuple[str, ...] | list[str] | None = None,
+    catalog_areas: tuple[str, ...] | list[str] | None = None,
+    catalog_triggers: tuple[str, ...] | list[str] | None = None,
     db_path: str | Path = DB_PATH,
     catalog_path: str | Path = DEFAULT_PREVENTION_CATALOG_PATH,
     output_dir: str | Path = DEFAULT_DB_REFLECTION_PREFLIGHT_OUTPUT_DIR,
 ) -> DbReflectionPreflightGuardResult:
     resolved_db_path = Path(db_path)
     resolved_catalog_path = Path(catalog_path)
+    resolved_command_names = tuple((cli_name,) if command_names is None else command_names)
+    resolved_catalog_areas = tuple(
+        CLI_PREVENTION_CATALOG_AREAS.get(cli_name, ("db_reflection",))
+        if catalog_areas is None
+        else catalog_areas
+    )
+    resolved_catalog_triggers = tuple(
+        DEFAULT_PREVENTION_CATALOG_TRIGGERS
+        if catalog_triggers is None
+        else catalog_triggers
+    )
     conn = _get_read_only_connection(resolved_db_path)
     try:
         preflight = build_db_reflection_preflight(
@@ -77,6 +111,9 @@ def run_db_reflection_preflight_guard(
                 output_dir=Path(output_dir),
                 pipeline_failure_policy="block_on_critical",
                 guard_cli_name=cli_name,
+                command_names=resolved_command_names,
+                catalog_areas=resolved_catalog_areas,
+                catalog_triggers=resolved_catalog_triggers,
             ),
         )
     finally:

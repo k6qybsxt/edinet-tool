@@ -4,6 +4,10 @@ import argparse
 
 from edinet_monitor.config.settings import OPERATION_LOG_ROOT
 from edinet_monitor.db.schema import create_tables, get_connection
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.jquants.client import JQuantsClient
 from edinet_monitor.services.jquants.coverage_service import export_jquants_coverage
 from edinet_monitor.services.jquants.audit_ingestion_service import save_jquants_listed_info
@@ -41,6 +45,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     codes = _split_csv(args.codes)
+    statement_guard_result = None
+    quote_guard_result = None
+    listed_guard_result = None
+    if not args.skip_statements:
+        statement_guard_result = run_db_reflection_preflight_guard(
+            cli_name="run_jquants_backfill",
+            command_names=("run_jquants_backfill", "save_jquants_statements"),
+        )
+    if not args.skip_quotes:
+        quote_guard_result = run_db_reflection_preflight_guard(
+            cli_name="run_jquants_backfill",
+            command_names=("run_jquants_backfill", "save_jquants_daily_quotes"),
+        )
+    if args.include_listed_info:
+        listed_guard_result = run_db_reflection_preflight_guard(
+            cli_name="run_jquants_backfill",
+            command_names=("run_jquants_backfill", "save_jquants_listed_info"),
+        )
     create_tables()
     conn = get_connection()
     try:
@@ -63,6 +85,7 @@ def main() -> None:
                 raw_json_storage_root=args.raw_json_root,
             )
             print(f"statements_saved={statement_result.saved_total}")
+            mark_db_reflection_preflight_guard_success(statement_guard_result)
         if not args.skip_quotes:
             quote_result = save_jquants_daily_quotes(
                 conn,
@@ -73,6 +96,7 @@ def main() -> None:
                 output_dir=args.output_dir,
             )
             print(f"quotes_saved={quote_result.saved_total}")
+            mark_db_reflection_preflight_guard_success(quote_guard_result)
         if args.include_listed_info:
             listed_result = save_jquants_listed_info(
                 conn,
@@ -83,6 +107,7 @@ def main() -> None:
             )
             print(f"listed_info_saved={listed_result.saved_total}")
             print(f"listed_info_warnings={len(listed_result.warnings)}")
+            mark_db_reflection_preflight_guard_success(listed_guard_result)
         coverage = export_jquants_coverage(
             conn,
             date_from=args.date_from,

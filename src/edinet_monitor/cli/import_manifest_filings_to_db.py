@@ -9,6 +9,10 @@ from edinet_monitor.cli.import_tse_listing_master import load_csv_rows, row_to_i
 from edinet_monitor.config.settings import DB_PATH, MANIFEST_ROOT, TSE_LISTING_MASTER_CSV_PATH
 from edinet_monitor.db.schema import create_tables, get_connection
 from edinet_monitor.services.collector.issuer_store_service import upsert_issuers
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 from edinet_monitor.services.collector.manifest_filing_import_service import (
     build_filing_record_from_manifest_row,
     load_manifest_rows_for_filing_sync,
@@ -139,6 +143,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = run_db_reflection_preflight_guard(cli_name="import_manifest_filings_to_db")
     run_import_manifest_filings_to_db(
         manifest_name=args.manifest_name,
         manifest_path_text=args.manifest_path,
@@ -148,6 +153,7 @@ def main() -> None:
         import_issuer_master=not args.skip_issuer_master,
         master_csv_path=Path(args.master_csv_path) if args.master_csv_path else None,
     )
+    mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

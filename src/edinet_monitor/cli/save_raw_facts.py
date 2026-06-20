@@ -28,6 +28,10 @@ from edinet_monitor.services.parser.raw_fact_store_service import (
 )
 from edinet_monitor.services.parser.xbrl_parse_service import parse_xbrl_to_raw
 from edinet_monitor.services.performance_log_service import PerformanceLog
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 
 
 def _parse_mode_for_form_type(form_type: str) -> str:
@@ -491,6 +495,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    guard_result = run_db_reflection_preflight_guard(cli_name="save_raw_facts")
     run_save_raw_facts(
         batch_size=args.batch_size,
         run_all=args.run_all,
@@ -500,6 +505,7 @@ def main() -> None:
         db_insert_chunk_size=args.db_insert_chunk_size,
         db_doc_id_chunk_size=args.db_doc_id_chunk_size,
     )
+    mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":

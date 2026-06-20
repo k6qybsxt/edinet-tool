@@ -116,6 +116,7 @@ class RunDailyPipelineTest(unittest.TestCase):
         normalized_kwargs: dict = {}
         extract_kwargs: dict = {}
         download_kwargs: dict = {}
+        guarded_cli_names: list[str] = []
 
         def run_download(**kwargs):
             download_kwargs.update(kwargs)
@@ -196,6 +197,8 @@ class RunDailyPipelineTest(unittest.TestCase):
                 "missing_file_total": 0,
                 "error_total": 0,
             },
+            preflight_guard_func=lambda **kwargs: guarded_cli_names.append(kwargs["cli_name"]) or object(),
+            preflight_success_func=lambda result: None,
             create_tables_func=lambda: None,
             connection_factory=connection_factory,
         )
@@ -209,6 +212,16 @@ class RunDailyPipelineTest(unittest.TestCase):
         self.assertEqual(raw_kwargs["parse_chunk_size"], 6)
         self.assertEqual(normalized_kwargs["workers"], 3)
         self.assertEqual(normalized_kwargs["normalize_chunk_size"], 7)
+        self.assertEqual(
+            guarded_cli_names,
+            [
+                "save_raw_facts",
+                "save_normalized_metrics",
+                "save_derived_metrics",
+                "run_screening",
+                "run_xbrl_retention_cleanup",
+            ],
+        )
 
         verify_conn = connection_factory()
         try:
@@ -240,6 +253,95 @@ class RunDailyPipelineTest(unittest.TestCase):
                 ],
             )
             self.assertTrue(all(row["chunk_status"] == "completed" for row in chunk_rows))
+        finally:
+            verify_conn.close()
+
+    def test_run_daily_pipeline_blocks_db_stage_with_preflight_and_logs_failure(self) -> None:
+        temp_parent = ROOT_DIR / "tests" / "_tmp_run_daily_pipeline"
+        temp_parent.mkdir(parents=True, exist_ok=True)
+        db_path = temp_parent / f"case_{uuid.uuid4().hex}.db"
+        self.addCleanup(lambda: db_path.unlink(missing_ok=True))
+
+        def connection_factory() -> sqlite3.Connection:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            return conn
+
+        setup_conn = connection_factory()
+        try:
+            create_pipeline_log_tables(setup_conn)
+        finally:
+            setup_conn.close()
+
+        raw_called = False
+
+        def guard(**kwargs):
+            if kwargs["cli_name"] == "save_raw_facts":
+                raise SystemExit(2)
+            return object()
+
+        def run_raw(**kwargs):
+            nonlocal raw_called
+            raw_called = True
+            return {}
+
+        with self.assertRaises(SystemExit) as context:
+            run_daily_pipeline(
+                target_date_text="2026-04-09",
+                api_key="dummy",
+                resolve_target_dates_func=lambda **_: [date(2026, 4, 9)],
+                collect_func=lambda target_dates, api_key: {
+                    "target_dates": [target.isoformat() for target in target_dates],
+                    "totals": {"filing_saved_count": 1},
+                },
+                download_func=lambda **_: {
+                    "target_total": 0,
+                    "downloaded_total": 0,
+                    "error_total": 0,
+                },
+                extract_func=lambda **_: {
+                    "target_total": 0,
+                    "extracted_total": 0,
+                    "error_total": 0,
+                },
+                raw_func=run_raw,
+                normalized_func=lambda **_: {},
+                derived_func=lambda **_: {},
+                screening_func=lambda **_: {},
+                xbrl_retention_func=lambda conn, enabled, keep_months: {},
+                preflight_guard_func=guard,
+                preflight_success_func=lambda result: None,
+                create_tables_func=lambda: None,
+                connection_factory=connection_factory,
+            )
+
+        self.assertEqual(context.exception.code, 2)
+        self.assertFalse(raw_called)
+
+        verify_conn = connection_factory()
+        try:
+            run_row = verify_conn.execute(
+                "SELECT run_status, run_error, chunks FROM pipeline_runs"
+            ).fetchone()
+            self.assertIsNotNone(run_row)
+            assert run_row is not None
+            self.assertEqual(run_row["run_status"], "failed")
+            self.assertIn("SystemExit", run_row["run_error"])
+            self.assertEqual(run_row["chunks"], 4)
+
+            chunk_rows = verify_conn.execute(
+                "SELECT chunk_key, chunk_status, chunk_error FROM pipeline_run_chunks ORDER BY id"
+            ).fetchall()
+            self.assertEqual(
+                [(row["chunk_key"], row["chunk_status"]) for row in chunk_rows],
+                [
+                    ("collect", "completed"),
+                    ("download", "completed"),
+                    ("extract_xbrl", "completed"),
+                    ("save_raw_facts", "failed"),
+                ],
+            )
+            self.assertIn("SystemExit", chunk_rows[-1]["chunk_error"])
         finally:
             verify_conn.close()
 

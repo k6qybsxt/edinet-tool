@@ -24,14 +24,20 @@ from edinet_monitor.services.db_reflection_preflight_guard_service import (  # n
 from edinet_monitor.services.prevention_catalog_service import load_prevention_catalog  # noqa: E402
 
 
-def _catalog_item(item_id: str, *, status: str = "active") -> dict[str, object]:
+def _catalog_item(
+    item_id: str,
+    *,
+    status: str = "active",
+    areas: list[str] | None = None,
+    triggers: list[str] | None = None,
+) -> dict[str, object]:
     return {
         "id": item_id,
         "title": item_id,
         "status": status,
         "severity": "critical",
-        "areas": ["db_reflection"],
-        "triggers": ["pre_db_reflection"],
+        "areas": ["db_reflection"] if areas is None else areas,
+        "triggers": ["pre_db_reflection"] if triggers is None else triggers,
         "problem": "problem",
         "prevention": "prevention",
         "review_points": ["point"],
@@ -114,7 +120,7 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp_path, ignore_errors=True)
 
-    def _run_guard(self):
+    def _run_guard(self, **kwargs):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             result = run_db_reflection_preflight_guard(
@@ -122,6 +128,7 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
                 db_path=self.db_path,
                 catalog_path=self.catalog_path,
                 output_dir=self.output_dir,
+                **kwargs,
             )
         return result, stdout.getvalue()
 
@@ -139,11 +146,14 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
         finally:
             conn.close()
 
-        result, output = self._run_guard()
+        result, output = self._run_guard(command_names=("save_derived_metrics",))
 
         self.assertFalse(result.blocked)
         self.assertGreaterEqual(result.preflight.counts_by_severity["warning"], 1)
         self.assertIn("pipeline_failure_policy=block_on_critical", output)
+        self.assertIn("guard_cli_name=test_cli", output)
+        self.assertIn("command_names=save_derived_metrics", output)
+        self.assertIn("matched_pending_count=1", output)
         self.assertIn("db_reflection_blocked=False", output)
         by_id = {item.item_id: item.status for item in load_prevention_catalog(self.catalog_path)}
         self.assertEqual(by_id["active_item"], "triggered")
@@ -168,7 +178,11 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
     def test_critical_blocks_and_leaves_triggered_status(self) -> None:
         conn = _create_db(self.db_path)
         try:
-            _insert_item(conn, commands=[], verification_sql=[])
+            _insert_item(
+                conn,
+                commands=["python -m edinet_monitor.cli.test_cli --run-all"],
+                verification_sql=[],
+            )
         finally:
             conn.close()
 
@@ -189,6 +203,42 @@ class DbReflectionPreflightGuardServiceTest(unittest.TestCase):
         self.assertEqual(by_id["active_item"], "triggered")
         self.assertEqual(by_id["monitoring_item"], "triggered")
         self.assertEqual(by_id["retired_item"], "retired")
+
+    def test_catalog_updates_are_limited_to_related_catalog_area(self) -> None:
+        self.catalog_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "items": [
+                        _catalog_item("raw_item", areas=["raw_facts"], triggers=["pre_implementation_review"]),
+                        _catalog_item("derived_item", areas=["derived_metrics"], triggers=["pre_implementation_review"]),
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        conn = _create_db(self.db_path)
+        try:
+            _insert_item(
+                conn,
+                commands=["python -m edinet_monitor.cli.save_raw_facts --run-all"],
+                verification_sql=[
+                    "SELECT COUNT(*) AS target_count FROM raw_facts"
+                ],
+            )
+        finally:
+            conn.close()
+
+        self._run_guard(
+            command_names=("save_raw_facts",),
+            catalog_areas=("raw_facts",),
+            catalog_triggers=(),
+        )
+
+        by_id = {item.item_id: item.status for item in load_prevention_catalog(self.catalog_path)}
+        self.assertEqual(by_id["raw_item"], "triggered")
+        self.assertEqual(by_id["derived_item"], "active")
 
 
 if __name__ == "__main__":

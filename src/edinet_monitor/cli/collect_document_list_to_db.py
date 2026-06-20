@@ -12,6 +12,10 @@ from edinet_monitor.services.collector.document_list_service import fetch_docume
 from edinet_monitor.services.collector.document_row_mapper import to_filing_record
 from edinet_monitor.services.collector.filing_store_service import upsert_filings
 from edinet_monitor.services.collector.target_date_service import resolve_target_dates
+from edinet_monitor.services.db_reflection_preflight_guard_service import (
+    mark_db_reflection_preflight_guard_success,
+    run_db_reflection_preflight_guard,
+)
 
 
 def _fetch_allowed_edinet_codes(conn) -> set[str]:
@@ -145,7 +149,9 @@ def main() -> None:
         date_from_text=args.date_from,
         date_to_text=args.date_to,
     )
+    guard_result = run_db_reflection_preflight_guard(cli_name="collect_document_list_to_db")
     collect_document_list_for_dates(target_dates, api_key=api_key)
+    mark_db_reflection_preflight_guard_success(guard_result)
 
 
 if __name__ == "__main__":
