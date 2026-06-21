@@ -90,7 +90,6 @@ ACTUAL_FIELD_MAP = [
     ("NP", "ProfitLoss", "profit", "yen"),
     ("TA", "TotalAssets", "balance", "yen"),
     ("Eq", "NetAssets", "balance", "yen"),
-    ("EqAR", "EquityRatio", "ratio", "ratio"),
     ("CFO", "OperatingCash", "cashflow", "yen"),
     ("CFI", "InvestmentCash", "cashflow", "yen"),
     ("CFF", "FinancingCash", "cashflow", "yen"),
@@ -503,6 +502,7 @@ def statement_metrics_from_row(
             )
         )
         metrics.append(_calculated_combined_expense_metric(row, period))
+        metrics.append(_calculated_equity_ratio_metric(row, period))
         metrics.append(_outstanding_shares_metric(row, period))
         metrics.append(_calculated_eps_metric(row, period))
         metrics.append(_calculated_bps_metric(row, period))
@@ -591,6 +591,56 @@ def _outstanding_shares_metric(row: dict[str, Any], period: str) -> JQuantsState
                 "issued_raw_value": row.get(issued_field),
                 "treasury_raw_value": row.get(treasury_field),
                 "rule": "OutstandingShares = ShOutFY - TrShFY; blank or less-than-1000 treasury shares are treated as zero",
+            }
+        ),
+    )
+
+
+def _calculated_equity_ratio_metric(row: dict[str, Any], period: str) -> JQuantsStatementMetric:
+    net_assets = _parse_decimal(row.get("Eq"))
+    total_assets = _parse_decimal(row.get("TA"))
+    value: Decimal | None = None
+    calc_status = "missing_input"
+    if net_assets is not None and total_assets is not None:
+        if total_assets == 0:
+            calc_status = "division_by_zero"
+        else:
+            value = net_assets / total_assets
+            calc_status = "ok"
+    raw = build_statement_raw(row)
+    return JQuantsStatementMetric(
+        disclosure_number=raw.disclosure_number,
+        local_code=raw.local_code,
+        security_code=raw.security_code,
+        metric_kind="actual",
+        period_scope="quarter",
+        period_key=f"actual:{period}",
+        quarter_type=period,
+        forecast_target=None,
+        forecast_stage=None,
+        fiscal_year=raw.fiscal_year,
+        period_start=raw.current_period_start_date,
+        period_end=raw.current_period_end_date or raw.current_fiscal_year_end_date,
+        disclosed_date=raw.disclosed_date,
+        disclosed_time=raw.disclosed_time,
+        metric_key="EquityRatioCurrent",
+        metric_base="EquityRatio",
+        metric_group="ratio",
+        value_num=_to_float(value),
+        value_unit="ratio",
+        calc_status=calc_status,
+        source_field="calculated:Eq/TA",
+        source_detail_json=_json_dumps(
+            {
+                "source": "jquants",
+                "api_version": "v2",
+                "net_assets_field": "Eq",
+                "total_assets_field": "TA",
+                "net_assets_raw_value": row.get("Eq"),
+                "total_assets_raw_value": row.get("TA"),
+                "raw_equity_ratio_field": "EqAR",
+                "raw_equity_ratio_value": row.get("EqAR"),
+                "rule": "EquityRatio = NetAssets / TotalAssets",
             }
         ),
     )

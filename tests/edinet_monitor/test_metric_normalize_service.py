@@ -162,7 +162,7 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(normalized["metric_key"], "NetAssetsCurrent")
         self.assertEqual(normalized["value_num"], 3380273000000.0)
 
-    def test_issued_shares_prefers_summary_tag_over_voting_rights_candidate(self) -> None:
+    def test_issued_shares_prefers_filing_date_tag_over_voting_rights_candidate(self) -> None:
         rows = [
             build_raw_fact(
                 tag_name="NumberOfSharesIssuedSharesVotingRights",
@@ -176,13 +176,13 @@ class MetricNormalizeServiceTest(unittest.TestCase):
                 unit_ref="shares",
             ),
             build_raw_fact(
-                tag_name="TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+                tag_name="NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
                 value_text="1261232000",
-                context_ref="CurrentYearInstant_NonConsolidatedMember",
+                context_ref="FilingDateInstant",
                 period_type="instant",
                 period_start=None,
                 period_end=None,
-                instant_date="2024-03-31",
+                instant_date="2024-06-25",
                 consolidation="NonConsolidated",
                 unit_ref="shares",
             ),
@@ -192,12 +192,17 @@ class MetricNormalizeServiceTest(unittest.TestCase):
             rows,
             edinet_code="E00000",
             security_code="6758",
+            filing_period_end="2024-03-31",
         )
 
         issued = [row for row in normalized_rows if row["metric_key"] == "IssuedSharesCurrent"]
         self.assertEqual(len(issued), 1)
         self.assertEqual(issued[0]["value_num"], 1261232000.0)
-        self.assertEqual(issued[0]["source_tag"], "TotalNumberOfIssuedSharesSummaryOfBusinessResults")
+        self.assertEqual(
+            issued[0]["source_tag"],
+            "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+        )
+        self.assertEqual(issued[0]["period_end"], "2024-03-31")
 
     def test_operating_cost_maps_to_cost_of_sales(self) -> None:
         row = build_raw_fact(tag_name="OperatingCost")

@@ -250,7 +250,6 @@ METRICS = {
             # 代表的（株式等の状況）
             "jpcrp_cor:TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
             # サマリー系（会社により出る）
-            "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
             # 普通株/普通株式名義系（会社により出る）
             "jpcrp_cor:TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
             "jpcrp_cor:TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",

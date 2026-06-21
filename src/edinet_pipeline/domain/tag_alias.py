@@ -220,10 +220,8 @@ TAG_ALIAS = {
     "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
-    "TotalNumberOfIssuedSharesSummaryOfBusinessResults": "IssuedShares",
     "TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
     "TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc": "IssuedShares",
-    "NumberOfSharesIssuedSharesVotingRights": "IssuedShares",
 
     # 自己株式
     "TotalNumberOfSharesHeldTreasurySharesEtc": "TreasuryShares",

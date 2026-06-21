@@ -175,8 +175,8 @@ class HalfOutstandingSharesBackfillServiceTest(unittest.TestCase):
             """,
             [
                 (
-                    "NumberOfSharesIssuedSharesVotingRights",
-                    "CurrentQuarterInstant",
+                    "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+                    "FilingDateInstant",
                     "1000000",
                     "",
                 ),
@@ -214,7 +214,7 @@ class HalfOutstandingSharesBackfillServiceTest(unittest.TestCase):
         conn.execute(
             """
             INSERT INTO raw_facts VALUES (
-                'DOC1', 'NumberOfSharesIssuedSharesVotingRights', 'CurrentQuarterInstant',
+                'DOC1', 'NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc', 'FilingDateInstant',
                 '1000000', 'shares', 'instant', '2025-09-30', '2025-09-30',
                 'Consolidated', ''
             )
@@ -230,6 +230,23 @@ class HalfOutstandingSharesBackfillServiceTest(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(count, 0)
         self.assertEqual(status, "missing_input")
+
+    def test_voting_rights_tag_is_not_used_as_issued_shares(self) -> None:
+        conn = _connect()
+        _insert_base_doc(conn)
+        conn.execute(
+            """
+            INSERT INTO raw_facts VALUES (
+                'DOC1', 'NumberOfSharesIssuedSharesVotingRights', 'CurrentQuarterInstant',
+                '1000000', 'shares', 'instant', '2025-09-30', '2025-09-30',
+                'Consolidated', ''
+            )
+            """
+        )
+
+        result = backfill_2q_outstanding_shares(conn, apply=False)
+
+        self.assertEqual(result["candidate_actions"], 0)
 
 
 if __name__ == "__main__":

@@ -170,6 +170,8 @@ class JQuantsServicesTest(unittest.TestCase):
         by_key = {(metric.period_key, metric.forecast_stage, metric.metric_base): metric for metric in metrics}
 
         self.assertEqual(by_key[("actual:1Q", None, "NetSales")].value_num, 100000000.0)
+        self.assertAlmostEqual(by_key[("actual:1Q", None, "EquityRatio")].value_num, 400000000.0 / 900000000.0)
+        self.assertEqual(by_key[("actual:1Q", None, "EquityRatio")].source_field, "calculated:Eq/TA")
         combined_expense = by_key[
             ("actual:1Q", None, "CostOfSalesAndSellingGeneralAndAdministrativeExpenses")
         ]

@@ -144,11 +144,8 @@ class TagAliasTest(unittest.TestCase):
             with self.subTest(tag_name=tag_name):
                 self.assertEqual(normalize_tag_to_metric(tag_name), metric_name)
 
-    def test_half_report_voting_rights_issued_shares_maps_to_issued_shares(self) -> None:
-        self.assertEqual(
-            normalize_tag_to_metric("NumberOfSharesIssuedSharesVotingRights"),
-            "IssuedShares",
-        )
+    def test_voting_rights_issued_shares_is_not_regular_issued_shares(self) -> None:
+        self.assertIsNone(normalize_tag_to_metric("NumberOfSharesIssuedSharesVotingRights"))
 
 
 if __name__ == "__main__":

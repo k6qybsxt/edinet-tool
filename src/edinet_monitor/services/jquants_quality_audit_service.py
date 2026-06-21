@@ -201,8 +201,8 @@ def _period_issues(
     if issued is not None and treasury is not None and issued <= treasury:
         issues.append(_issue(severity="critical", check_name="issued_shares_not_greater_than_treasury", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="IssuedShares", value_num=issued, reference_value=treasury, disclosure_number=disclosure, message="IssuedShares is <= TreasuryShares"))
     equity_ratio = _ok_value(metrics.get("EquityRatio"))
-    if equity_ratio is not None and (equity_ratio < 0 or equity_ratio > 1.5):
-        issues.append(_issue(severity="critical", check_name="equity_ratio_scale_or_range", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="EquityRatio", value_num=equity_ratio, disclosure_number=disclosure, message="EquityRatio is outside expected 0..1 scale"))
+    if equity_ratio is not None and equity_ratio > 1.5:
+        issues.append(_issue(severity="critical", check_name="equity_ratio_scale_or_range", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="EquityRatio", value_num=equity_ratio, disclosure_number=disclosure, message="EquityRatio exceeds expected scale"))
     if _ok_value(metrics.get("NetSales")) is not None and all(_ok_value(metrics.get(base)) is None for base in ("OperatingIncome", "OrdinaryIncome", "ProfitLoss")):
         issues.append(_issue(severity="warning", check_name="sales_exists_profit_metrics_missing", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="NetSales", value_num=_ok_value(metrics.get("NetSales")), disclosure_number=disclosure, message="NetSales exists but OperatingIncome, OrdinaryIncome, and ProfitLoss are all missing"))
     ordinary_row = metrics.get("OrdinaryIncome")

@@ -38,6 +38,10 @@ SHARE_COUNT_METRIC_BASES = {
     "IssuedShares",
     "TreasuryShares",
 }
+ISSUED_FILING_DATE_TAGS = {
+    "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+    "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+}
 
 
 def _period_scope_from_form_type(form_type: str | None) -> str:
@@ -66,6 +70,21 @@ def _get_suffix_and_period_kind(context_ref: str) -> tuple[str, str] | None:
             return TARGET_CONTEXT_SUFFIXES[suffix_key]
 
     return None
+
+
+def _issued_filing_date_suffix_info(
+    *,
+    metric_base: str,
+    tag_name: str,
+    context_ref: str,
+) -> tuple[str, str] | None:
+    if metric_base != "IssuedShares":
+        return None
+    if tag_name not in ISSUED_FILING_DATE_TAGS:
+        return None
+    if not str(context_ref or "").startswith("FilingDateInstant"):
+        return None
+    return "Current", "instant"
 
 
 def _parse_iso_date(value: Any) -> date | None:
@@ -630,6 +649,13 @@ def normalize_raw_fact_row(
     if period_scope == "half" and metric_base in HALF_DISABLED_NORMALIZED_BASES:
         return None
     period_source = "context_ref"
+    if not suffix_info:
+        suffix_info = _issued_filing_date_suffix_info(
+            metric_base=metric_base,
+            tag_name=tag_name,
+            context_ref=context_ref,
+        )
+        period_source = "filing_date_context" if suffix_info else period_source
     if not suffix_info and enable_period_fallback:
         suffix_info = _infer_suffix_and_period_kind_from_dates(
             row,
@@ -671,6 +697,8 @@ def normalize_raw_fact_row(
         return None
 
     period_end = row.get("period_end") or row.get("instant_date")
+    if period_source == "filing_date_context" and filing_period_end:
+        period_end = filing_period_end
     fiscal_year = _extract_fiscal_year(period_end)
     structure_info = (structure_map or {}).get(tag_name)
     schema = (structure_info or {}).get("schema") or {}

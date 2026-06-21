@@ -21,10 +21,8 @@ ISSUED_SHARE_TAGS = {
     "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
     "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
     "TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
-    "TotalNumberOfIssuedSharesSummaryOfBusinessResults",
     "TotalNumberOfIssuedSharesCommonStockIssuedSharesTotalNumberOfSharesEtc",
     "TotalNumberOfIssuedSharesOrdinaryShareIssuedSharesTotalNumberOfSharesEtc",
-    "NumberOfSharesIssuedSharesVotingRights",
 }
 
 TREASURY_SHARE_TAGS = {
@@ -58,6 +56,11 @@ TREASURY_AGGREGATE_TAG_PRIORITY = (
     "TreasurySharesAtTheEndOfFiscalYearIssuedSharesTotalNumberOfSharesEtc",
 )
 
+UNSAFE_ISSUED_SOURCE_TAGS = {
+    "NumberOfSharesIssuedSharesVotingRights",
+    "TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+}
+
 
 @dataclass(frozen=True)
 class ShareCandidate:
@@ -81,7 +84,9 @@ class BackfillTarget:
     accounting_standard: str
     document_display_unit: str
     issued_existing: float | None
+    issued_source_tag: str
     treasury_existing: float | None
+    treasury_source_tag: str
     outstanding_existing: float | None
     outstanding_status: str
     consolidation: str
@@ -166,20 +171,11 @@ def _issued_candidate_priority(fact: dict[str, Any]) -> int | None:
     if tag not in ISSUED_SHARE_TAGS:
         return None
 
-    if tag == "NumberOfSharesIssuedSharesVotingRights":
-        if _is_current_half_instant(fact) and not _has_dimensions(fact):
-            return 10
-        return None
-
     if tag in ISSUED_FILING_DATE_TAGS:
         if context_ref == "FilingDateInstant":
-            return 20
+            return 10
         if context_ref.startswith("FilingDateInstant") and _is_ordinary_share_context(context_ref):
-            return 30
-
-    if tag == "TotalNumberOfIssuedSharesSummaryOfBusinessResults":
-        if _is_current_half_instant(fact) and not _is_treasury_member_context(context_ref, fact.get("context_dimensions_json")):
-            return 40
+            return 20
 
     if tag.startswith("TotalNumberOfIssuedShares"):
         if _is_current_half_instant(fact) and not _has_dimensions(fact):
@@ -304,7 +300,9 @@ def _fetch_targets(conn: sqlite3.Connection) -> list[BackfillTarget]:
             f.accounting_standard,
             f.document_display_unit,
             issued.value_num AS issued_existing,
+            COALESCE(issued.source_tag, '') AS issued_source_tag,
             treasury.value_num AS treasury_existing,
+            COALESCE(treasury.source_tag, '') AS treasury_source_tag,
             outstanding.value_num AS outstanding_existing,
             COALESCE(outstanding.calc_status, '') AS outstanding_status,
             COALESCE(outstanding.consolidation, issued.consolidation, treasury.consolidation, '') AS consolidation
@@ -323,8 +321,13 @@ def _fetch_targets(conn: sqlite3.Connection) -> list[BackfillTarget]:
         WHERE f.form_type = '043A00'
           AND (
               issued.doc_id IS NULL
+              OR COALESCE(issued.source_tag, '') IN (
+                  'NumberOfSharesIssuedSharesVotingRights',
+                  'TotalNumberOfIssuedSharesSummaryOfBusinessResults'
+              )
               OR outstanding.doc_id IS NULL
               OR COALESCE(outstanding.calc_status, '') <> 'ok'
+              OR COALESCE(outstanding.value_num, 1) <= 0
           )
         ORDER BY f.period_end DESC, f.doc_id
         """
@@ -348,7 +351,9 @@ def _fetch_targets(conn: sqlite3.Connection) -> list[BackfillTarget]:
                 accounting_standard=str(row["accounting_standard"] or ""),
                 document_display_unit=str(row["document_display_unit"] or ""),
                 issued_existing=row["issued_existing"],
+                issued_source_tag=str(row["issued_source_tag"] or ""),
                 treasury_existing=row["treasury_existing"],
+                treasury_source_tag=str(row["treasury_source_tag"] or ""),
                 outstanding_existing=row["outstanding_existing"],
                 outstanding_status=str(row["outstanding_status"] or ""),
                 consolidation=str(row["consolidation"] or ""),
@@ -401,11 +406,14 @@ def _build_actions(targets: list[BackfillTarget], facts_by_doc: dict[str, list[d
         normalized_inserts: list[str] = []
 
         issued_value = target.issued_existing
-        if issued_value is None:
+        replace_issued = target.issued_source_tag in UNSAFE_ISSUED_SOURCE_TAGS
+        if issued_value is None or replace_issued:
             issued = _select_issued_candidate(facts)
             if issued is not None:
                 issued_value = issued.value_num
                 normalized_inserts.append("IssuedSharesCurrent")
+            elif replace_issued:
+                issued_value = None
 
         treasury_value = target.treasury_existing
         if treasury_value is None:

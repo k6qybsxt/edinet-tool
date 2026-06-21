@@ -326,6 +326,21 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertTrue(result.tsv_path.exists())
         self.assertGreater(result.issue_count, 0)
 
+    def test_quality_audit_does_not_flag_negative_equity_ratio(self) -> None:
+        ensure_summary_views(self.conn)
+        _insert_metric(self.conn, disclosure="DISC2026", fiscal_year=2026, metric_base="EquityRatio", value=-0.25)
+
+        issues = build_jquants_quality_issues(
+            self.conn,
+            date_from="2026-01-01",
+            date_to="2026-12-31",
+        )
+
+        self.assertNotIn(
+            "equity_ratio_scale_or_range",
+            {issue["check_name"] for issue in issues},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
