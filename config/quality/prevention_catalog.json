@@ -363,6 +363,17 @@
       "problem": "db_reflection_items に登録した反映コマンドに、必要オプション、対象件数、確認SQL、成功条件が不足していた。",
       "prevention": "pending登録前にコマンド妥当性チェックを行う。",
       "review_points": ["required commandがあるか", "verification SQLがあるか", "対象件数と成功条件が明示されているか"]
+    },
+    {
+      "id": "pcat_034_cli_failure_bypassed_by_service_call",
+      "title": "CLI失敗をサービス直呼びで回避してCLI不具合を隠す",
+      "status": "active",
+      "severity": "critical",
+      "areas": ["cli", "db_reflection"],
+      "triggers": ["cli_execution", "pre_db_reflection"],
+      "problem": "DB反映や確認作業でCLI実行が失敗したとき、サービス関数を直接呼んで作業だけ進めると、CLI引数・初期化・権限・出力件数などの不具合が未修正のまま残る。",
+      "prevention": "CLI実行失敗時は、サービス直呼びで回避する前にCLI側の失敗原因を切り分け、必要ならCLI不具合として修正またはカタログ登録する。",
+      "review_points": ["CLI失敗後にサービス直呼びだけで完了扱いにしていないか", "CLI引数・初期化・DB接続・出力件数のどこで失敗したかを切り分けたか", "CLI経由の再実行またはCLIテストで修正を確認したか"]
     }
   ]
 }

@@ -22,6 +22,9 @@ from edinet_monitor.services.prevention_catalog_service import (
 
 DEFAULT_DB_REFLECTION_PREFLIGHT_OUTPUT_DIR = OPERATION_LOG_ROOT / "db_reflection_preflight"
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
+HEAVY_DB_SIZE_WARNING_BYTES = 100 * 1024 * 1024 * 1024
+HEAVY_DB_SIZE_WARNING_GB = 100
+LONG_DATE_RANGE_WARNING_DAYS = 365 * 5
 METRIC_TABLES_WITH_CALC_STATUS = (
     "derived_metrics",
     "market_derived_metrics",
@@ -43,6 +46,12 @@ SCOPE_OPTIONS = (
     "--industry-33",
     "--target-date",
 )
+CONTROL_SCOPE_OPTIONS = (
+    "--batch-size",
+    "--db-insert-chunk-size",
+    "--db-doc-id-chunk-size",
+    "--limit",
+)
 TARGET_COUNT_KEYWORDS = (
     "count(",
     "target_count",
@@ -51,7 +60,18 @@ TARGET_COUNT_KEYWORDS = (
     "\u5bfe\u8c61\u4ef6\u6570",
     "\u4ef6\u6570",
 )
-DANGEROUS_FULL_SCOPE_MARKERS = ("--run-all", "run_all", "\u5168\u4ef6")
+DANGEROUS_FULL_SCOPE_MARKERS = (
+    "--run-all",
+    "--download-run-all",
+    "run_all",
+    "--codes all",
+    "--codes=all",
+    "--periods all",
+    "--periods=all",
+    "--period-scopes all",
+    "--period-scopes=all",
+    "\u5168\u4ef6",
+)
 
 
 @dataclass(frozen=True)
@@ -350,6 +370,49 @@ def _has_scope_option(command: str) -> bool:
     return any(option in lower for option in SCOPE_OPTIONS)
 
 
+def _has_control_scope_option(command: str) -> bool:
+    lower = command.lower()
+    return any(option in lower for option in CONTROL_SCOPE_OPTIONS)
+
+
+def _option_value(command: str, option: str) -> str:
+    escaped = re.escape(option)
+    patterns = (
+        rf"{escaped}=([^\s]+)",
+        rf"{escaped}\s+([^\s]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, command, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip().strip("\"'")
+    return ""
+
+
+def _date_range_days(command: str) -> int | None:
+    date_from = _option_value(command, "--date-from")
+    date_to = _option_value(command, "--date-to")
+    if not date_from or not date_to:
+        return None
+    try:
+        start = datetime.strptime(date_from, "%Y-%m-%d")
+        end = datetime.strptime(date_to, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return abs((end - start).days)
+
+
+def _db_file_size_bytes(db_path: Path | None) -> int | None:
+    if db_path is None:
+        return None
+    try:
+        path = Path(db_path)
+        if not path.exists():
+            return None
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def _normalized_sql(sql: str) -> str:
     return re.sub(r"\s+", " ", str(sql or "").strip().lower())
 
@@ -362,7 +425,14 @@ def _metric_table_with_calc_status(sql: str) -> str:
     return ""
 
 
-def _add_item_preflight_issues(item: DbReflectionPreflightItem, issues: list[DbReflectionPreflightIssue]) -> None:
+def _add_item_preflight_issues(
+    item: DbReflectionPreflightItem,
+    issues: list[DbReflectionPreflightIssue],
+    *,
+    db_size_bytes: int | None = None,
+) -> None:
+    has_target_count = _has_target_count_check(item)
+    has_full_scope_command = any(_is_dangerous_full_scope_command(command) for command in item.required_commands)
     if not item.required_commands:
         issues.append(
             DbReflectionPreflightIssue(
@@ -385,7 +455,7 @@ def _add_item_preflight_issues(item: DbReflectionPreflightItem, issues: list[DbR
                 message="verification SQL is missing.",
             )
         )
-    if not _has_target_count_check(item):
+    if not has_target_count and not has_full_scope_command:
         issues.append(
             DbReflectionPreflightIssue(
                 severity="warning",
@@ -398,6 +468,19 @@ def _add_item_preflight_issues(item: DbReflectionPreflightItem, issues: list[DbR
         )
 
     for command in item.required_commands:
+        full_scope = _is_dangerous_full_scope_command(command)
+        if full_scope and not has_target_count:
+            issues.append(
+                DbReflectionPreflightIssue(
+                    severity="critical",
+                    category="db_reflection_command",
+                    check_name="full_scope_command_without_target_count",
+                    item_id=item.item_id,
+                    title=item.title,
+                    message="full-scope command was found without target count confirmation.",
+                    detail={"command": command},
+                )
+            )
         if _is_dangerous_full_scope_command(command) and not _has_scope_option(command):
             issues.append(
                 DbReflectionPreflightIssue(
@@ -407,6 +490,57 @@ def _add_item_preflight_issues(item: DbReflectionPreflightItem, issues: list[DbR
                     item_id=item.item_id,
                     title=item.title,
                     message="full-scope command marker was found without an explicit scope option.",
+                    detail={"command": command},
+                )
+            )
+        if full_scope and db_size_bytes is not None and db_size_bytes >= HEAVY_DB_SIZE_WARNING_BYTES:
+            issues.append(
+                DbReflectionPreflightIssue(
+                    severity="warning",
+                    category="db_performance",
+                    check_name="large_db_full_scope_command",
+                    item_id=item.item_id,
+                    title=item.title,
+                    message="full-scope command will run against a large DB; confirm the target range and runtime before apply.",
+                    detail={
+                        "command": command,
+                        "db_size_bytes": db_size_bytes,
+                        "threshold_bytes": HEAVY_DB_SIZE_WARNING_BYTES,
+                    },
+                )
+            )
+        range_days = _date_range_days(command)
+        if (
+            range_days is not None
+            and range_days >= LONG_DATE_RANGE_WARNING_DAYS
+            and db_size_bytes is not None
+            and db_size_bytes >= HEAVY_DB_SIZE_WARNING_BYTES
+        ):
+            issues.append(
+                DbReflectionPreflightIssue(
+                    severity="warning",
+                    category="db_performance",
+                    check_name="large_db_long_date_range",
+                    item_id=item.item_id,
+                    title=item.title,
+                    message="long date range command will run against a large DB; consider splitting by period.",
+                    detail={
+                        "command": command,
+                        "date_range_days": range_days,
+                        "threshold_days": LONG_DATE_RANGE_WARNING_DAYS,
+                        "db_size_bytes": db_size_bytes,
+                    },
+                )
+            )
+        if full_scope and not _has_control_scope_option(command):
+            issues.append(
+                DbReflectionPreflightIssue(
+                    severity="warning",
+                    category="db_performance",
+                    check_name="broad_scope_without_batch_or_limit",
+                    item_id=item.item_id,
+                    title=item.title,
+                    message="broad-scope command has no batch, chunk, or limit option.",
                     detail={"command": command},
                 )
             )
@@ -619,6 +753,7 @@ def build_db_reflection_preflight(
     excel_path = output_dir / f"{preflight_id}.xlsx"
     issues: list[DbReflectionPreflightIssue] = []
     load_issues: list[DbReflectionPreflightIssue] = []
+    db_size_bytes = _db_file_size_bytes(Path(options.db_path) if options.db_path else None)
     all_pending_items = _load_pending_items(conn, item_id=options.item_id, issues=load_issues)
     command_names = _normalized_tuple(options.command_names)
     pending_items = _filter_pending_items_by_command(all_pending_items, command_names)
@@ -635,7 +770,7 @@ def build_db_reflection_preflight(
         triggers=catalog_triggers,
     )
     for item in pending_items:
-        _add_item_preflight_issues(item, issues)
+        _add_item_preflight_issues(item, issues, db_size_bytes=db_size_bytes)
 
     counts = _counts_by_severity(issues)
     status = _status_from_counts(counts)
@@ -654,6 +789,10 @@ def build_db_reflection_preflight(
         "catalog_areas": catalog_areas,
         "catalog_triggers": catalog_triggers,
         "db_path": options.db_path or "",
+        "db_size_bytes": db_size_bytes if db_size_bytes is not None else "",
+        "db_size_gb": round(db_size_bytes / (1024 * 1024 * 1024), 3) if db_size_bytes is not None else "",
+        "heavy_db_size_warning_threshold_gb": HEAVY_DB_SIZE_WARNING_GB,
+        "long_date_range_warning_days": LONG_DATE_RANGE_WARNING_DAYS,
         "catalog_path": Path(options.catalog_path),
         "item_id": options.item_id or "",
         "pending_count": len(all_pending_items),

@@ -7,6 +7,7 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -277,6 +278,82 @@ class DbReflectionPreflightServiceTest(unittest.TestCase):
         self.assertEqual(result.summary["matched_pending_count"], 1)
         self.assertTrue(result.summary["db_reflection_blocked"])
         self.assertGreater(result.counts_by_severity["critical"], 0)
+
+    def test_large_db_size_alone_does_not_warn(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _create_reflection_table(conn)
+            _insert_item(
+                conn,
+                title="Scoped update",
+                commands=[
+                    "python -m edinet_monitor.cli.save_derived_metrics --doc-id S100AAAA --batch-size 100"
+                ],
+                verification_sql=[
+                    "SELECT COUNT(*) AS target_count FROM derived_metrics WHERE calc_status = 'ok' AND value_num IS NOT NULL"
+                ],
+            )
+            with mock.patch(
+                "edinet_monitor.services.db_reflection_preflight_service._db_file_size_bytes",
+                return_value=101 * 1024 * 1024 * 1024,
+            ):
+                result = build_db_reflection_preflight(conn, self._options())
+        finally:
+            conn.close()
+
+        warnings = {issue.check_name for issue in result.issues if issue.severity == "warning"}
+        self.assertNotIn("large_db_full_scope_command", warnings)
+        self.assertEqual(result.summary["db_size_gb"], 101.0)
+        self.assertEqual(result.counts_by_severity["critical"], 0)
+
+    def test_large_db_full_scope_command_is_warning_when_target_count_exists(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _create_reflection_table(conn)
+            _insert_item(
+                conn,
+                title="All derived metrics",
+                commands=[
+                    "python -m edinet_monitor.cli.save_derived_metrics --run-all --batch-size 100 --form-codes 030000"
+                ],
+                verification_sql=[
+                    "SELECT COUNT(*) AS target_count FROM derived_metrics WHERE calc_status = 'ok' AND value_num IS NOT NULL"
+                ],
+            )
+            with mock.patch(
+                "edinet_monitor.services.db_reflection_preflight_service._db_file_size_bytes",
+                return_value=101 * 1024 * 1024 * 1024,
+            ):
+                result = build_db_reflection_preflight(conn, self._options())
+        finally:
+            conn.close()
+
+        warnings = {issue.check_name for issue in result.issues if issue.severity == "warning"}
+        self.assertIn("large_db_full_scope_command", warnings)
+        self.assertEqual(result.counts_by_severity["critical"], 0)
+
+    def test_full_scope_without_target_count_is_critical(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _create_reflection_table(conn)
+            _insert_item(
+                conn,
+                title="All market metrics",
+                commands=[
+                    "python -m edinet_monitor.cli.save_market_derived_metrics --codes all --apply"
+                ],
+                verification_sql=["SELECT 1"],
+            )
+            result = build_db_reflection_preflight(conn, self._guard_options("save_market_derived_metrics"))
+        finally:
+            conn.close()
+
+        critical = {issue.check_name for issue in result.issues if issue.severity == "critical"}
+        self.assertIn("full_scope_command_without_target_count", critical)
+        self.assertTrue(result.summary["db_reflection_blocked"])
 
 
 if __name__ == "__main__":
