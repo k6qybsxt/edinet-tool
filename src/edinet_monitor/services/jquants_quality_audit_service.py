@@ -199,7 +199,7 @@ def _period_issues(
     if outstanding is not None and outstanding <= 0:
         issues.append(_issue(severity="critical", check_name="outstanding_shares_non_positive", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="OutstandingShares", value_num=outstanding, disclosure_number=disclosure, message="OutstandingShares is <= 0"))
     if issued is not None and treasury is not None and issued <= treasury:
-        issues.append(_issue(severity="critical", check_name="issued_shares_not_greater_than_treasury", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="IssuedShares", value_num=issued, reference_value=treasury, disclosure_number=disclosure, message="IssuedShares is <= TreasuryShares"))
+        issues.append(_issue(severity="warning", check_name="issued_shares_not_greater_than_treasury", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="IssuedShares", value_num=issued, reference_value=treasury, disclosure_number=disclosure, message="IssuedShares is <= TreasuryShares; OutstandingShares is not treated as ok when this makes it non-positive"))
     equity_ratio = _ok_value(metrics.get("EquityRatio"))
     if equity_ratio is not None and equity_ratio > 1.5:
         issues.append(_issue(severity="critical", check_name="equity_ratio_scale_or_range", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="EquityRatio", value_num=equity_ratio, disclosure_number=disclosure, message="EquityRatio exceeds expected scale"))

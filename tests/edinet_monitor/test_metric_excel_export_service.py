@@ -268,6 +268,13 @@ def _detail_rows(rows):
     return [row for row in rows if row.row_kind in {ROW_KIND_DETAIL, ROW_KIND_CHANGE_RATE}]
 
 
+def _single_header_ending_with(headers: dict[str, int], suffix: str) -> str:
+    matches = [header for header in headers if isinstance(header, str) and header.endswith(suffix)]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one header ending with {suffix!r}, got {matches!r}")
+    return matches[0]
+
+
 def _insert_industry_aggregate_metric(
     conn: sqlite3.Connection,
     *,
@@ -491,6 +498,61 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertNotIn("\u30bb\u30b0\u30e1\u30f3\u30c8\u540d", headers)
         self.assertEqual(ws.cell(2, headers.index("\u6c7a\u7b97\u7a2e\u5225") + 1).value, "\u5730\u57df\u5225")
         self.assertEqual(ws.cell(2, headers.index("\u5024\u7a2e\u5225") + 1).value, VALUE_KIND_BASE)
+
+    def test_write_metric_excel_uses_requested_base_column_layout(self) -> None:
+        output_path = self.tmp_path / "column_layout.xlsx"
+        rows = [
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="1111",
+                company_name="A\u793e",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="quarter_standalone:1Q",
+                current_period_end="2025-06-30",
+                metric_base="NetSales",
+                metric_label="1Q \u58f2\u4e0a\u9ad8 \u5358\u72ec",
+                periods_by_offset={0: "1Q 2025-06"},
+                values_by_offset={0: 100.0},
+                units_by_offset={0: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None},
+            )
+        ]
+
+        write_metric_excel(
+            rows=rows,
+            condition=MetricExcelCondition(period_offsets=[0]),
+            output_path=output_path,
+            db_path=":memory:",
+            errors=[],
+            warnings=[],
+            target_companies=1,
+        )
+
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        headers = [cell.value for cell in ws[1]]
+        self.assertEqual(
+            headers[:8],
+            [
+                "\u30b3\u30fc\u30c9",
+                "\u4f01\u696d\u540d",
+                "\u30c6\u30f3\u30d0\u30ac\u30fc",
+                "\u696d\u7a2e",
+                "\u5e02\u5834\u533a\u5206",
+                "\u6c7a\u7b97\u7a2e\u5225",
+                "\u5024\u7a2e\u5225",
+                "\u6307\u6a19",
+            ],
+        )
+        self.assertNotIn("\u8a3c\u5238\u30b3\u30fc\u30c9", headers)
+        self.assertNotIn("\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f", headers)
+        self.assertNotIn("\u6c7a\u7b97\u671f", headers)
+        self.assertTrue(ws.column_dimensions["C"].hidden)
+        self.assertEqual(
+            ws.cell(2, headers.index("\u6307\u6a19") + 1).value,
+            "1Q \u58f2\u4e0a\u9ad8 \u5358\u72ec",
+        )
 
     def test_write_metric_excel_uses_display_decision_and_value_kind_labels(self) -> None:
         output_path = self.tmp_path / "display_labels.xlsx"
@@ -1584,15 +1646,21 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["E2"].value, "Prime")
-        self.assertEqual(ws["F2"].value, "4Q")
-        self.assertEqual(ws["G2"].value, VALUE_KIND_BASE)
-        self.assertEqual(ws["I2"].value, "4Q ├売上原価")
-        self.assertEqual(ws["J2"].value, "通期 2026-03")
-        self.assertEqual(ws["K2"].value, 60.0)
-        self.assertEqual(ws["L2"].value, "百万円")
-        self.assertEqual(ws["M2"].value, 0.6)
-        self.assertEqual(ws["M2"].number_format, "0.0%")
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+        period_header = _single_header_ending_with(headers, "_\u671f\u9593")
+        value_header = _single_header_ending_with(headers, "_\u6570\u5024")
+        unit_header = _single_header_ending_with(headers, "_\u5358\u4f4d")
+        ratio_header = _single_header_ending_with(headers, "_\u6bd4\u7387")
+        self.assertEqual(ws.cell(2, headers["\u5e02\u5834\u533a\u5206"]).value, "Prime")
+        self.assertEqual(ws.cell(2, headers["\u6c7a\u7b97\u7a2e\u5225"]).value, "4Q")
+        self.assertEqual(ws.cell(2, headers["\u5024\u7a2e\u5225"]).value, VALUE_KIND_BASE)
+        self.assertEqual(ws.cell(2, headers["\u6307\u6a19"]).value, "4Q ├売上原価")
+        self.assertEqual(ws.cell(2, headers[period_header]).value, "通期 2026-03")
+        self.assertEqual(ws.cell(2, headers[value_header]).value, 60.0)
+        self.assertEqual(ws.cell(2, headers[unit_header]).value, "百万円")
+        ratio_cell = ws.cell(2, headers[ratio_header])
+        self.assertEqual(ratio_cell.value, 0.6)
+        self.assertEqual(ratio_cell.number_format, "0.0%")
 
     def test_export_metric_excel_formats_growth_rates_as_percent(self) -> None:
         self.conn.execute(
@@ -1632,11 +1700,16 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["I2"].value, "4Q 売上高増収率(前期比)")
-        self.assertEqual(ws["J2"].value, "通期 2026-03")
-        self.assertEqual(ws["K2"].value, 1.25)
-        self.assertEqual(ws["L2"].value, "%")
-        self.assertEqual(ws["K2"].number_format, "0.0%")
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+        period_header = _single_header_ending_with(headers, "_\u671f\u9593")
+        value_header = _single_header_ending_with(headers, "_\u6570\u5024")
+        unit_header = _single_header_ending_with(headers, "_\u5358\u4f4d")
+        value_cell = ws.cell(2, headers[value_header])
+        self.assertEqual(ws.cell(2, headers["\u6307\u6a19"]).value, "4Q 売上高増収率(前期比)")
+        self.assertEqual(ws.cell(2, headers[period_header]).value, "通期 2026-03")
+        self.assertEqual(value_cell.value, 1.25)
+        self.assertEqual(ws.cell(2, headers[unit_header]).value, "%")
+        self.assertEqual(value_cell.number_format, "0.0%")
 
     def test_percent_filter_keeps_matching_companies(self) -> None:
         self.conn.executemany(
@@ -1924,15 +1997,18 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+        period_col = headers[_single_header_ending_with(headers, "_\u671f\u9593")]
+        rank_col = headers[_single_header_ending_with(headers, "_\u9806\u4f4d")]
         self.assertEqual(ws["C1"].value, "\u30c6\u30f3\u30d0\u30ac\u30fc")
         self.assertEqual(ws["F2"].value, "4Q")
         self.assertEqual(ws["G1"].value, "\u5024\u7a2e\u5225")
-        self.assertEqual(ws["N1"].value, "\u524d\u671f_\u9806\u4f4d")
+        self.assertEqual(ws.cell(1, rank_col).value, "\u524d\u671f_\u9806\u4f4d")
         self.assertNotIn("\u524d\u671f_\u5897\u6e1b\u7387", [cell.value for cell in ws[1]])
         self.assertEqual(ws["G2"].value, VALUE_KIND_BASE)
-        self.assertEqual(ws["N2"].value, "1/2")
-        self.assertEqual(ws["J1"].fill.fgColor.rgb, "00EAF4FF")
-        self.assertEqual(ws["J2"].border.left.style, "thin")
+        self.assertEqual(ws.cell(2, rank_col).value, "1/2")
+        self.assertEqual(ws.cell(1, period_col).fill.fgColor.rgb, "00EAF4FF")
+        self.assertEqual(ws.cell(2, period_col).border.left.style, "thin")
         self.assertNotIn("\u30c7\u30fc\u30bf\u7528_\u7e26", workbook.sheetnames)
 
     def test_export_metric_excel_marks_tenbagger_learning_security(self) -> None:
@@ -2108,8 +2184,12 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
         formats_by_label = {
-            ws.cell(row=row_index, column=9).value: ws.cell(row=row_index, column=11).number_format
+            ws.cell(row=row_index, column=headers["\u6307\u6a19"]).value: ws.cell(
+                row=row_index,
+                column=headers[_single_header_ending_with(headers, "_\u6570\u5024")],
+            ).number_format
             for row_index in range(2, ws.max_row + 1)
         }
         self.assertEqual(formats_by_label["4Q EPS"], "#,##0.0")
@@ -2290,9 +2370,11 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
-        self.assertEqual(ws["M2"].value, 0.25)
-        self.assertIsNotNone(ws["M2"].comment)
-        self.assertEqual(ws["M2"].fill.fgColor.rgb, "00FFF2CC")
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+        ratio_cell = ws.cell(2, headers[_single_header_ending_with(headers, "_\u6bd4\u7387")])
+        self.assertEqual(ratio_cell.value, 0.25)
+        self.assertIsNotNone(ratio_cell.comment)
+        self.assertEqual(ratio_cell.fill.fgColor.rgb, "00FFF2CC")
 
     def test_jquants_quarter_cumulative_growth_uses_prior_year_same_quarter(self) -> None:
         self.conn.executemany(
@@ -2616,7 +2698,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(row.values_by_offset[0], 5.0)
         self.assertEqual(row.units_by_offset[0], "円")
 
-    def test_obsolete_quarter_standalone_rows_are_suppressed(self) -> None:
+    def test_obsolete_quarter_standalone_fcf_growth_rows_are_suppressed(self) -> None:
         self.conn.execute(
             """
             INSERT INTO quarter_standalone_metrics (
@@ -2626,27 +2708,22 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 created_at, updated_at
             )
             VALUES ('1111', 'E00001', 2026, '2Q', '2025-09-30',
-                    'NetSalesCurrent', 'NetSales', 'sales', 120000000.0, 'yen',
+                    'FCFGrowthRateQuarterStandaloneCurrent', 'FCFGrowthRate', 'growth', 1.2, 'ratio',
                     'ok', 'fixture', '{}', 'test', 'now', 'now')
             """
         )
         self.conn.commit()
-        path = self.tmp_path / "condition.xlsx"
-        _create_condition_workbook(
-            path,
-            [
-                ("\u8a3c\u5238\u30b3\u30fc\u30c9", "1111"),
-                ("\u6307\u6a19", "\u58f2\u4e0a\u9ad8"),
-                ("\u671f\u9593", "\u5f53\u671f"),
-                ("\u6c7a\u7b97\u7a2e\u5225", "\u56db\u534a\u671f\u5358\u72ec"),
-            ],
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["FCFGrowthRate"],
+            period_scopes=["quarter_standalone"],
+            period_offsets=[0],
         )
-        condition = read_metric_excel_condition(path)
 
         rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
 
         self.assertEqual(errors, [])
-        self.assertEqual(target, 1)
+        self.assertEqual(target, 0)
         self.assertNotIn("quarter_standalone_metrics_not_ready", warnings)
         self.assertFalse(
             [
@@ -2660,6 +2737,122 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                     "quarter_standalone:4Q",
                 }
             ]
+        )
+
+    def test_quarter_standalone_pl_rows_use_quarter_labels_not_half_labels(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            )
+            VALUES ('1111', 'E00001', 2026, ?, ?, ?, ?, ?, ?, ?,
+                    'ok', 'fixture', '{}', 'test', 'now', 'now')
+            """,
+            [
+                ("1Q", "2025-06-30", "NetSalesCurrent", "NetSales", "sales", 100_000_000.0, "yen"),
+                ("2Q", "2025-09-30", "NetSalesCurrent", "NetSales", "sales", 110_000_000.0, "yen"),
+                ("3Q", "2025-12-31", "NetSalesCurrent", "NetSales", "sales", 120_000_000.0, "yen"),
+                ("4Q", "2026-03-31", "NetSalesCurrent", "NetSales", "sales", 130_000_000.0, "yen"),
+                ("1~2Q", "2025-09-30", "NetSalesCurrent", "NetSales", "sales", 999_000_000.0, "yen"),
+                ("3~4Q", "2026-03-31", "NetSalesCurrent", "NetSales", "sales", 998_000_000.0, "yen"),
+                (
+                    "1Q",
+                    "2025-06-30",
+                    "NetSalesGrowthRateQuarterStandaloneCurrent",
+                    "NetSalesGrowthRate",
+                    "growth",
+                    1.1,
+                    "ratio",
+                ),
+                (
+                    "2Q",
+                    "2025-09-30",
+                    "NetSalesGrowthRateQuarterStandaloneCurrent",
+                    "NetSalesGrowthRate",
+                    "growth",
+                    1.2,
+                    "ratio",
+                ),
+                (
+                    "3Q",
+                    "2025-12-31",
+                    "NetSalesGrowthRateQuarterStandaloneCurrent",
+                    "NetSalesGrowthRate",
+                    "growth",
+                    1.3,
+                    "ratio",
+                ),
+                (
+                    "4Q",
+                    "2026-03-31",
+                    "NetSalesGrowthRateQuarterStandaloneCurrent",
+                    "NetSalesGrowthRate",
+                    "growth",
+                    1.4,
+                    "ratio",
+                ),
+                (
+                    "1~2Q",
+                    "2025-09-30",
+                    "NetSalesGrowthRateQuarterStandaloneCurrent",
+                    "NetSalesGrowthRate",
+                    "growth",
+                    9.9,
+                    "ratio",
+                ),
+                (
+                    "3~4Q",
+                    "2026-03-31",
+                    "NetSalesGrowthRateQuarterStandaloneCurrent",
+                    "NetSalesGrowthRate",
+                    "growth",
+                    9.8,
+                    "ratio",
+                ),
+            ],
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["NetSales", "NetSalesGrowthRate"],
+            period_scopes=["quarter_standalone"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("quarter_standalone_metrics_not_ready", warnings)
+        expected_scopes = {
+            "quarter_standalone:1Q",
+            "quarter_standalone:2Q",
+            "quarter_standalone:3Q",
+            "quarter_standalone:4Q",
+        }
+        net_sales_by_scope = {
+            row.period_scope: row
+            for row in _detail_rows(rows)
+            if row.metric_base == "NetSales"
+        }
+        growth_by_scope = {
+            row.period_scope: row
+            for row in _detail_rows(rows)
+            if row.metric_base == "NetSalesGrowthRate"
+        }
+        self.assertEqual(set(net_sales_by_scope), expected_scopes)
+        self.assertEqual(set(growth_by_scope), expected_scopes)
+        self.assertEqual(net_sales_by_scope["quarter_standalone:2Q"].values_by_offset[0], 110.0)
+        self.assertEqual(growth_by_scope["quarter_standalone:2Q"].values_by_offset[0], 1.2)
+        self.assertEqual(
+            [
+                decision_label_for_excel(net_sales_by_scope[f"quarter_standalone:{quarter}"])
+                for quarter in ("1Q", "2Q", "3Q", "4Q")
+            ],
+            ["1Q", "2Q", "3Q", "4Q"],
         )
 
     def test_quarter_standalone_half_cashflow_rows_are_loaded(self) -> None:
@@ -2757,7 +2950,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(value_kind_label_for_excel(by_scope["quarter_standalone:1~2Q"]), VALUE_KIND_CALCULATED)
         self.assertEqual(value_kind_label_for_excel(by_scope["quarter_standalone:3~4Q"]), VALUE_KIND_CALCULATED)
 
-    def test_obsolete_quarter_standalone_4q_rows_are_suppressed(self) -> None:
+    def test_quarter_standalone_pl_4q_rows_are_loaded(self) -> None:
         self.conn.executemany(
             """
             INSERT INTO quarter_standalone_metrics (
@@ -2772,7 +2965,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             """,
             [
                 ("3Q", "2025-12-31", 300_000_000.0),
-                ("4Q", "", None),
+                ("4Q", "2026-03-31", 400_000_000.0),
             ],
         )
         self.conn.commit()
@@ -2786,19 +2979,13 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         rows, errors, _warnings, _preview, _target = build_metric_excel_rows(self.conn, condition)
 
         self.assertEqual(errors, [])
-        self.assertFalse(
-            [
-                row
-                for row in _detail_rows(rows)
-                if row.period_scope
-                in {
-                    "quarter_standalone:1Q",
-                    "quarter_standalone:2Q",
-                    "quarter_standalone:3Q",
-                    "quarter_standalone:4Q",
-                }
-            ]
-        )
+        by_scope = {
+            row.period_scope: row
+            for row in _detail_rows(rows)
+            if row.metric_base == "NetSales"
+        }
+        self.assertEqual(by_scope["quarter_standalone:3Q"].values_by_offset[0], 300.0)
+        self.assertEqual(by_scope["quarter_standalone:4Q"].values_by_offset[0], 400.0)
 
     def test_forecast_revision_values_use_font_color_only(self) -> None:
         self.conn.executemany(
@@ -2844,10 +3031,14 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         workbook = load_workbook(output_path)
         ws = workbook[GENERAL_SHEET]
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
         value_cells_by_label = {
-            ws.cell(row=row_index, column=9).value: ws.cell(row=row_index, column=11)
+            ws.cell(row=row_index, column=headers["\u6307\u6a19"]).value: ws.cell(
+                row=row_index,
+                column=headers[_single_header_ending_with(headers, "_\u6570\u5024")],
+            )
             for row_index in range(2, ws.max_row + 1)
-            if ws.cell(row=row_index, column=7).value == VALUE_KIND_BASE
+            if ws.cell(row=row_index, column=headers["\u5024\u7a2e\u5225"]).value == VALUE_KIND_BASE
         }
         up_color = value_cells_by_label["1Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb
         down_color = value_cells_by_label["2Q \u58f2\u4e0a\u9ad8 \u4e88\u60f3"].font.color.rgb

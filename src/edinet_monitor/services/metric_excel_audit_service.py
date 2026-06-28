@@ -45,7 +45,9 @@ DEFAULT_TARGET_CONFIG_PATH = PROJECT_ROOT / "config" / "excel" / "metric_excel_a
 DEFAULT_OUTPUT_DIR = OPERATION_LOG_ROOT / "excel_audit"
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 
-HEADER_SECURITY_CODE = "\u8a3c\u5238\u30b3\u30fc\u30c9"
+HEADER_SECURITY_CODE = "\u30b3\u30fc\u30c9"
+HEADER_LEGACY_SECURITY_CODE = "\u8a3c\u5238\u30b3\u30fc\u30c9"
+HEADER_SECURITY_CODE_ALIASES = (HEADER_SECURITY_CODE, HEADER_LEGACY_SECURITY_CODE)
 HEADER_COMPANY_NAME = "\u4f01\u696d\u540d"
 HEADER_INDUSTRY = "\u696d\u7a2e"
 HEADER_MARKET = "\u5e02\u5834\u533a\u5206"
@@ -262,7 +264,7 @@ def _expected_key(row: MetricExcelRow) -> _AuditRowKey:
         security_code=_normalized_code(row.security_code),
         decision_label=decision_label_for_excel(row),
         row_kind=value_kind_label_for_excel(row),
-        current_period_end=_clean_text(row.current_period_end),
+        current_period_end="",
         metric_label=_normalize_text(row.metric_label),
     )
 
@@ -273,7 +275,7 @@ def _actual_key(row: _ActualExcelRow) -> _AuditRowKey:
         security_code=_normalized_code(row.security_code),
         decision_label=_clean_text(row.decision_label),
         row_kind=_clean_text(row.row_kind),
-        current_period_end=_clean_text(row.current_period_end),
+        current_period_end="",
         metric_label=_normalize_text(row.metric_label),
     )
 
@@ -377,6 +379,13 @@ def _issue_for_actual(
 
 def _header_map(header_row: tuple[Any, ...]) -> dict[str, int]:
     return {_clean_text(value): index for index, value in enumerate(header_row) if _clean_text(value)}
+
+
+def _header_index(headers: dict[str, int], *names: str) -> int | None:
+    for name in names:
+        if name in headers:
+            return headers[name]
+    return None
 
 
 def _value_kind_header_index(headers: dict[str, int]) -> int | None:
@@ -530,12 +539,10 @@ def read_metric_excel_rows(
     rows: list[_ActualExcelRow] = []
     warnings: list[str] = []
     required_headers = {
-        HEADER_SECURITY_CODE,
         HEADER_COMPANY_NAME,
         HEADER_INDUSTRY,
         HEADER_MARKET,
         HEADER_DECISION,
-        HEADER_CURRENT_PERIOD_END,
         HEADER_METRIC,
     }
     try:
@@ -550,14 +557,16 @@ def read_metric_excel_rows(
                 continue
             headers = _header_map(header_row)
             value_kind_col = _value_kind_header_index(headers)
-            if not required_headers.issubset(headers) or value_kind_col is None:
+            security_code_col = _header_index(headers, *HEADER_SECURITY_CODE_ALIASES)
+            current_period_end_col = _header_index(headers, HEADER_CURRENT_PERIOD_END)
+            if not required_headers.issubset(headers) or value_kind_col is None or security_code_col is None:
                 continue
             period_cols = _period_columns(headers)
             if not period_cols:
                 warnings.append(f"no_period_columns sheet={sheet_name}")
                 continue
             for row_number, values in enumerate(iterator, start=2):
-                security_code = _normalized_code(_value_at(values, headers[HEADER_SECURITY_CODE]))
+                security_code = _normalized_code(_value_at(values, security_code_col))
                 if target_codes and security_code and security_code not in target_codes:
                     continue
                 if target_codes and not security_code:
@@ -600,7 +609,7 @@ def read_metric_excel_rows(
                         decision_label=decision_label,
                         row_kind=row_kind,
                         current_period_end=_clean_text(
-                            _value_at(values, headers[HEADER_CURRENT_PERIOD_END])
+                            _value_at(values, current_period_end_col)
                         ),
                         metric_label=metric_label,
                         metric_base=metric_base,

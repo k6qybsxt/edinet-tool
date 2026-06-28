@@ -38,7 +38,6 @@ from edinet_monitor.services.market_derived_metric_service import (
 )
 from edinet_monitor.services.obsolete_quarter_metric_service import (
     FCF_GROWTH_BASE,
-    OBSOLETE_QUARTER_STANDALONE_BASES,
 )
 from edinet_monitor.services.quarter_standalone_metric_service import (
     FLOW_BASES as QUARTER_STANDALONE_FLOW_BASES,
@@ -206,6 +205,15 @@ QUARTER_STANDALONE_SUPPORTED_BASES = set(QUARTER_STANDALONE_FLOW_BASES) | set(
 FORECAST_PROGRESS_BASES = {"NetSales", "OperatingIncome", "OrdinaryIncome", "ProfitLoss"}
 JQUANTS_QUARTER_TYPES = JQUANTS_ACTUAL_FINANCIAL_QUARTERS
 QUARTER_STANDALONE_EXCEL_QUARTERS = ("1Q", "2Q", "3Q", "4Q", "1~2Q", "3~4Q")
+QUARTER_STANDALONE_HALF_CASHFLOW_BASES = {
+    "OperatingCash",
+    "InvestmentCash",
+    "FinancingCash",
+    "FCF",
+    "OperatingCashGrowthRate",
+    "InvestmentCashGrowthRate",
+    "FinancingCashGrowthRate",
+}
 JQUANTS_FORECAST_STAGES = ("initial", "1Q", "2Q", "3Q")
 JQUANTS_FORECAST_STAGE_LABELS = {
     "initial": "0Q",
@@ -320,7 +328,11 @@ QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER = {
 }
 for _quarter_type in ("1Q", "2Q", "3Q", "4Q"):
     QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER.setdefault(_quarter_type, set()).update(
-        OBSOLETE_QUARTER_STANDALONE_BASES | {FCF_GROWTH_BASE}
+        {FCF_GROWTH_BASE}
+    )
+for _quarter_type in ("1~2Q", "3~4Q"):
+    QUARTER_STANDALONE_SUPPRESSED_BY_QUARTER.setdefault(_quarter_type, set()).update(
+        QUARTER_STANDALONE_SUPPORTED_BASES - QUARTER_STANDALONE_HALF_CASHFLOW_BASES
     )
 PERIOD_BLOCK_FILL_COLORS = ("EAF4FF", "FFFFFF")
 CURRENT_PERIOD_BLOCK_FILL_COLOR = "D9EAF7"
@@ -4482,7 +4494,7 @@ def _write_metric_sheet(
     ws = workbook.create_sheet(sheet_name)
     include_segment_columns = False
     base_headers = [
-        "\u8a3c\u5238\u30b3\u30fc\u30c9",
+        "\u30b3\u30fc\u30c9",
         "\u4f01\u696d\u540d",
         "\u30c6\u30f3\u30d0\u30ac\u30fc",
         "\u696d\u7a2e",
@@ -4494,7 +4506,6 @@ def _write_metric_sheet(
         [
         "\u6c7a\u7b97\u7a2e\u5225",
         "\u5024\u7a2e\u5225",
-        "\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f",
         "\u6307\u6a19",
         ]
     )
@@ -4521,9 +4532,10 @@ def _write_metric_sheet(
     base_widths = [12, 28, 12, 18, 12]
     if include_segment_columns:
         base_widths.extend([14, 24])
-    base_widths.extend([12, 16, 16, 24])
+    base_widths.extend([12, 16, 24])
     for col_idx, width in enumerate(base_widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ws.column_dimensions["C"].hidden = True
     for col_idx in range(base_col_count + 1, len(headers) + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 14
 
@@ -4561,7 +4573,6 @@ def _write_metric_sheet(
             [
             decision_label_for_excel(row),
             value_kind_label_for_excel(row),
-            row.current_period_end,
             row.metric_label,
             ]
         )

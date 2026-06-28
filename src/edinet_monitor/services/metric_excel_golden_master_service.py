@@ -21,6 +21,7 @@ from edinet_monitor.services.metric_excel_audit_service import (
     HEADER_METRIC,
     HEADER_ROW_KIND,
     HEADER_SECURITY_CODE,
+    HEADER_SECURITY_CODE_ALIASES,
     HEADER_VALUE_KIND,
     PERIOD_PERIOD_SUFFIX,
     PERIOD_RANK_SUFFIX,
@@ -40,12 +41,10 @@ DEFAULT_GOLDEN_MASTER_DIFF_OUTPUT_DIR = OPERATION_LOG_ROOT / "golden_master_diff
 EXCLUDED_SUMMARY_KEYS = {"generated_at"}
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 REQUIRED_METRIC_HEADERS = {
-    HEADER_SECURITY_CODE,
     HEADER_COMPANY_NAME,
     HEADER_INDUSTRY,
     HEADER_MARKET,
     HEADER_DECISION,
-    HEADER_CURRENT_PERIOD_END,
     HEADER_METRIC,
 }
 
@@ -148,6 +147,13 @@ def _value_kind_header_index(headers: dict[str, int]) -> int | None:
     return headers.get(HEADER_ROW_KIND)
 
 
+def _header_index(headers: dict[str, int], *names: str) -> int | None:
+    for name in names:
+        if name in headers:
+            return headers[name]
+    return None
+
+
 def _value_at(values: tuple[Any, ...], index: int | None) -> Any:
     if index is None or index >= len(values):
         return None
@@ -198,7 +204,6 @@ def _normalize_summary_sheet(workbook: Any) -> dict[str, Any]:
 
 def _base_row_values(values: tuple[Any, ...], headers: dict[str, int]) -> dict[str, Any]:
     fields = [
-        ("security_code", HEADER_SECURITY_CODE),
         ("company_name", HEADER_COMPANY_NAME),
         ("industry", HEADER_INDUSTRY),
         ("market", HEADER_MARKET),
@@ -207,6 +212,9 @@ def _base_row_values(values: tuple[Any, ...], headers: dict[str, int]) -> dict[s
         ("metric_label", HEADER_METRIC),
     ]
     row: dict[str, Any] = {}
+    security_code = _value_at(values, _header_index(headers, *HEADER_SECURITY_CODE_ALIASES))
+    if not _is_blank(security_code):
+        row["security_code"] = _json_value(security_code)
     for key, header in fields:
         value = _value_at(values, headers.get(header))
         if not _is_blank(value):
@@ -244,7 +252,11 @@ def _normalize_metric_sheet(sheet_name: str, ws: Any) -> dict[str, Any] | None:
     except StopIteration:
         return None
     headers = _header_map(header_row)
-    if not REQUIRED_METRIC_HEADERS.issubset(headers) or _value_kind_header_index(headers) is None:
+    if (
+        not REQUIRED_METRIC_HEADERS.issubset(headers)
+        or _value_kind_header_index(headers) is None
+        or _header_index(headers, *HEADER_SECURITY_CODE_ALIASES) is None
+    ):
         return None
     period_columns = _period_columns(headers)
     rows: list[dict[str, Any]] = []
@@ -318,7 +330,6 @@ def _row_key_parts(row: dict[str, Any]) -> tuple[str, ...]:
         _clean_text(row.get("security_code")),
         _clean_text(row.get("decision_label")),
         _clean_text(row.get("row_kind")),
-        _clean_text(row.get("current_period_end")),
         _clean_text(row.get("metric_label")),
     )
 

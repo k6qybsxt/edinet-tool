@@ -309,8 +309,10 @@ class JQuantsAuditServicesTest(unittest.TestCase):
             date_to="2026-12-31",
         )
         checks = {issue["check_name"] for issue in issues}
+        by_check = {issue["check_name"]: issue for issue in issues}
 
         self.assertIn("issued_shares_not_greater_than_treasury", checks)
+        self.assertEqual(by_check["issued_shares_not_greater_than_treasury"]["severity"], "warning")
         self.assertIn("equity_ratio_scale_or_range", checks)
         self.assertIn("rapid_yoy_change", checks)
         self.assertIn("ordinary_income_proxy", checks)

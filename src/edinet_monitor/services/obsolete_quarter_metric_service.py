@@ -6,22 +6,7 @@ from typing import Any
 
 STANDALONE_QUARTER_TYPES = ("1Q", "2Q", "3Q", "4Q")
 
-OBSOLETE_QUARTER_STANDALONE_BASES = frozenset(
-    {
-        "NetSales",
-        "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
-        "OperatingIncome",
-        "OrdinaryIncome",
-        "ProfitBeforeTax",
-        "ProfitLoss",
-        "EstimatedNetIncome",
-        "NetSalesGrowthRate",
-        "OperatingIncomeGrowthRate",
-        "OrdinaryIncomeGrowthRate",
-        "ProfitLossGrowthRate",
-        "EstimatedNetIncomeGrowthRate",
-    }
-)
+OBSOLETE_QUARTER_STANDALONE_BASES = frozenset()
 
 FCF_GROWTH_BASE = "FCFGrowthRate"
 FCF_GROWTH_METRIC_KEY = "FCFGrowthRateCurrent"
@@ -63,6 +48,8 @@ def _count_quarter_standalone_rows(conn: sqlite3.Connection) -> list[dict[str, A
     if not table_exists(conn, "quarter_standalone_metrics"):
         return []
     bases = tuple(sorted(OBSOLETE_QUARTER_STANDALONE_BASES))
+    if not bases:
+        return []
     rows = conn.execute(
         f"""
         SELECT
@@ -140,6 +127,8 @@ def _delete_quarter_standalone_rows(conn: sqlite3.Connection) -> None:
     if not table_exists(conn, "quarter_standalone_metrics"):
         return
     bases = tuple(sorted(OBSOLETE_QUARTER_STANDALONE_BASES))
+    if not bases:
+        return
     conn.execute(
         f"""
         DELETE FROM quarter_standalone_metrics

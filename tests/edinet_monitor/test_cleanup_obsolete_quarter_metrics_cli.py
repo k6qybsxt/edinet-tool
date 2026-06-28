@@ -102,7 +102,7 @@ class CleanupObsoleteQuarterMetricsCliTest(unittest.TestCase):
         output = self._run_cli()
 
         self.assertIn("mode=dry_run", output)
-        self.assertIn("target_rows=5", output)
+        self.assertIn("target_rows=4", output)
         self.assertIn("dry_run_only=1", output)
         self.assertEqual(self._count("quarter_standalone_metrics"), 4)
         self.assertEqual(self._count("normalized_metrics"), 2)
@@ -113,14 +113,17 @@ class CleanupObsoleteQuarterMetricsCliTest(unittest.TestCase):
         output = self._run_cli("--apply")
 
         self.assertIn("mode=apply", output)
-        self.assertIn("deleted_rows=5", output)
+        self.assertIn("deleted_rows=4", output)
         self.assertIn("remaining_rows=0", output)
         conn = sqlite3.connect(self.db_path)
         try:
             quarter_rows = conn.execute(
                 "SELECT quarter_type, metric_base FROM quarter_standalone_metrics ORDER BY id"
             ).fetchall()
-            self.assertEqual(quarter_rows, [("1~2Q", "NetSales"), ("1Q", "OperatingCash")])
+            self.assertEqual(
+                quarter_rows,
+                [("1Q", "NetSales"), ("1~2Q", "NetSales"), ("1Q", "OperatingCash")],
+            )
             normalized_rows = conn.execute(
                 "SELECT metric_key FROM normalized_metrics ORDER BY id"
             ).fetchall()

@@ -825,15 +825,17 @@ def _delete_obsolete_quarter_standalone_rows(conn: sqlite3.Connection) -> None:
           )
         """
     )
-    placeholders = ",".join("?" for _ in OBSOLETE_QUARTER_STANDALONE_BASES)
-    conn.execute(
-        f"""
-        DELETE FROM quarter_standalone_metrics
-        WHERE quarter_type IN ('1Q', '2Q', '3Q', '4Q')
-          AND metric_base IN ({placeholders})
-        """,
-        tuple(sorted(OBSOLETE_QUARTER_STANDALONE_BASES)),
-    )
+    obsolete_bases = tuple(sorted(OBSOLETE_QUARTER_STANDALONE_BASES))
+    if obsolete_bases:
+        placeholders = ",".join("?" for _ in obsolete_bases)
+        conn.execute(
+            f"""
+            DELETE FROM quarter_standalone_metrics
+            WHERE quarter_type IN ('1Q', '2Q', '3Q', '4Q')
+              AND metric_base IN ({placeholders})
+            """,
+            obsolete_bases,
+        )
     conn.execute(
         """
         DELETE FROM quarter_standalone_metrics
