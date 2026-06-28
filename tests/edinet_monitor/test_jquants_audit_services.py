@@ -196,6 +196,24 @@ def _insert_metric(
     )
 
 
+def _insert_issuer(
+    conn: sqlite3.Connection,
+    *,
+    edinet_code: str = "E00001",
+    security_code: str = "1111",
+    company_name: str = "Issuer Name",
+    is_listed: int = 1,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO issuer_master (
+            edinet_code, security_code, company_name, market, is_listed, exchange, updated_at
+        ) VALUES (?, ?, ?, 'Prime', ?, 'TSE', '2026-05-24')
+        """,
+        (edinet_code, security_code, company_name, is_listed),
+    )
+
+
 class JQuantsAuditServicesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
@@ -223,13 +241,7 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertEqual(session.gets[0][0], "https://api.jquants.com/v2/equities/master")
 
     def test_save_listed_info_is_idempotent_and_reports_master_diffs(self) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO issuer_master (
-                edinet_code, security_code, company_name, market, is_listed, exchange, updated_at
-            ) VALUES ('E00001', '1111', 'Issuer Name', 'Prime', 1, 'TSE', '2026-05-24')
-            """
-        )
+        _insert_issuer(self.conn)
         client = _FakeAuditClient(
             listed_rows=[
                 {
@@ -273,6 +285,7 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertEqual(row["calc_status"], "missing")
 
     def test_quality_audit_detects_anomalies_and_writes_reports(self) -> None:
+        _insert_issuer(self.conn)
         ensure_summary_views(self.conn)
         _insert_metric(self.conn, disclosure="DISC2025", fiscal_year=2025, metric_base="NetSales", value=100)
         _insert_metric(self.conn, disclosure="DISC2026", fiscal_year=2026, metric_base="NetSales", value=1000)
@@ -314,6 +327,7 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertIn("issued_shares_not_greater_than_treasury", checks)
         self.assertEqual(by_check["issued_shares_not_greater_than_treasury"]["severity"], "warning")
         self.assertIn("equity_ratio_scale_or_range", checks)
+        self.assertEqual(by_check["equity_ratio_scale_or_range"]["severity"], "critical")
         self.assertIn("rapid_yoy_change", checks)
         self.assertIn("ordinary_income_proxy", checks)
         self.assertIn("market_metric_not_ok", checks)
@@ -327,6 +341,36 @@ class JQuantsAuditServicesTest(unittest.TestCase):
         self.assertTrue(result.output_path.exists())
         self.assertTrue(result.tsv_path.exists())
         self.assertGreater(result.issue_count, 0)
+
+    def test_quality_audit_downgrades_equity_ratio_for_non_currently_listed_issuer(self) -> None:
+        _insert_issuer(self.conn, edinet_code="E99999", security_code="9999")
+        ensure_summary_views(self.conn)
+        _insert_metric(
+            self.conn,
+            disclosure="DISC-DELISTED",
+            code="9696",
+            fiscal_year=2021,
+            period_key="actual:FY",
+            metric_base="EquityRatio",
+            value=382.0,
+        )
+
+        issues = build_jquants_quality_issues(
+            self.conn,
+            date_from="2021-01-01",
+            date_to="2021-12-31",
+        )
+        equity_issues = [
+            issue
+            for issue in issues
+            if issue["check_name"] == "equity_ratio_scale_or_range"
+        ]
+
+        self.assertEqual(len(equity_issues), 1)
+        self.assertEqual(equity_issues[0]["security_code"], "9696")
+        self.assertEqual(equity_issues[0]["severity"], "warning")
+        self.assertEqual(equity_issues[0]["is_currently_listed"], 0)
+        self.assertIn("non-currently-listed", equity_issues[0]["message"])
 
     def test_quality_audit_does_not_flag_negative_equity_ratio(self) -> None:
         ensure_summary_views(self.conn)

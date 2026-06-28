@@ -68,6 +68,34 @@ def _split_codes(codes: list[str] | tuple[str, ...] | None) -> list[str]:
     return [normalize_security_code(code) for code in (codes or []) if normalize_security_code(code)]
 
 
+def _current_listing_statuses(
+    conn: sqlite3.Connection,
+    security_codes: set[str],
+) -> dict[str, bool]:
+    clean_codes = {normalize_security_code(code) for code in security_codes if normalize_security_code(code)}
+    if not clean_codes:
+        return {}
+    if not _table_exists(conn, "issuer_master"):
+        return {code: True for code in clean_codes}
+
+    rows = conn.execute(
+        """
+        SELECT security_code, is_listed
+        FROM issuer_master
+        WHERE COALESCE(security_code, '') <> ''
+        """
+    ).fetchall()
+    if not rows:
+        return {code: True for code in clean_codes}
+
+    listed_codes = {
+        normalize_security_code(row["security_code"])
+        for row in rows
+        if normalize_security_code(row["security_code"]) and int(row["is_listed"] or 0) == 1
+    }
+    return {code: code in listed_codes for code in clean_codes}
+
+
 def _issue(
     *,
     severity: str,
@@ -80,8 +108,9 @@ def _issue(
     value_num: float | None = None,
     reference_value: float | None = None,
     disclosure_number: str = "",
+    is_currently_listed: bool | None = None,
 ) -> dict[str, Any]:
-    return {
+    issue = {
         "severity": severity,
         "check_name": check_name,
         "security_code": security_code,
@@ -93,6 +122,9 @@ def _issue(
         "disclosure_number": disclosure_number,
         "message": message,
     }
+    if is_currently_listed is not None:
+        issue["is_currently_listed"] = int(is_currently_listed)
+    return issue
 
 
 def build_jquants_quality_issues(
@@ -132,8 +164,20 @@ def build_jquants_quality_issues(
         by_period.setdefault((security_code, period_key, int(fiscal_year), forecast_stage), {})[metric_base] = row
         by_metric_history.setdefault((security_code, period_key, metric_base), []).append(row)
 
+    listing_statuses = _current_listing_statuses(
+        conn,
+        {security_code for security_code, _, _, _ in by_period},
+    )
     for (security_code, period_key, fiscal_year, forecast_stage), metrics in by_period.items():
-        issues.extend(_period_issues(security_code, period_key, fiscal_year, metrics))
+        issues.extend(
+            _period_issues(
+                security_code,
+                period_key,
+                fiscal_year,
+                metrics,
+                is_currently_listed=listing_statuses.get(security_code, True),
+            )
+        )
 
     for key, history in by_metric_history.items():
         issues.extend(_history_issues(key, history))
@@ -190,6 +234,8 @@ def _period_issues(
     period_key: str,
     fiscal_year: int,
     metrics: dict[str, sqlite3.Row],
+    *,
+    is_currently_listed: bool = True,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     issued = _ok_value(metrics.get("IssuedShares"))
@@ -202,7 +248,11 @@ def _period_issues(
         issues.append(_issue(severity="warning", check_name="issued_shares_not_greater_than_treasury", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="IssuedShares", value_num=issued, reference_value=treasury, disclosure_number=disclosure, message="IssuedShares is <= TreasuryShares; OutstandingShares is not treated as ok when this makes it non-positive"))
     equity_ratio = _ok_value(metrics.get("EquityRatio"))
     if equity_ratio is not None and equity_ratio > 1.5:
-        issues.append(_issue(severity="critical", check_name="equity_ratio_scale_or_range", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="EquityRatio", value_num=equity_ratio, disclosure_number=disclosure, message="EquityRatio exceeds expected scale"))
+        severity = "critical" if is_currently_listed else "warning"
+        message = "EquityRatio exceeds expected scale"
+        if not is_currently_listed:
+            message += " for non-currently-listed issuer"
+        issues.append(_issue(severity=severity, check_name="equity_ratio_scale_or_range", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="EquityRatio", value_num=equity_ratio, disclosure_number=disclosure, message=message, is_currently_listed=is_currently_listed))
     if _ok_value(metrics.get("NetSales")) is not None and all(_ok_value(metrics.get(base)) is None for base in ("OperatingIncome", "OrdinaryIncome", "ProfitLoss")):
         issues.append(_issue(severity="warning", check_name="sales_exists_profit_metrics_missing", security_code=security_code, fiscal_year=fiscal_year, period_key=period_key, metric_base="NetSales", value_num=_ok_value(metrics.get("NetSales")), disclosure_number=disclosure, message="NetSales exists but OperatingIncome, OrdinaryIncome, and ProfitLoss are all missing"))
     ordinary_row = metrics.get("OrdinaryIncome")

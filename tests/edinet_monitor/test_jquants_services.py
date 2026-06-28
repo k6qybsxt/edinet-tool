@@ -557,6 +557,89 @@ class JQuantsServicesTest(unittest.TestCase):
         self.assertEqual(rows["actual:2Q"]["calc_status"], "missing_input")
         conn.close()
 
+    def test_cash_balance_growth_metrics_handles_large_disclosure_filter(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE issuer_master (
+                edinet_code TEXT PRIMARY KEY,
+                security_code TEXT
+            );
+            INSERT INTO issuer_master VALUES ('E00001', '11110');
+            CREATE TABLE jquants_financial_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                disclosure_number TEXT NOT NULL,
+                local_code TEXT NOT NULL,
+                security_code TEXT,
+                edinet_code TEXT,
+                metric_kind TEXT NOT NULL,
+                period_scope TEXT NOT NULL,
+                period_key TEXT NOT NULL,
+                quarter_type TEXT,
+                forecast_target TEXT,
+                forecast_stage TEXT,
+                fiscal_year INTEGER,
+                period_start TEXT,
+                period_end TEXT,
+                disclosed_date TEXT,
+                disclosed_time TEXT,
+                metric_key TEXT NOT NULL,
+                metric_base TEXT NOT NULL,
+                metric_group TEXT NOT NULL,
+                value_num REAL,
+                value_unit TEXT NOT NULL,
+                calc_status TEXT NOT NULL,
+                source_field TEXT NOT NULL,
+                source_detail_json TEXT,
+                rule_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX uq_jquants_financial_metrics_scope
+            ON jquants_financial_metrics(disclosure_number, period_key, metric_key);
+            """
+        )
+        disclosure_numbers = [f"D-BULK-{index:04d}" for index in range(1005)]
+        conn.executemany(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code,
+                metric_kind, period_scope, period_key, quarter_type,
+                forecast_target, forecast_stage, fiscal_year, period_start, period_end,
+                disclosed_date, disclosed_time, metric_key, metric_base, metric_group,
+                value_num, value_unit, calc_status, source_field, source_detail_json,
+                rule_version, created_at, updated_at
+            ) VALUES (
+                ?, '11110', '1111', 'E00001',
+                'actual', 'quarter', 'actual:1Q', '1Q',
+                NULL, NULL, 2026, '2026-04-01', '2026-06-30',
+                '2026-08-01', '15:00', 'CashAndCashEquivalentsCurrent',
+                'CashAndCashEquivalents', 'cash',
+                100.0, 'yen', 'ok', 'fixture', '{}',
+                'v1', '2026-08-01', '2026-08-01'
+            )
+            """,
+            [(disclosure_number,) for disclosure_number in disclosure_numbers],
+        )
+
+        saved = upsert_cash_balance_growth_metrics(
+            conn,
+            disclosure_numbers=disclosure_numbers,
+        )
+
+        count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM jquants_financial_metrics
+            WHERE metric_base = 'CashBalanceGrowthRate'
+              AND disclosure_number LIKE 'D-BULK-%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(saved, len(disclosure_numbers))
+        self.assertEqual(count, len(disclosure_numbers))
+        conn.close()
+
     def test_rebuild_metrics_from_raw_adds_forecast_operating_income(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

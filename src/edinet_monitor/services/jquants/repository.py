@@ -15,6 +15,8 @@ from edinet_monitor.services.jquants.audit_mapper import JQuantsListedInfoRaw
 
 
 CASH_BALANCE_GROWTH_PERIOD_KEYS = ("actual:1Q", "actual:2Q", "actual:3Q")
+CASH_BALANCE_GROWTH_FILTER_TABLE = "cash_balance_growth_disclosure_filter"
+CASH_BALANCE_GROWTH_PRIOR_FILTER_TABLE = "cash_balance_growth_prior_filter"
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,27 @@ class SaveCounts:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _ordered_unique(values: list[str] | tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _edinet_code_by_security(conn: sqlite3.Connection, security_codes: set[str]) -> dict[str, str]:
@@ -288,23 +311,24 @@ def upsert_listed_info_raw(conn: sqlite3.Connection, rows: list[JQuantsListedInf
     return len(rows)
 
 
-def build_cash_balance_growth_metrics(
+def _query_cash_balance_growth_metrics(
     conn: sqlite3.Connection,
     *,
-    disclosure_numbers: list[str] | tuple[str, ...] | None = None,
+    use_temp_disclosure_filter: bool = False,
 ) -> list[JQuantsStatementMetric]:
-    clean_disclosures = [str(value) for value in (disclosure_numbers or []) if str(value or "")]
-    if disclosure_numbers is not None and not clean_disclosures:
-        return []
     where = [
         "cur.metric_kind = 'actual'",
         "cur.metric_base = 'CashAndCashEquivalents'",
         f"cur.period_key IN ({','.join('?' for _ in CASH_BALANCE_GROWTH_PERIOD_KEYS)})",
     ]
     params: list[str] = [*CASH_BALANCE_GROWTH_PERIOD_KEYS]
-    if clean_disclosures:
-        where.append(f"cur.disclosure_number IN ({','.join('?' for _ in clean_disclosures)})")
-        params.extend(clean_disclosures)
+    if use_temp_disclosure_filter:
+        where.append(
+            "EXISTS ("
+            f"SELECT 1 FROM {CASH_BALANCE_GROWTH_FILTER_TABLE} f "
+            "WHERE f.disclosure_number = cur.disclosure_number"
+            ")"
+        )
     rows = conn.execute(
         f"""
         SELECT
@@ -321,37 +345,32 @@ def build_cash_balance_growth_metrics(
           cur.disclosed_date,
           cur.disclosed_time,
           cur.value_num AS current_value,
-          cur.calc_status AS current_status,
-          prior.disclosure_number AS prior_disclosure_number,
-          prior.period_end AS prior_period_end,
-          prior.value_num AS prior_value,
-          prior.calc_status AS prior_status
+          cur.calc_status AS current_status
         FROM jquants_financial_metrics cur
-        LEFT JOIN jquants_financial_metrics prior
-          ON prior.id = (
-            SELECT p.id
-            FROM jquants_financial_metrics p
-            WHERE p.metric_kind = 'actual'
-              AND p.metric_base = 'CashAndCashEquivalents'
-              AND p.period_key = cur.period_key
-              AND COALESCE(p.local_code, '') = COALESCE(cur.local_code, '')
-              AND p.fiscal_year = cur.fiscal_year - 1
-            ORDER BY COALESCE(p.disclosed_date, '') DESC,
-                     COALESCE(p.disclosed_time, '') DESC,
-                     p.id DESC
-            LIMIT 1
-          )
         WHERE {' AND '.join(where)}
         ORDER BY cur.local_code, cur.period_key, cur.fiscal_year
         """,
         params,
     ).fetchall()
+    prior_by_key = _cash_balance_prior_rows_by_key(conn, rows)
     metrics: list[JQuantsStatementMetric] = []
     for row in rows:
+        fiscal_year = _int_or_none(row["fiscal_year"])
+        prior_key = (
+            str(row["local_code"] or ""),
+            str(row["period_key"] or ""),
+            fiscal_year - 1 if fiscal_year is not None else None,
+        )
+        prior = prior_by_key.get(prior_key)
         current_value = row["current_value"]
-        prior_value = row["prior_value"]
+        prior_value = prior["value_num"] if prior is not None else None
         current_ok = str(row["current_status"] or "") == "ok" and current_value is not None
-        prior_ok = str(row["prior_status"] or "") == "ok" and prior_value is not None and float(prior_value) > 0
+        prior_ok = (
+            prior is not None
+            and str(prior["calc_status"] or "") == "ok"
+            and prior_value is not None
+            and float(prior_value) > 0
+        )
         value_num = float(current_value) / float(prior_value) if current_ok and prior_ok else None
         calc_status = "ok" if value_num is not None else "missing_input"
         source_detail = {
@@ -361,9 +380,9 @@ def build_cash_balance_growth_metrics(
             "current_value": current_value,
             "current_calc_status": row["current_status"],
             "prior_value": prior_value,
-            "prior_calc_status": row["prior_status"],
-            "prior_disclosure_number": row["prior_disclosure_number"],
-            "prior_period_end": row["prior_period_end"],
+            "prior_calc_status": prior["calc_status"] if prior is not None else None,
+            "prior_disclosure_number": prior["disclosure_number"] if prior is not None else None,
+            "prior_period_end": prior["period_end"] if prior is not None else None,
             "rule": "current same-quarter cash balance / prior-year same-quarter cash balance",
         }
         metrics.append(
@@ -393,6 +412,150 @@ def build_cash_balance_growth_metrics(
             )
         )
     return metrics
+
+
+def _cash_balance_prior_filter_keys(rows: list[sqlite3.Row]) -> list[tuple[str, str, int]]:
+    seen: set[tuple[str, str, int]] = set()
+    result: list[tuple[str, str, int]] = []
+    for row in rows:
+        fiscal_year = _int_or_none(row["fiscal_year"])
+        period_key = str(row["period_key"] or "")
+        if fiscal_year is None or not period_key:
+            continue
+        key = (
+            str(row["local_code"] or ""),
+            period_key,
+            fiscal_year - 1,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
+def _load_cash_balance_prior_filter(
+    conn: sqlite3.Connection,
+    keys: list[tuple[str, str, int]],
+) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS {CASH_BALANCE_GROWTH_PRIOR_FILTER_TABLE}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {CASH_BALANCE_GROWTH_PRIOR_FILTER_TABLE} (
+            local_code TEXT NOT NULL,
+            period_key TEXT NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            PRIMARY KEY (local_code, period_key, fiscal_year)
+        )
+        """
+    )
+    conn.executemany(
+        f"""
+        INSERT OR IGNORE INTO {CASH_BALANCE_GROWTH_PRIOR_FILTER_TABLE} (
+            local_code, period_key, fiscal_year
+        ) VALUES (?, ?, ?)
+        """,
+        keys,
+    )
+
+
+def _drop_cash_balance_prior_filter(conn: sqlite3.Connection) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS {CASH_BALANCE_GROWTH_PRIOR_FILTER_TABLE}")
+
+
+def _cash_balance_prior_rows_by_key(
+    conn: sqlite3.Connection,
+    current_rows: list[sqlite3.Row],
+) -> dict[tuple[str, str, int], sqlite3.Row]:
+    keys = _cash_balance_prior_filter_keys(current_rows)
+    if not keys:
+        return {}
+
+    _load_cash_balance_prior_filter(conn, keys)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+              p.local_code,
+              p.period_key,
+              p.fiscal_year,
+              p.disclosure_number,
+              p.period_end,
+              p.value_num,
+              p.calc_status
+            FROM jquants_financial_metrics p
+            JOIN {CASH_BALANCE_GROWTH_PRIOR_FILTER_TABLE} f
+              ON COALESCE(p.local_code, '') = f.local_code
+             AND COALESCE(p.period_key, '') = f.period_key
+             AND p.fiscal_year = f.fiscal_year
+            WHERE p.metric_kind = 'actual'
+              AND p.metric_base = 'CashAndCashEquivalents'
+            ORDER BY f.local_code,
+                     f.period_key,
+                     f.fiscal_year,
+                     COALESCE(p.disclosed_date, '') DESC,
+                     COALESCE(p.disclosed_time, '') DESC,
+                     p.id DESC
+            """
+        ).fetchall()
+    finally:
+        _drop_cash_balance_prior_filter(conn)
+
+    result: dict[tuple[str, str, int], sqlite3.Row] = {}
+    for row in rows:
+        fiscal_year = _int_or_none(row["fiscal_year"])
+        if fiscal_year is None:
+            continue
+        key = (
+            str(row["local_code"] or ""),
+            str(row["period_key"] or ""),
+            fiscal_year,
+        )
+        result.setdefault(key, row)
+    return result
+
+
+def _load_cash_balance_growth_filter(conn: sqlite3.Connection, disclosure_numbers: list[str]) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS {CASH_BALANCE_GROWTH_FILTER_TABLE}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {CASH_BALANCE_GROWTH_FILTER_TABLE} (
+            disclosure_number TEXT PRIMARY KEY
+        )
+        """
+    )
+    conn.executemany(
+        f"INSERT OR IGNORE INTO {CASH_BALANCE_GROWTH_FILTER_TABLE} (disclosure_number) VALUES (?)",
+        [(disclosure_number,) for disclosure_number in disclosure_numbers],
+    )
+
+
+def _drop_cash_balance_growth_filter(conn: sqlite3.Connection) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS {CASH_BALANCE_GROWTH_FILTER_TABLE}")
+
+
+def build_cash_balance_growth_metrics(
+    conn: sqlite3.Connection,
+    *,
+    disclosure_numbers: list[str] | tuple[str, ...] | None = None,
+) -> list[JQuantsStatementMetric]:
+    if disclosure_numbers is None:
+        return _query_cash_balance_growth_metrics(conn)
+
+    clean_disclosures = _ordered_unique(
+        [str(value) for value in disclosure_numbers if str(value or "")]
+    )
+    if not clean_disclosures:
+        return []
+
+    _load_cash_balance_growth_filter(conn, clean_disclosures)
+    try:
+        return _query_cash_balance_growth_metrics(
+            conn,
+            use_temp_disclosure_filter=True,
+        )
+    finally:
+        _drop_cash_balance_growth_filter(conn)
 
 
 def upsert_cash_balance_growth_metrics(
