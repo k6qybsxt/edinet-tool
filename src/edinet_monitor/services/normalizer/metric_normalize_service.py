@@ -42,6 +42,18 @@ ISSUED_FILING_DATE_TAGS = {
     "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
     "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
 }
+OMORI_KOGYO_EDINET_CODE = "E00239"
+OMORI_KOGYO_SECURITY_CODE = "1844"
+OMORI_BEGINNING_CASH_EXPLICIT_TAGS = (
+    "CashAndCashEquivalentsAtBeginningOfPeriod",
+    "CashAndCashEquivalentsAtBeginningOfYear",
+    "CashAndCashEquivalentsAtBeginningOfFiscalYear",
+    "CashAndCashEquivalentsAtBeginningOfInterimPeriod",
+)
+OMORI_BEGINNING_CASH_PRIOR_YEAR_TAGS = (
+    "CashAndCashEquivalents",
+    "CashAndCashEquivalentsSummaryOfBusinessResults",
+)
 
 
 def _period_scope_from_form_type(form_type: str | None) -> str:
@@ -536,6 +548,95 @@ def _is_forbidden_candidate(
     return False
 
 
+def _is_omori_half_report(*, edinet_code: str, security_code: str, form_type: str | None) -> bool:
+    security_text = str(security_code or "").strip()
+    return (
+        is_half_form_type(form_type)
+        and (
+            str(edinet_code or "").strip() == OMORI_KOGYO_EDINET_CODE
+            or security_text[:4] == OMORI_KOGYO_SECURITY_CODE
+        )
+    )
+
+
+def _omori_beginning_cash_row(
+    raw_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for tag_name in OMORI_BEGINNING_CASH_EXPLICIT_TAGS:
+        for row in raw_rows:
+            if str(row.get("tag_name") or "") != tag_name:
+                continue
+            value_num = _to_number(row.get("value_text"))
+            if value_num is None:
+                continue
+            if row.get("unit_ref") and not _has_jpy_unit(row):
+                continue
+            return row
+
+    for tag_name in OMORI_BEGINNING_CASH_PRIOR_YEAR_TAGS:
+        for row in raw_rows:
+            if str(row.get("tag_name") or "") != tag_name:
+                continue
+            if "Prior1YearInstant" not in str(row.get("context_ref") or ""):
+                continue
+            if str(row.get("period_type") or "").strip().lower() != "instant":
+                continue
+            value_num = _to_number(row.get("value_text"))
+            if value_num is None:
+                continue
+            if row.get("unit_ref") and not _has_jpy_unit(row):
+                continue
+            return row
+
+    return None
+
+
+def _build_omori_beginning_cash_candidate(
+    raw_rows: list[dict[str, Any]],
+    *,
+    edinet_code: str,
+    security_code: str,
+    filing_period_end: str | None,
+    form_type: str | None,
+) -> dict[str, Any] | None:
+    if not _is_omori_half_report(
+        edinet_code=edinet_code,
+        security_code=security_code,
+        form_type=form_type,
+    ):
+        return None
+    row = _omori_beginning_cash_row(raw_rows)
+    if row is None:
+        return None
+
+    value_num = _to_number(row.get("value_text"))
+    if value_num is None:
+        return None
+    period_end = filing_period_end or row.get("period_end") or row.get("instant_date")
+    tag_name = str(row.get("tag_name") or "")
+    return {
+        "doc_id": row["doc_id"],
+        "edinet_code": edinet_code,
+        "security_code": security_code,
+        "metric_key": _build_metric_key("BeginningCashBalance", "Current"),
+        "fiscal_year": _extract_fiscal_year(period_end),
+        "period_end": period_end,
+        "value_num": value_num,
+        "source_tag": tag_name,
+        "consolidation": row.get("consolidation"),
+        "rule_version": DEFAULT_RULE_VERSION,
+        "_metric_base": "BeginningCashBalance",
+        "_tag_priority": 0,
+        "_structure_priority": 0,
+        "_manual_override_priority": 0,
+        "_consolidation_rank": _consolidation_rank(row.get("consolidation")),
+        "_period_source": "omori_half_beginning_cash",
+        "_period_fallback_used": 0,
+        "_candidate_validation_status": CANDIDATE_VALIDATION_STATUS_OK,
+        "_candidate_validation_issues": "OK",
+    }
+
+
 CONSOLIDATED_REPORTING_GUARD_METRIC_BASES = {
     "NetSales",
     "CostOfSales",
@@ -894,6 +995,15 @@ def build_normalization_candidates(
         candidates,
         structure_map=structure_map,
     )
+    omori_beginning_cash_candidate = _build_omori_beginning_cash_candidate(
+        raw_rows,
+        edinet_code=edinet_code,
+        security_code=security_code,
+        filing_period_end=effective_filing_period_end,
+        form_type=form_type,
+    )
+    if omori_beginning_cash_candidate is not None:
+        candidates.append(omori_beginning_cash_candidate)
 
     enriched: list[dict[str, Any]] = []
     for candidate in candidates:

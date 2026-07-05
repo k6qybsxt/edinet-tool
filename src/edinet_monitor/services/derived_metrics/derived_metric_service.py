@@ -331,6 +331,18 @@ def _beginning_cash_balance_input(
     metric_rows: dict[str, dict[str, Any]],
     suffix: str,
 ) -> dict[str, Any]:
+    direct_key = _build_metric_key("BeginningCashBalance", suffix)
+    direct_value = _metric_value(metric_rows, direct_key)
+    if direct_value is not None:
+        return {
+            "value_num": direct_value,
+            "calc_status": "ok",
+            "detail_inputs": {direct_key: direct_value},
+            "reference_keys": [direct_key],
+            "display_formula": "cash_and_cash_equivalents_at_beginning_of_period",
+            "stored_formula": "normalized_beginning_cash_balance",
+        }
+
     source_suffix = BEGINNING_CASH_BALANCE_SOURCE_SUFFIX[suffix]
     source_key = _build_metric_key("CashAndCashEquivalents", source_suffix)
     value_num = _metric_value(metric_rows, source_key)

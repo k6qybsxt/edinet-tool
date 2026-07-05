@@ -52,6 +52,83 @@ def _chunk_count(total: int, chunk_size: int) -> int:
     return (int(total or 0) + size - 1) // size
 
 
+def _normalize_doc_ids(doc_ids: list[str] | tuple[str, ...] | str | None) -> tuple[str, ...]:
+    if doc_ids is None:
+        return ()
+    if isinstance(doc_ids, str):
+        values = doc_ids.split(",")
+    else:
+        values = list(doc_ids)
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        doc_id = str(value or "").strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        out.append(doc_id)
+    return tuple(out)
+
+
+def _form_code_filter_sql(form_codes: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    if not form_codes:
+        return "", ()
+    placeholders = ",".join("?" for _ in form_codes)
+    return f"AND f.form_type IN ({placeholders})", tuple(form_codes)
+
+
+def fetch_derived_metrics_target_filings_by_doc_ids(
+    conn: sqlite3.Connection,
+    doc_ids: list[str] | tuple[str, ...] | str | None,
+    *,
+    rule_version: str,
+    form_codes: tuple[str, ...] | None = None,
+) -> list[sqlite3.Row]:
+    target_doc_ids = _normalize_doc_ids(doc_ids)
+    if not target_doc_ids:
+        return []
+
+    conn.row_factory = sqlite3.Row
+    form_filter, form_params = _form_code_filter_sql(tuple(form_codes or ()))
+    placeholders = ",".join("?" for _ in target_doc_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+            f.doc_id,
+            f.edinet_code,
+            f.security_code,
+            f.form_type,
+            f.period_end,
+            im.industry_33,
+            f.accounting_standard,
+            f.document_display_unit,
+            f.xbrl_path,
+            f.parse_status,
+            IFNULL(dm.metric_count, 0) AS derived_metric_count
+        FROM filings f
+        INNER JOIN issuer_master im
+            ON f.edinet_code = im.edinet_code
+        LEFT JOIN (
+            SELECT
+                doc_id,
+                COUNT(*) AS metric_count
+            FROM derived_metrics
+            WHERE rule_version = ?
+            GROUP BY doc_id
+        ) dm
+            ON f.doc_id = dm.doc_id
+        WHERE f.doc_id IN ({placeholders})
+          AND im.is_listed = 1
+          AND im.exchange = 'TSE'
+          {form_filter}
+        ORDER BY f.submit_date ASC, f.doc_id ASC
+        """,
+        (rule_version, *target_doc_ids, *form_params),
+    ).fetchall()
+    order = {doc_id: index for index, doc_id in enumerate(target_doc_ids)}
+    return sorted(rows, key=lambda row: order.get(str(row["doc_id"] or ""), len(order)))
+
+
 def fetch_normalized_metric_rows(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
     return fetch_normalized_metric_rows_by_doc_ids(conn, [doc_id]).get(str(doc_id), [])
 
@@ -289,6 +366,7 @@ def run_save_derived_metrics(
     batch_size: int = 100,
     run_all: bool = False,
     form_codes: tuple[str, ...] | None = None,
+    doc_ids: list[str] | tuple[str, ...] | str | None = None,
     rule_version: str = DEFAULT_DERIVED_METRICS_RULE_VERSION,
     db_insert_chunk_size: int = 50000,
     db_doc_id_chunk_size: int = 500,
@@ -296,7 +374,10 @@ def run_save_derived_metrics(
     create_tables()
 
     conn = get_connection()
-    target_form_codes = normalize_form_codes(form_codes)
+    target_doc_ids = _normalize_doc_ids(doc_ids)
+    target_form_codes = normalize_form_codes(
+        form_codes if form_codes is not None else (() if target_doc_ids else None)
+    )
     target_db_insert_chunk_size = max(int(db_insert_chunk_size or 1), 1)
     target_db_doc_id_chunk_size = max(int(db_doc_id_chunk_size or 1), 1)
     perf_log = PerformanceLog(
@@ -307,6 +388,7 @@ def run_save_derived_metrics(
             "batch_size": batch_size,
             "run_all": bool(run_all),
             "form_codes": list(target_form_codes),
+            "doc_ids": list(target_doc_ids),
             "rule_version": rule_version,
             "db_insert_chunk_size": target_db_insert_chunk_size,
             "db_doc_id_chunk_size": target_db_doc_id_chunk_size,
@@ -328,13 +410,26 @@ def run_save_derived_metrics(
     unhandled_error: Exception | None = None
 
     try:
-        with perf_log.measure("db_read", "fetch_derived_metrics_target_filings"):
-            target_filings = fetch_derived_metrics_target_filings(
-                conn,
-                rule_version=rule_version,
-                limit=RUN_ALL_TARGET_FETCH_LIMIT if run_all else batch_size,
-                form_codes=target_form_codes,
-            )
+        fetch_span_name = (
+            "fetch_derived_metrics_target_filings_by_doc_ids"
+            if target_doc_ids
+            else "fetch_derived_metrics_target_filings"
+        )
+        with perf_log.measure("db_read", fetch_span_name):
+            if target_doc_ids:
+                target_filings = fetch_derived_metrics_target_filings_by_doc_ids(
+                    conn,
+                    target_doc_ids,
+                    rule_version=rule_version,
+                    form_codes=target_form_codes,
+                )
+            else:
+                target_filings = fetch_derived_metrics_target_filings(
+                    conn,
+                    rule_version=rule_version,
+                    limit=RUN_ALL_TARGET_FETCH_LIMIT if run_all else batch_size,
+                    form_codes=target_form_codes,
+                )
         print(f"derived_metrics_target_rows={len(target_filings)}")
 
         filing_batches = _chunked([dict(row) for row in target_filings], batch_size)
@@ -521,6 +616,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--run-all", action="store_true")
     parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
+    parser.add_argument("--doc-ids", default="", help="Comma-separated doc IDs to reprocess regardless of parse_status.")
     parser.add_argument("--db-insert-chunk-size", type=int, default=50000)
     parser.add_argument("--db-doc-id-chunk-size", type=int, default=500)
     return parser
@@ -529,10 +625,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     guard_result = run_db_reflection_preflight_guard(cli_name="save_derived_metrics")
+    target_doc_ids = _normalize_doc_ids(args.doc_ids or None)
     run_save_derived_metrics(
         batch_size=args.batch_size,
         run_all=args.run_all,
-        form_codes=normalize_form_codes(args.form_codes or None),
+        form_codes=args.form_codes if (args.form_codes or target_doc_ids) else None,
+        doc_ids=target_doc_ids,
         db_insert_chunk_size=args.db_insert_chunk_size,
         db_doc_id_chunk_size=args.db_doc_id_chunk_size,
     )

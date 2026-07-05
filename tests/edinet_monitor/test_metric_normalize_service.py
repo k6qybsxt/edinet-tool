@@ -962,6 +962,89 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         assert normalized is not None
         self.assertEqual(normalized["metric_key"], "NetSalesPrior1")
 
+    def test_half_period_fallback_maps_ytd_and_current_quarter_contexts_to_current(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NetSales",
+                value_text="3175691000",
+                context_ref="CurrentYTDDuration",
+                period_start="2024-08-01",
+                period_end="2025-01-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalents",
+                value_text="1661581000",
+                context_ref="CurrentQuarterInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-01-31",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00239",
+            security_code="1844",
+            filing_period_end="2025-01-31",
+            form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        by_key = {row["metric_key"]: row for row in normalized_rows}
+        self.assertEqual(by_key["NetSalesCurrent"]["value_num"], 3175691000.0)
+        self.assertEqual(by_key["CashAndCashEquivalentsCurrent"]["value_num"], 1661581000.0)
+
+    def test_omori_half_prior_year_cash_instant_is_saved_as_beginning_cash_balance(self) -> None:
+        row = build_raw_fact(
+            tag_name="CashAndCashEquivalents",
+            value_text="3353204000",
+            context_ref="Prior1YearInstant",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2024-07-31",
+        )
+
+        normalized_rows = normalize_raw_fact_rows(
+            [row],
+            edinet_code="E00239",
+            security_code="18440",
+            filing_period_end="2025-01-31",
+            form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        by_key = {row["metric_key"]: row for row in normalized_rows}
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["value_num"], 3353204000.0)
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["period_end"], "2025-01-31")
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["source_tag"], "CashAndCashEquivalents")
+
+    def test_omori_beginning_cash_balance_special_case_does_not_apply_to_other_companies(self) -> None:
+        row = build_raw_fact(
+            tag_name="CashAndCashEquivalents",
+            value_text="3353204000",
+            context_ref="Prior1YearInstant",
+            period_type="instant",
+            period_start=None,
+            period_end=None,
+            instant_date="2024-07-31",
+        )
+
+        normalized_rows = normalize_raw_fact_rows(
+            [row],
+            edinet_code="E09999",
+            security_code="9999",
+            filing_period_end="2025-01-31",
+            form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        self.assertNotIn(
+            "BeginningCashBalanceCurrent",
+            {row["metric_key"] for row in normalized_rows},
+        )
+
     def test_candidate_validation_is_audit_only_by_default(self) -> None:
         row = build_raw_fact(
             tag_name="NetSales",

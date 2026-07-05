@@ -899,6 +899,8 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         ]
         self.assertEqual(len(segment_rows), 1)
         self.assertEqual(segment_rows[0].segment_name, current_name)
+        self.assertEqual(segment_rows[0].periods_by_offset[1], "4Q 2023-03")
+        self.assertEqual(segment_rows[0].periods_by_offset[2], "4Q 2022-03")
         self.assertEqual(segment_rows[0].values_by_offset[1], 20.0)
         self.assertEqual(segment_rows[0].values_by_offset[2], 10.0)
 
@@ -1195,7 +1197,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         detail_rows = _detail_rows(rows)
         self.assertEqual(
             [row.metric_base for row in detail_rows],
-            ["NetSales", "CostOfSales", "NetAssets", "OutstandingShares", "EPS"],
+            ["OutstandingShares", "NetAssets", "NetSales", "CostOfSales", "EPS"],
         )
 
     def test_build_rows_separates_annual_and_half_when_period_scope_all(self) -> None:
@@ -1255,7 +1257,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             [row.periods_by_offset[1] for row in detail_rows],
-            ["", "\u901a\u671f 2026-03"],
+            ["", "4Q 2026-03"],
         )
         self.assertEqual([row.values_by_offset[0] for row in detail_rows], [55.0, None])
         self.assertEqual([row.values_by_offset[1] for row in detail_rows], [None, 100.0])
@@ -1308,7 +1310,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(target_companies, 1)
         self.assertEqual(
             [annual_row.periods_by_offset[offset] for offset in [3, 2, 1]],
-            ["\u901a\u671f 2024-03", "\u901a\u671f 2025-03", "\u901a\u671f 2026-03"],
+            ["4Q 2024-03", "4Q 2025-03", "4Q 2026-03"],
         )
         self.assertEqual(
             [annual_row.values_by_offset[offset] for offset in [3, 2, 1]],
@@ -1455,7 +1457,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             [row.periods_by_offset[1] for row in detail_rows],
-            ["2Q 2024-09", "\u901a\u671f 2026-03"],
+            ["2Q 2024-09", "4Q 2026-03"],
         )
         self.assertEqual([row.values_by_offset[0] for row in detail_rows], [55.0, None])
         self.assertEqual([row.values_by_offset[1] for row in detail_rows], [44.0, 100.0])
@@ -1503,6 +1505,78 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                     [row.metric_label for row in detail_rows[: len(expected_labels)]],
                     [f"4Q {label}" for label in expected_labels],
                 )
+
+    def test_build_rows_uses_default_excel_metric_order_and_renamed_labels(self) -> None:
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=[
+                "OutstandingShares",
+                "TotalAssets",
+                "NetAssets",
+                "NetSales",
+                "CostOfSales",
+                "GrossProfit",
+                "SellingExpenses",
+                "GeneralAndAdministrativeExpenses",
+                "SellingExpensesOnly",
+                "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
+                "OperatingIncome",
+                "OrdinaryIncome",
+                "ProfitLoss",
+                "統一純利益",
+                "営業CF",
+                "投資CF",
+                "財務CF",
+                "BeginningCashBalance",
+                "CashAndCashEquivalents",
+                "FCF",
+                "NumberOfEmployees",
+                "AverageAge",
+                "AverageLengthOfService",
+                "AverageAnnualSalary",
+            ],
+            period_scopes=["annual"],
+            period_offsets=[1],
+        )
+
+        rows, errors, _warnings, _preview, target_companies = build_metric_excel_rows(
+            self.conn,
+            condition,
+        )
+
+        detail_rows = _detail_rows(rows)
+        self.assertEqual(errors, [])
+        self.assertEqual(target_companies, 1)
+        self.assertEqual(
+            [row.metric_label for row in detail_rows],
+            [
+                "4Q 実質発行株数",
+                "4Q 総資産",
+                "4Q 純資産",
+                "4Q 売上高",
+                "4Q ├売上原価",
+                "4Q 売上総利益",
+                "4Q └販管費",
+                "4Q 　├ 一般管理費",
+                "4Q 　└ 販売費",
+                "4Q 費用合計",
+                "4Q 営業利益",
+                "4Q 経常利益",
+                "4Q 純利益",
+                "4Q 統一純利益",
+                "4Q 営業CF",
+                "4Q 投資CF",
+                "4Q 財務CF",
+                "4Q 期首残高",
+                "4Q 期末残高",
+                "4Q FCF",
+                "4Q 従業員数",
+                "4Q 平均年齢",
+                "4Q 平均勤続年数",
+                "4Q 平均年間給与",
+            ],
+        )
+        self.assertTrue(all(row.periods_by_offset[1] == "4Q 2026-03" for row in detail_rows))
 
     def test_cash_balance_metric_label_is_registered(self) -> None:
         path = self.tmp_path / "condition.xlsx"
@@ -1655,7 +1729,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(ws.cell(2, headers["\u6c7a\u7b97\u7a2e\u5225"]).value, "4Q")
         self.assertEqual(ws.cell(2, headers["\u5024\u7a2e\u5225"]).value, VALUE_KIND_BASE)
         self.assertEqual(ws.cell(2, headers["\u6307\u6a19"]).value, "4Q ├売上原価")
-        self.assertEqual(ws.cell(2, headers[period_header]).value, "通期 2026-03")
+        self.assertEqual(ws.cell(2, headers[period_header]).value, "4Q 2026-03")
         self.assertEqual(ws.cell(2, headers[value_header]).value, 60.0)
         self.assertEqual(ws.cell(2, headers[unit_header]).value, "百万円")
         ratio_cell = ws.cell(2, headers[ratio_header])
@@ -1706,7 +1780,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         unit_header = _single_header_ending_with(headers, "_\u5358\u4f4d")
         value_cell = ws.cell(2, headers[value_header])
         self.assertEqual(ws.cell(2, headers["\u6307\u6a19"]).value, "4Q 売上高増収率(前期比)")
-        self.assertEqual(ws.cell(2, headers[period_header]).value, "通期 2026-03")
+        self.assertEqual(ws.cell(2, headers[period_header]).value, "4Q 2026-03")
         self.assertEqual(value_cell.value, 1.25)
         self.assertEqual(ws.cell(2, headers[unit_header]).value, "%")
         self.assertEqual(value_cell.number_format, "0.0%")
@@ -2236,7 +2310,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(by_base["StockPrice"].units_by_offset[1], "\u5186")
         self.assertEqual(by_base["PBR"].values_by_offset[1], 1.2)
         self.assertEqual(by_base["PCFR"].values_by_offset[1], 6.0)
-        self.assertEqual(by_base["StockPrice"].periods_by_offset[1], "\u901a\u671f 2026-03-31\u6642\u70b9")
+        self.assertEqual(by_base["StockPrice"].periods_by_offset[1], "4Q 2026-03-31\u6642\u70b9")
 
     def test_market_capitalization_and_outstanding_shares_are_scaled_for_excel(self) -> None:
         self.conn.execute(
@@ -2375,6 +2449,48 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(ratio_cell.value, 0.25)
         self.assertIsNotNone(ratio_cell.comment)
         self.assertEqual(ratio_cell.fill.fgColor.rgb, "00FFF2CC")
+
+    def test_jquants_monetary_rows_use_latest_edinet_document_display_unit(self) -> None:
+        self.conn.execute(
+            """
+            UPDATE filings
+            SET document_display_unit = ?
+            WHERE edinet_code = 'E00001'
+            """,
+            ("\u5343\u5186",),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES ('actual1', '11110', '1111', 'E00001', 'actual',
+                      'quarter', 'actual:1Q', '1Q', NULL, 2026,
+                      '2025-04-01', '2025-06-30', '2025-08-01', '15:00',
+                      'NetSalesCurrent', 'NetSales', 'sales', 100000000.0,
+                      'yen', 'ok', 'field', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["NetSales"],
+            period_scopes=["quarter"],
+            period_offsets=[0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("jquants_metrics_not_found", warnings)
+        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
+        self.assertEqual(row.values_by_offset[0], 100000.0)
+        self.assertEqual(row.units_by_offset[0], "\u5343\u5186")
 
     def test_jquants_quarter_cumulative_growth_uses_prior_year_same_quarter(self) -> None:
         self.conn.executemany(

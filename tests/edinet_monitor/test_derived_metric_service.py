@@ -42,6 +42,32 @@ class DerivedMetricServiceTest(unittest.TestCase):
             1000,
         )
 
+    def test_beginning_cash_balance_uses_direct_normalized_value_first(self) -> None:
+        rows = calculate_derived_metrics(
+            [
+                build_normalized_row(
+                    "BeginningCashBalanceCurrent",
+                    3_353_204_000,
+                    source_tag="CashAndCashEquivalents",
+                ),
+                build_normalized_row("CashAndCashEquivalentsPrior1", 2_132_832_000),
+            ],
+            form_type="043A00",
+            accounting_standard="Japan GAAP",
+            document_display_unit="\u5343\u5186",
+        )
+
+        by_key = {row["metric_key"]: row for row in rows}
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["value_num"], 3_353_204_000)
+        self.assertEqual(
+            by_key["BeginningCashBalanceCurrent"]["source_detail_json"]["inputs"],
+            {"BeginningCashBalanceCurrent": 3353204000.0},
+        )
+        self.assertEqual(
+            by_key["BeginningCashBalanceCurrent"]["source_detail_json"]["stored_formula"],
+            "normalized_beginning_cash_balance",
+        )
+
     def test_calculate_derived_metrics_builds_expected_rows(self) -> None:
         normalized_rows = [
             build_normalized_row("NetSalesCurrent", 1_200_000),

@@ -48,6 +48,70 @@ def _chunked(items: list[dict[str, Any]], chunk_size: int) -> list[list[dict[str
     return [items[index:index + size] for index in range(0, len(items), size)]
 
 
+def _normalize_doc_ids(doc_ids: list[str] | tuple[str, ...] | str | None) -> tuple[str, ...]:
+    if doc_ids is None:
+        return ()
+    if isinstance(doc_ids, str):
+        values = doc_ids.split(",")
+    else:
+        values = list(doc_ids)
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        doc_id = str(value or "").strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        out.append(doc_id)
+    return tuple(out)
+
+
+def _form_code_filter_sql(form_codes: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    if not form_codes:
+        return "", ()
+    placeholders = ",".join("?" for _ in form_codes)
+    return f"AND f.form_type IN ({placeholders})", tuple(form_codes)
+
+
+def fetch_normalization_target_filings_by_doc_ids(
+    conn: sqlite3.Connection,
+    doc_ids: list[str] | tuple[str, ...] | str | None,
+    *,
+    form_codes: tuple[str, ...] | None = None,
+) -> list[sqlite3.Row]:
+    target_doc_ids = _normalize_doc_ids(doc_ids)
+    if not target_doc_ids:
+        return []
+
+    conn.row_factory = sqlite3.Row
+    form_filter, form_params = _form_code_filter_sql(tuple(form_codes or ()))
+    placeholders = ",".join("?" for _ in target_doc_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+            f.doc_id,
+            f.edinet_code,
+            f.security_code,
+            f.form_type,
+            im.industry_33,
+            f.period_end,
+            f.xbrl_path,
+            f.zip_path
+        FROM filings f
+        INNER JOIN issuer_master im
+            ON f.edinet_code = im.edinet_code
+        WHERE f.doc_id IN ({placeholders})
+          AND im.is_listed = 1
+          AND im.exchange = 'TSE'
+          {form_filter}
+        ORDER BY f.submit_date ASC, f.doc_id ASC
+        """,
+        (*target_doc_ids, *form_params),
+    ).fetchall()
+    order = {doc_id: index for index, doc_id in enumerate(target_doc_ids)}
+    return sorted(rows, key=lambda row: order.get(str(row["doc_id"] or ""), len(order)))
+
+
 def fetch_raw_fact_rows_by_doc_ids(
     conn: sqlite3.Connection,
     doc_ids: list[str],
@@ -187,6 +251,7 @@ def run_save_normalized_metrics(
     *,
     batch_size: int = 100,
     form_codes: tuple[str, ...] | None = None,
+    doc_ids: list[str] | tuple[str, ...] | str | None = None,
     enable_period_fallback: bool = False,
     enforce_candidate_validation: bool = False,
     workers: int = 1,
@@ -195,7 +260,10 @@ def run_save_normalized_metrics(
     create_tables()
 
     conn = get_connection()
-    target_form_codes = normalize_form_codes(form_codes)
+    target_doc_ids = _normalize_doc_ids(doc_ids)
+    target_form_codes = normalize_form_codes(
+        form_codes if form_codes is not None else (() if target_doc_ids else None)
+    )
     target_workers = max(int(workers or 1), 1)
     target_normalize_chunk_size = max(int(normalize_chunk_size or 1), 1)
     normalize_window_size = max(target_workers * target_normalize_chunk_size, 1)
@@ -206,6 +274,7 @@ def run_save_normalized_metrics(
         parameters={
             "batch_size": batch_size,
             "form_codes": list(target_form_codes),
+            "doc_ids": list(target_doc_ids),
             "enable_period_fallback": bool(enable_period_fallback),
             "enforce_candidate_validation": bool(enforce_candidate_validation),
             "workers": target_workers,
@@ -227,8 +296,24 @@ def run_save_normalized_metrics(
 
     try:
         while True:
-            with perf_log.measure("db_read", "fetch_raw_facts_saved_filings"):
-                filings = fetch_raw_facts_saved_filings(conn, limit=batch_size, form_codes=target_form_codes)
+            fetch_span_name = (
+                "fetch_normalization_target_filings_by_doc_ids"
+                if target_doc_ids
+                else "fetch_raw_facts_saved_filings"
+            )
+            with perf_log.measure("db_read", fetch_span_name):
+                if target_doc_ids:
+                    filings = fetch_normalization_target_filings_by_doc_ids(
+                        conn,
+                        target_doc_ids,
+                        form_codes=target_form_codes,
+                    )
+                else:
+                    filings = fetch_raw_facts_saved_filings(
+                        conn,
+                        limit=batch_size,
+                        form_codes=target_form_codes,
+                    )
             print(f"raw_facts_saved_rows={len(filings)}")
 
             if not filings:
@@ -318,6 +403,9 @@ def run_save_normalized_metrics(
                             mark_normalized_metrics_error(conn, doc_id)
                         total_errors += 1
                         print(f"normalized_metrics_error doc_id={doc_id} error={repr(e)}")
+
+            if target_doc_ids:
+                break
     except Exception as e:
         unhandled_error = e
         raise
@@ -375,6 +463,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
+    parser.add_argument("--doc-ids", default="", help="Comma-separated doc IDs to reprocess regardless of parse_status.")
     parser.add_argument("--enable-period-fallback", action="store_true")
     parser.add_argument("--enforce-candidate-validation", action="store_true")
     parser.add_argument("--workers", type=int, default=1)
@@ -385,9 +474,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     guard_result = run_db_reflection_preflight_guard(cli_name="save_normalized_metrics")
+    target_doc_ids = _normalize_doc_ids(args.doc_ids or None)
     run_save_normalized_metrics(
         batch_size=args.batch_size,
-        form_codes=normalize_form_codes(args.form_codes or None),
+        form_codes=args.form_codes if (args.form_codes or target_doc_ids) else None,
+        doc_ids=target_doc_ids,
         enable_period_fallback=args.enable_period_fallback,
         enforce_candidate_validation=args.enforce_candidate_validation,
         workers=args.workers,

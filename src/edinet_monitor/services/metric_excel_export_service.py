@@ -124,7 +124,7 @@ FORM_TYPES_BY_PERIOD_SCOPE = {
     "quarter": ("043A00", "043000"),
 }
 PERIOD_SCOPE_LABEL_BY_FORM_TYPE = {
-    "030000": "\u901a\u671f",
+    "030000": "4Q",
     "043A00": "2Q",
     "043000": "2Q",
 }
@@ -532,31 +532,31 @@ CHANGE_RATE_ROW_KIND_BASES = {
 SPARSE_PERIOD_OFFSETS_BY_BASE: dict[str, set[int]] = {}
 
 FIXED_ROW_BASE_ORDER = [
+    "OutstandingShares",
+    "TotalAssets",
+    "NetAssets",
     "NetSales",
-    "GrossProfit",
-    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "CostOfSales",
+    "GrossProfit",
     "SellingExpenses",
     "GeneralAndAdministrativeExpenses",
     "SellingExpensesOnly",
+    "CostOfSalesAndSellingGeneralAndAdministrativeExpenses",
     "OperatingIncome",
     "OrdinaryIncome",
     "ProfitBeforeTax",
     "ProfitLoss",
     "SegmentProfit",
     "EstimatedNetIncome",
-    "TotalAssets",
-    "NetAssets",
-    "BeginningCashBalance",
-    "CashAndCashEquivalents",
     "OperatingCash",
     "InvestmentCash",
     "FinancingCash",
+    "BeginningCashBalance",
+    "CashAndCashEquivalents",
     "FCF",
     "InvestmentCashToNetSalesRatio",
     "InvestmentCashToOperatingCashRatio",
     "InterestBearingDebt",
-    "OutstandingShares",
     "EPS",
     "EPSGrowthRate",
     "EPSGrowthRate5Year",
@@ -637,13 +637,14 @@ EXCEL_METRIC_LABEL_OVERRIDES = {
     "SellingExpenses": "└販管費",
     "GeneralAndAdministrativeExpenses": "　├ 一般管理費",
     "SellingExpensesOnly": "　└ 販売費",
-    "OperatingCash": "営業cf",
-    "InvestmentCash": "投資cf",
-    "FinancingCash": "財務cf",
+    "OperatingCash": "営業CF",
+    "InvestmentCash": "投資CF",
+    "FinancingCash": "財務CF",
+    "EstimatedNetIncome": "統一純利益",
     "NetSalesGrowthRate": "売上高増収率(前期比)",
     "OperatingIncomeGrowthRate": "営業利益増益率(前期比)",
     "ProfitLossGrowthRate": "純利益増益率(前期比)",
-    "EstimatedNetIncomeGrowthRate": "推定純利益増益率(前期比)",
+    "EstimatedNetIncomeGrowthRate": "統一純利益増益率(前期比)",
     "OperatingCashGrowthRate": "営業CF増加率(前期比)",
     "InvestmentCashGrowthRate": "投資CF増加率(前期比)",
     "FinancingCashGrowthRate": "財務CF増加率(前期比)",
@@ -1136,6 +1137,7 @@ def _parse_period_scopes(value: str | None) -> list[str]:
         "\u534a\u671f": "quarter",
         "half": "quarter",
         "2q": "quarter",
+        "4q": "annual",
         "043000": "quarter",
         "043a00": "quarter",
         "\u56db\u534a\u671f": "quarter",
@@ -1369,6 +1371,7 @@ def _build_label_to_base_map(sheet_name: str) -> dict[str, str]:
     for base in candidate_bases:
         mapping[_normalize_text(metric_base_to_display_name(base))] = base
         mapping[_normalize_text(metric_base_to_display_name(base, sheet_name))] = base
+        mapping[_normalize_text(_base_metric_label_for_excel(base, sheet_name))] = base
         mapping[_normalize_text(_metric_label_for_excel(base, sheet_name))] = base
         if base == "NetSalesGrowthRate":
             mapping[_normalize_text("\u58f2\u4e0a\u9ad8\u5897\u53ce\u7387")] = base
@@ -2048,7 +2051,7 @@ def _segment_period_display(row: sqlite3.Row) -> str:
         quarter = str(row["quarter_type"] or "2Q")
         return f"{quarter} {period_end}" if period_end else quarter
     period_month = period_end[:7] if len(period_end) >= 7 else period_end
-    return f"通期 {period_month}" if period_month else "通期"
+    return f"4Q {period_month}" if period_month else "4Q"
 
 
 def _normalize_segment_name_for_excel(segment_name: Any) -> str:
@@ -2840,7 +2843,16 @@ def _fetch_jquants_companies(
               AND f.accounting_standard <> ''
             ORDER BY f.period_end DESC, f.submit_date DESC
             LIMIT 1
-          ) AS accounting_standard
+          ) AS accounting_standard,
+          (
+            SELECT f.document_display_unit
+            FROM filings f
+            WHERE f.edinet_code = im.edinet_code
+              AND f.document_display_unit IS NOT NULL
+              AND f.document_display_unit <> ''
+            ORDER BY f.period_end DESC, f.submit_date DESC
+            LIMIT 1
+          ) AS document_display_unit
         FROM issuer_master im
         WHERE {" AND ".join(where)}
         ORDER BY im.security_code, im.edinet_code
@@ -3258,7 +3270,12 @@ def _jquants_period_display(row: sqlite3.Row | None, period_scope: str, metric_b
     return period_month
 
 
-def _scale_jquants_value(metric_base: str, value: float | None) -> tuple[float | None, str]:
+def _scale_jquants_value(
+    metric_base: str,
+    value: float | None,
+    *,
+    document_display_unit: str | None = None,
+) -> tuple[float | None, str]:
     if value is None:
         return None, ""
     if metric_base == "MarketCapitalization":
@@ -3266,6 +3283,8 @@ def _scale_jquants_value(metric_base: str, value: float | None) -> tuple[float |
     if metric_base == "OutstandingShares":
         return _round_half_up(value / 1_000), "\u5343\u682a"
     if metric_base in MONETARY_BASES:
+        if str(document_display_unit or "").strip() == "\u5343\u5186":
+            return value / 1_000, "\u5343\u5186"
         return value / 1_000_000, "\u767e\u4e07\u5186"
     if metric_base in {"IssuedShares", "TreasuryShares"}:
         return value, "\u682a"
@@ -3778,7 +3797,11 @@ def _append_quarter_standalone_period_rows(
                     and row["value_num"] is not None
                     else None
                 )
-                display_value, display_unit = _scale_jquants_value(base, raw_value)
+                display_value, display_unit = _scale_jquants_value(
+                    base,
+                    raw_value,
+                    document_display_unit=str(company["document_display_unit"] or ""),
+                )
                 periods_by_offset[offset] = _quarter_standalone_period_display(
                     all_rows,
                     security_code=security_code,
@@ -3873,7 +3896,11 @@ def _append_jquants_period_rows(
                 forecast_stage=forecast_stage,
                 accounting_standard=str(company["accounting_standard"] or ""),
             )
-            display_value, display_unit = _scale_jquants_value(base, raw_value)
+            display_value, display_unit = _scale_jquants_value(
+                base,
+                raw_value,
+                document_display_unit=str(company["document_display_unit"] or ""),
+            )
             periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
             if offset == 0 and row is not None:
                 current_period_end = _period_end_from_jquants_row(row)
