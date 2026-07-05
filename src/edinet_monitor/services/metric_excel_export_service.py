@@ -3,7 +3,7 @@ from __future__ import annotations
 import calendar
 import json
 from bisect import bisect_right
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -906,6 +906,7 @@ class MetricExcelRow:
     ranks_by_offset: dict[int, str] = field(default_factory=dict)
     ratio_kinds_by_offset: dict[int, str] = field(default_factory=dict)
     value_kinds_by_offset: dict[int, str] = field(default_factory=dict)
+    fiscal_years_by_offset: dict[int, int | None] = field(default_factory=dict)
     segment_kind: str = ""
     segment_name: str = ""
     segment_order: int | None = None
@@ -1911,6 +1912,32 @@ def _calendar_year_bucket(period_bucket_end: str | None) -> int | None:
     return year
 
 
+def _fiscal_year_anchor_by_security_code(filings: list[sqlite3.Row]) -> dict[str, int]:
+    anchors: dict[str, int] = {}
+    for filing in filings:
+        security_code = _normalize_security_code(
+            filing["issuer_security_code"] or filing["security_code"] or ""
+        )
+        fiscal_year = _calendar_year_bucket(filing["period_bucket_end"])
+        if not security_code or fiscal_year is None:
+            continue
+        anchors[security_code] = max(anchors.get(security_code, fiscal_year), fiscal_year)
+    return anchors
+
+
+def _fetch_jquants_anchor_filings(
+    conn: sqlite3.Connection,
+    condition: MetricExcelCondition,
+    current_filings: list[sqlite3.Row],
+) -> list[sqlite3.Row]:
+    if not ({"quarter", "quarter_standalone"} & set(condition.period_scopes)):
+        return current_filings
+    if {"annual", "quarter"}.issubset(set(condition.period_scopes)):
+        return current_filings
+    anchor_condition = replace(condition, period_scopes=["annual", "quarter"])
+    return [*current_filings, *_fetch_ranked_filings(conn, anchor_condition)]
+
+
 def _aggregate_period_display(period_scope: str, calendar_year: int | None) -> str:
     if calendar_year is None:
         return ""
@@ -2269,6 +2296,7 @@ def _build_segment_metric_excel_rows(
         units_by_offset: dict[int, str] = {}
         ratios_by_offset: dict[int, float | None] = {}
         raw_values_by_offset: dict[int, float | None] = {}
+        fiscal_years_by_offset: dict[int, int | None] = {}
         display_scope = f"quarter:{quarter_type or '2Q'}" if period_scope == "quarter" else "annual"
         current_period_end = current_period_end_by_scope.get(scope_key, "")
         sample_row = by_year.get(max_year) or by_year[max(by_year)]
@@ -2280,8 +2308,10 @@ def _build_segment_metric_excel_rows(
                 units_by_offset[offset] = ""
                 ratios_by_offset[offset] = None
                 raw_values_by_offset[offset] = None
+                fiscal_years_by_offset[offset] = None
                 continue
             source_year = max_year - source_offset
+            fiscal_years_by_offset[offset] = source_year
             raw = by_year.get(source_year)
             if raw is None:
                 periods_by_offset[offset] = ""
@@ -2320,6 +2350,7 @@ def _build_segment_metric_excel_rows(
                 units_by_offset=units_by_offset,
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
+                fiscal_years_by_offset=fiscal_years_by_offset,
                 segment_kind=_segment_decision_label(segment_kind),
                 segment_name=segment_name,
                 segment_order=segment_order_by_key.get(key),
@@ -2373,6 +2404,14 @@ def _period_text_for_stats(rows: list[MetricExcelRow], offset: int) -> str:
         if text:
             return text
     return ""
+
+
+def _fiscal_year_for_stats(rows: list[MetricExcelRow], offset: int) -> int | None:
+    for row in rows:
+        fiscal_year = row.fiscal_years_by_offset.get(offset)
+        if fiscal_year is not None:
+            return fiscal_year
+    return None
 
 
 def _raw_value_for_export_stats(row: MetricExcelRow, offset: int) -> float | None:
@@ -2432,6 +2471,7 @@ def _append_stat_rows(
             units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
             raw_values_by_offset: dict[int, float | None] = {}
+            fiscal_years_by_offset: dict[int, int | None] = {}
 
             for offset in period_offsets:
                 raw_values = [
@@ -2455,6 +2495,7 @@ def _append_stat_rows(
                 units_by_offset[offset] = unit if raw_stat is not None else ""
                 ratios_by_offset[offset] = aggregator(ratio_values)
                 raw_values_by_offset[offset] = raw_stat
+                fiscal_years_by_offset[offset] = _fiscal_year_for_stats(group_rows, offset)
 
             first = group_rows[0]
             stat_rows.append(
@@ -2474,6 +2515,7 @@ def _append_stat_rows(
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                     raw_values_by_offset=raw_values_by_offset,
+                    fiscal_years_by_offset=fiscal_years_by_offset,
                 )
             )
     return [*rows, *stat_rows]
@@ -2560,8 +2602,45 @@ def _metric_value(
     return value
 
 
+def _period_blocks_for_rows(
+    rows: list[MetricExcelRow],
+    period_offsets: list[int],
+) -> list[tuple[str, int]]:
+    fiscal_years: set[int] = set()
+    for row in rows:
+        for offset in period_offsets:
+            fiscal_year = row.fiscal_years_by_offset.get(offset)
+            if fiscal_year is not None:
+                fiscal_years.add(int(fiscal_year))
+    if fiscal_years:
+        return [("year", fiscal_year) for fiscal_year in sorted(fiscal_years)]
+    return [("offset", offset) for offset in period_offsets]
+
+
+def _period_block_label(block: tuple[str, int]) -> str:
+    kind, value = block
+    if kind == "year":
+        return str(value)
+    return PERIOD_LABEL_BY_OFFSET[value]
+
+
+def _offset_for_period_block(
+    row: MetricExcelRow,
+    block: tuple[str, int],
+    period_offsets: list[int],
+) -> int | None:
+    kind, value = block
+    if kind == "offset":
+        return value
+    for offset in period_offsets:
+        if row.fiscal_years_by_offset.get(offset) == value:
+            return offset
+    return None
+
+
 def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: int) -> list[dict[str, Any]]:
     preview = []
+    period_blocks = _period_blocks_for_rows(rows, periods)
     for row in rows[:limit]:
         item: dict[str, Any] = {
             "security_code": row.security_code,
@@ -2574,8 +2653,13 @@ def _build_preview_rows(rows: list[MetricExcelRow], periods: list[int], limit: i
         if row.segment_kind or row.segment_name:
             item["segment_kind"] = row.segment_kind
             item["segment_name"] = row.segment_name
-        for offset in periods:
-            item[PERIOD_LABEL_BY_OFFSET[offset]] = row.values_by_offset.get(offset)
+        for block in period_blocks:
+            offset = _offset_for_period_block(row, block, periods)
+            item[_period_block_label(block)] = (
+                row.values_by_offset.get(offset)
+                if offset is not None
+                else None
+            )
         preview.append(item)
     return preview
 
@@ -2719,9 +2803,11 @@ def _build_industry_only_metric_excel_rows(
             units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
             raw_values_by_offset: dict[int, float | None] = {}
+            fiscal_years_by_offset: dict[int, int | None] = {}
             for offset in condition.period_offsets:
                 source_offset = _source_offset_for_display("annual", offset)
                 fiscal_year = max_fiscal_year - source_offset if source_offset is not None else None
+                fiscal_years_by_offset[offset] = fiscal_year
                 row = (
                     aggregate_by_key.get((industry, fiscal_year, base))
                     if fiscal_year is not None
@@ -2780,6 +2866,7 @@ def _build_industry_only_metric_excel_rows(
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                     raw_values_by_offset=raw_values_by_offset,
+                    fiscal_years_by_offset=fiscal_years_by_offset,
                 )
             )
 
@@ -3550,12 +3637,15 @@ def _merge_missing_offsets(
     units_by_offset: dict[int, str],
     ratios_by_offset: dict[int, float | None],
     raw_values_by_offset: dict[int, float | None],
+    fiscal_years_by_offset: dict[int, int | None],
     ratio_kinds_by_offset: dict[int, str],
     value_kinds_by_offset: dict[int, str],
 ) -> None:
     for offset in period_offsets:
         if not target.periods_by_offset.get(offset) and periods_by_offset.get(offset):
             target.periods_by_offset[offset] = periods_by_offset[offset]
+        if target.fiscal_years_by_offset.get(offset) is None and fiscal_years_by_offset.get(offset) is not None:
+            target.fiscal_years_by_offset[offset] = fiscal_years_by_offset[offset]
         if target.raw_values_by_offset.get(offset) is None and raw_values_by_offset.get(offset) is not None:
             target.raw_values_by_offset[offset] = raw_values_by_offset[offset]
             target.values_by_offset[offset] = values_by_offset.get(offset)
@@ -3574,6 +3664,7 @@ def _append_jquants_rows(
     selected_row_bases_by_sheet: dict[str, list[str]],
     warnings: list[str],
     *,
+    anchor_fiscal_year_by_security_code: dict[str, int] | None = None,
     span_recorder: SpanRecorder | None = None,
 ) -> dict[str, int]:
     needs_quarter = "quarter" in condition.period_scopes
@@ -3670,6 +3761,7 @@ def _append_jquants_rows(
         security_code = _security_code_for_jquants(company)
         if not security_code:
             continue
+        anchor_fiscal_year = (anchor_fiscal_year_by_security_code or {}).get(security_code)
         sheet_name = _sheet_name_for_industry(company["industry_33"])
         base_candidates = selected_row_bases_by_sheet[sheet_name]
         if needs_quarter:
@@ -3692,6 +3784,7 @@ def _append_jquants_rows(
                     period_offsets=condition.period_offsets,
                     max_offset=max_offset,
                     with_progress_ratio=True,
+                    anchor_fiscal_year=anchor_fiscal_year,
                 )
         if needs_quarter_standalone:
             _append_quarter_standalone_period_rows(
@@ -3704,6 +3797,7 @@ def _append_jquants_rows(
                 lookup_indexes=standalone_lookup_indexes,
                 period_offsets=condition.period_offsets,
                 max_offset=max_offset,
+                anchor_fiscal_year=anchor_fiscal_year,
             )
         if needs_forecast:
             for forecast_stage in JQUANTS_FORECAST_STAGES:
@@ -3753,14 +3847,18 @@ def _append_quarter_standalone_period_rows(
     lookup_indexes: _QuarterStandaloneLookupIndexes | None,
     period_offsets: list[int],
     max_offset: int,
+    anchor_fiscal_year: int | None = None,
 ) -> None:
     if not base_candidates:
         return
-    max_fiscal_year = _max_quarter_standalone_fiscal_year(
+    latest_fiscal_year = _max_quarter_standalone_fiscal_year(
         all_rows,
         security_code,
         lookup_indexes=lookup_indexes,
     )
+    if latest_fiscal_year is None:
+        return
+    max_fiscal_year = anchor_fiscal_year or latest_fiscal_year
     if max_fiscal_year is None:
         return
     min_year = max_fiscal_year - max_offset
@@ -3774,6 +3872,7 @@ def _append_quarter_standalone_period_rows(
             units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
             raw_values_by_offset: dict[int, float | None] = {}
+            fiscal_years_by_offset: dict[int, int | None] = {}
             current_period_end = _quarter_standalone_period_end(
                 all_rows,
                 security_code=security_code,
@@ -3783,6 +3882,7 @@ def _append_quarter_standalone_period_rows(
             )
             for offset in period_offsets:
                 fiscal_year = max_fiscal_year - offset
+                fiscal_years_by_offset[offset] = fiscal_year
                 if fiscal_year < min_year:
                     continue
                 lookup_base = _display_base_for_accounting_standard(
@@ -3839,6 +3939,7 @@ def _append_quarter_standalone_period_rows(
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                     raw_values_by_offset=raw_values_by_offset,
+                    fiscal_years_by_offset=fiscal_years_by_offset,
                     accounting_standard=str(company["accounting_standard"] or ""),
                 )
             )
@@ -3860,10 +3961,11 @@ def _append_jquants_period_rows(
     max_offset: int,
     with_progress_ratio: bool,
     forecast_stage: str | None = None,
+    anchor_fiscal_year: int | None = None,
 ) -> None:
     if not base_candidates:
         return
-    max_fiscal_year = _max_jquants_fiscal_year(
+    max_fiscal_year = anchor_fiscal_year or _max_jquants_fiscal_year(
         all_rows,
         security_code,
         period_key,
@@ -3881,9 +3983,11 @@ def _append_jquants_period_rows(
         raw_values_by_offset: dict[int, float | None] = {}
         ratio_kinds_by_offset: dict[int, str] = {}
         value_kinds_by_offset: dict[int, str] = {}
+        fiscal_years_by_offset: dict[int, int | None] = {}
         current_period_end = ""
         for offset in period_offsets:
             fiscal_year = max_fiscal_year - offset
+            fiscal_years_by_offset[offset] = fiscal_year
             if fiscal_year < min_year:
                 continue
             row, raw_value = _jquants_display_row_and_value(
@@ -3903,6 +4007,8 @@ def _append_jquants_period_rows(
             )
             periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
             if offset == 0 and row is not None:
+                current_period_end = _period_end_from_jquants_row(row)
+            elif not current_period_end and row is not None:
                 current_period_end = _period_end_from_jquants_row(row)
             values_by_offset[offset] = display_value
             units_by_offset[offset] = display_unit if raw_value is not None else ""
@@ -3952,6 +4058,7 @@ def _append_jquants_period_rows(
                 units_by_offset=units_by_offset,
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
+                fiscal_years_by_offset=fiscal_years_by_offset,
                 ratio_kinds_by_offset=ratio_kinds_by_offset,
                 value_kinds_by_offset=value_kinds_by_offset,
             )
@@ -3978,6 +4085,7 @@ def _append_jquants_period_rows(
                 units_by_offset=units_by_offset,
                 ratios_by_offset=ratios_by_offset,
                 raw_values_by_offset=raw_values_by_offset,
+                fiscal_years_by_offset=fiscal_years_by_offset,
                 ratio_kinds_by_offset=ratio_kinds_by_offset,
                 value_kinds_by_offset=value_kinds_by_offset,
                 accounting_standard=str(company["accounting_standard"] or ""),
@@ -4090,6 +4198,9 @@ def build_metric_excel_rows(
     for row in filings:
         period_scope = PERIOD_SCOPE_BY_FORM_TYPE.get(str(row["form_type"] or ""), "annual")
         filings_by_company_scope.setdefault((str(row["edinet_code"]), period_scope), []).append(row)
+    anchor_fiscal_year_by_security_code = _fiscal_year_anchor_by_security_code(
+        _fetch_jquants_anchor_filings(conn, condition, filings)
+    )
 
     selected_row_bases_by_sheet = {
         sheet: _filter_excel_visible_bases(
@@ -4223,6 +4334,7 @@ def build_metric_excel_rows(
             units_by_offset: dict[int, str] = {}
             ratios_by_offset: dict[int, float | None] = {}
             raw_values_by_offset: dict[int, float | None] = {}
+            fiscal_years_by_offset: dict[int, int | None] = {}
             ratio_base = ABSORBED_RATIO_BASE_BY_ROW_BASE.get(base)
             allowed_offsets = SPARSE_PERIOD_OFFSETS_BY_BASE.get(base)
             for offset in condition.period_offsets:
@@ -4232,6 +4344,7 @@ def build_metric_excel_rows(
                     units_by_offset[offset] = ""
                     ratios_by_offset[offset] = None
                     raw_values_by_offset[offset] = None
+                    fiscal_years_by_offset[offset] = None
                     continue
 
                 source_offset = _source_offset_for_display(current_period_scope, offset)
@@ -4242,9 +4355,11 @@ def build_metric_excel_rows(
                     units_by_offset[offset] = ""
                     ratios_by_offset[offset] = None
                     raw_values_by_offset[offset] = None
+                    fiscal_years_by_offset[offset] = None
                     continue
 
                 doc_id = str(filing["doc_id"])
+                fiscal_years_by_offset[offset] = _calendar_year_bucket(filing["period_bucket_end"])
                 periods_by_offset[offset] = (
                     _period_point_display_for_filing(filing, current_period_scope)
                     if base in DATE_POINT_PERIOD_BASES
@@ -4305,6 +4420,7 @@ def build_metric_excel_rows(
                     units_by_offset=units_by_offset,
                     ratios_by_offset=ratios_by_offset,
                     raw_values_by_offset=raw_values_by_offset,
+                    fiscal_years_by_offset=fiscal_years_by_offset,
                     accounting_standard=str(current["accounting_standard"] or ""),
                 )
             )
@@ -4322,6 +4438,7 @@ def build_metric_excel_rows(
         rows,
         selected_row_bases_by_sheet,
         warnings,
+        anchor_fiscal_year_by_security_code=anchor_fiscal_year_by_security_code,
         span_recorder=span_recorder,
     )
     if any(
@@ -4499,13 +4616,26 @@ def _write_only_cell(
     return cell
 
 
-def _period_block_styles(period_offsets: list[int]) -> list[tuple[PatternFill, Border]]:
+def _period_block_styles(
+    period_blocks: list[tuple[str, int]],
+    rows: list[MetricExcelRow],
+    period_offsets: list[int],
+) -> list[tuple[PatternFill, Border]]:
     left_border = Border(left=Side(style="thin", color=PERIOD_BLOCK_BORDER_COLOR))
     styles: list[tuple[PatternFill, Border]] = []
-    for block_index, offset in enumerate(period_offsets):
+    for block_index, block in enumerate(period_blocks):
+        is_current_block = (
+            block[0] == "offset" and block[1] == 0
+        ) or (
+            block[0] == "year"
+            and any(
+                _offset_for_period_block(row, block, period_offsets) == 0
+                for row in rows
+            )
+        )
         fill_color = (
             CURRENT_PERIOD_BLOCK_FILL_COLOR
-            if offset == 0
+            if is_current_block
             else PERIOD_BLOCK_FILL_COLORS[block_index % len(PERIOD_BLOCK_FILL_COLORS)]
         )
         styles.append((PatternFill("solid", fgColor=fill_color), left_border))
@@ -4538,8 +4668,9 @@ def _write_metric_sheet(
     )
     base_col_count = len(base_headers)
     headers = list(base_headers)
-    for offset in period_offsets:
-        label = PERIOD_LABEL_BY_OFFSET[offset]
+    period_blocks = _period_blocks_for_rows(rows, period_offsets)
+    for block in period_blocks:
+        label = _period_block_label(block)
         headers.extend(
             [
                 f"{label}_\u671f\u9593",
@@ -4552,7 +4683,7 @@ def _write_metric_sheet(
     header_fill = PatternFill("solid", fgColor="D9EAF7")
     header_font = Font(bold=True)
     progress_fill = PatternFill("solid", fgColor=FORECAST_PROGRESS_FILL_COLOR)
-    block_styles = _period_block_styles(period_offsets)
+    block_styles = _period_block_styles(period_blocks, rows, period_offsets)
 
     ws.freeze_panes = f"{get_column_letter(base_col_count + 1)}2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
@@ -4603,9 +4734,10 @@ def _write_metric_sheet(
             row.metric_label,
             ]
         )
-        for idx, offset in enumerate(period_offsets):
+        for idx, block in enumerate(period_blocks):
+            offset = _offset_for_period_block(row, block, period_offsets)
             fill, border = block_styles[idx]
-            value_kind = row.value_kinds_by_offset.get(offset)
+            value_kind = row.value_kinds_by_offset.get(offset) if offset is not None else None
             value_font: Font | None = None
             if value_kind in {FORECAST_REVISION_UP_KIND, FORECAST_REVISION_DOWN_KIND}:
                 value_font = Font(
@@ -4617,15 +4749,19 @@ def _write_metric_sheet(
                 )
             value_cell = _write_only_cell(
                 ws,
-                row.values_by_offset.get(offset),
+                row.values_by_offset.get(offset) if offset is not None else None,
                 fill=fill,
                 font=value_font,
             )
             _format_value_cell(value_cell, row.metric_base)
-            ratio_is_progress = row.ratio_kinds_by_offset.get(offset) == FORECAST_PROGRESS_RATIO_KIND
+            ratio_is_progress = (
+                row.ratio_kinds_by_offset.get(offset) == FORECAST_PROGRESS_RATIO_KIND
+                if offset is not None
+                else False
+            )
             ratio_cell = _write_only_cell(
                 ws,
-                row.ratios_by_offset.get(offset),
+                row.ratios_by_offset.get(offset) if offset is not None else None,
                 fill=progress_fill if ratio_is_progress else fill,
                 number_format="0.0%",
                 comment=(
@@ -4641,14 +4777,22 @@ def _write_metric_sheet(
                 [
                     _write_only_cell(
                         ws,
-                        row.periods_by_offset.get(offset, ""),
+                        row.periods_by_offset.get(offset, "") if offset is not None else "",
                         fill=fill,
                         border=border,
                     ),
                     value_cell,
-                    _write_only_cell(ws, row.units_by_offset.get(offset, ""), fill=fill),
+                    _write_only_cell(
+                        ws,
+                        row.units_by_offset.get(offset, "") if offset is not None else "",
+                        fill=fill,
+                    ),
                     ratio_cell,
-                    _write_only_cell(ws, row.ranks_by_offset.get(offset, ""), fill=fill),
+                    _write_only_cell(
+                        ws,
+                        row.ranks_by_offset.get(offset, "") if offset is not None else "",
+                        fill=fill,
+                    ),
                 ]
             )
         ws.append(values)

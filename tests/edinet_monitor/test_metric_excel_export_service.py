@@ -516,6 +516,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 values_by_offset={0: 100.0},
                 units_by_offset={0: "\u767e\u4e07\u5186"},
                 ratios_by_offset={0: None},
+                fiscal_years_by_offset={0: 2025},
             )
         ]
 
@@ -548,11 +549,71 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertNotIn("\u8a3c\u5238\u30b3\u30fc\u30c9", headers)
         self.assertNotIn("\u671f\u672b\u5e74\u6708\u65e5_\u5f53\u671f", headers)
         self.assertNotIn("\u6c7a\u7b97\u671f", headers)
+        self.assertIn("2025_\u671f\u9593", headers)
+        self.assertIn("2025_\u6570\u5024", headers)
+        self.assertNotIn("\u5f53\u671f_\u6570\u5024", headers)
         self.assertTrue(ws.column_dimensions["C"].hidden)
+        self.assertEqual(ws.cell(2, headers.index("2025_\u671f\u9593") + 1).value, "1Q 2025-06")
+        self.assertEqual(ws.cell(2, headers.index("2025_\u6570\u5024") + 1).value, 100.0)
         self.assertEqual(
             ws.cell(2, headers.index("\u6307\u6a19") + 1).value,
             "1Q \u58f2\u4e0a\u9ad8 \u5358\u72ec",
         )
+
+    def test_write_metric_excel_places_values_under_fiscal_year_headers(self) -> None:
+        output_path = self.tmp_path / "fiscal_year_headers.xlsx"
+        rows = [
+            MetricExcelRow(
+                sheet_name=GENERAL_SHEET,
+                security_code="1111",
+                company_name="A\u793e",
+                industry_33="\u5316\u5b66",
+                market="Prime",
+                period_scope="quarter:3Q",
+                current_period_end="2025-04-30",
+                metric_base="NetSales",
+                metric_label="3Q \u58f2\u4e0a\u9ad8",
+                periods_by_offset={0: "3Q 2025-04", 1: "3Q 2024-04"},
+                values_by_offset={0: 300.0, 1: 200.0},
+                units_by_offset={0: "\u767e\u4e07\u5186", 1: "\u767e\u4e07\u5186"},
+                ratios_by_offset={0: None, 1: None},
+                fiscal_years_by_offset={0: 2025, 1: 2024},
+            )
+        ]
+
+        write_metric_excel(
+            rows=rows,
+            condition=MetricExcelCondition(period_offsets=[1, 0]),
+            output_path=output_path,
+            db_path=":memory:",
+            errors=[],
+            warnings=[],
+            target_companies=1,
+        )
+
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        headers = [cell.value for cell in ws[1]]
+        self.assertEqual(
+            headers[8:18],
+            [
+                "2024_\u671f\u9593",
+                "2024_\u6570\u5024",
+                "2024_\u5358\u4f4d",
+                "2024_\u6bd4\u7387",
+                "2024_\u9806\u4f4d",
+                "2025_\u671f\u9593",
+                "2025_\u6570\u5024",
+                "2025_\u5358\u4f4d",
+                "2025_\u6bd4\u7387",
+                "2025_\u9806\u4f4d",
+            ],
+        )
+        header_by_name = {header: idx for idx, header in enumerate(headers, start=1)}
+        self.assertEqual(ws.cell(2, header_by_name["2024_\u671f\u9593"]).value, "3Q 2024-04")
+        self.assertEqual(ws.cell(2, header_by_name["2024_\u6570\u5024"]).value, 200.0)
+        self.assertEqual(ws.cell(2, header_by_name["2025_\u671f\u9593"]).value, "3Q 2025-04")
+        self.assertEqual(ws.cell(2, header_by_name["2025_\u6570\u5024"]).value, 300.0)
 
     def test_write_metric_excel_uses_display_decision_and_value_kind_labels(self) -> None:
         output_path = self.tmp_path / "display_labels.xlsx"
@@ -2077,7 +2138,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(ws["C1"].value, "\u30c6\u30f3\u30d0\u30ac\u30fc")
         self.assertEqual(ws["F2"].value, "4Q")
         self.assertEqual(ws["G1"].value, "\u5024\u7a2e\u5225")
-        self.assertEqual(ws.cell(1, rank_col).value, "\u524d\u671f_\u9806\u4f4d")
+        self.assertEqual(ws.cell(1, rank_col).value, "2026_\u9806\u4f4d")
         self.assertNotIn("\u524d\u671f_\u5897\u6e1b\u7387", [cell.value for cell in ws[1]])
         self.assertEqual(ws["G2"].value, VALUE_KIND_BASE)
         self.assertEqual(ws.cell(2, rank_col).value, "1/2")
@@ -2491,6 +2552,76 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
         self.assertEqual(row.values_by_offset[0], 100000.0)
         self.assertEqual(row.units_by_offset[0], "\u5343\u5186")
+
+    def test_jquants_quarter_rows_use_edinet_fiscal_year_anchor_without_sliding(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, submit_date,
+                amendment_flag, doc_info_edit_status, legal_status, accounting_standard,
+                document_display_unit, zip_path, xbrl_path, download_status, parse_status,
+                created_at, updated_at
+            ) VALUES ('E00001_HALF_ANCHOR', 'E00001', '11110', '043A00',
+                      '2025-09-30', '2025-11-14 12:00', 0, '0', '1',
+                      'Japan GAAP', '\u767e\u4e07\u5186', 'zip', 'xbrl',
+                      'downloaded', 'derived_metrics_saved',
+                      '2026-04-24', '2026-04-24')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO jquants_financial_metrics (
+                disclosure_number, local_code, security_code, edinet_code, metric_kind,
+                period_scope, period_key, quarter_type, forecast_target, fiscal_year,
+                period_start, period_end, disclosed_date, disclosed_time, metric_key,
+                metric_base, metric_group, value_num, value_unit, calc_status,
+                source_field, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES ('actual_2025_q3', '11110', '1111', 'E00001', 'actual',
+                      'quarter', 'actual:3Q', '3Q', NULL, 2025,
+                      '2024-04-01', '2024-12-31', '2025-02-01', '15:00',
+                      'NetSalesCurrent', 'NetSales', 'sales', 90000000.0,
+                      'yen', 'ok', 'field', '{}', 'v1',
+                      '2026-05-06', '2026-05-06')
+            """
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["NetSales"],
+            period_scopes=["quarter"],
+            period_offsets=[1, 0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("jquants_metrics_not_found", warnings)
+        row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:3Q")
+        self.assertEqual(row.fiscal_years_by_offset, {1: 2025, 0: 2026})
+        self.assertEqual(row.values_by_offset[1], 90.0)
+        self.assertIsNone(row.values_by_offset[0])
+
+        output_path = self.tmp_path / "jquants_anchor.xlsx"
+        write_metric_excel(
+            rows=rows,
+            condition=condition,
+            output_path=output_path,
+            db_path=":memory:",
+            errors=errors,
+            warnings=warnings,
+            target_companies=target,
+        )
+        workbook = load_workbook(output_path)
+        ws = workbook[GENERAL_SHEET]
+        headers = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+        row_index = next(
+            idx
+            for idx in range(2, ws.max_row + 1)
+            if ws.cell(idx, headers["\u6307\u6a19"]).value == "3Q \u58f2\u4e0a\u9ad8"
+        )
+        self.assertEqual(ws.cell(row_index, headers["2025_\u6570\u5024"]).value, 90.0)
+        self.assertIsNone(ws.cell(row_index, headers["2026_\u6570\u5024"]).value)
 
     def test_jquants_quarter_cumulative_growth_uses_prior_year_same_quarter(self) -> None:
         self.conn.executemany(
@@ -3102,6 +3233,42 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         }
         self.assertEqual(by_scope["quarter_standalone:3Q"].values_by_offset[0], 300.0)
         self.assertEqual(by_scope["quarter_standalone:4Q"].values_by_offset[0], 400.0)
+
+    def test_quarter_standalone_rows_use_edinet_fiscal_year_anchor_without_sliding(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            )
+            VALUES ('1111', 'E00001', 2025, '3Q', '2024-12-31',
+                    'NetSalesCurrent', 'NetSales', 'sales', 300000000.0, 'yen',
+                    'ok', 'fixture', '{}', 'test', 'now', 'now')
+            """
+        )
+        self.conn.commit()
+        condition = MetricExcelCondition(
+            security_codes=["1111"],
+            metric_labels=["\u58f2\u4e0a\u9ad8"],
+            period_scopes=["quarter_standalone"],
+            period_offsets=[1, 0],
+        )
+
+        rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(target, 1)
+        self.assertNotIn("quarter_standalone_metrics_not_ready", warnings)
+        row = next(
+            row
+            for row in _detail_rows(rows)
+            if row.period_scope == "quarter_standalone:3Q" and row.metric_base == "NetSales"
+        )
+        self.assertEqual(row.fiscal_years_by_offset, {1: 2025, 0: 2026})
+        self.assertEqual(row.values_by_offset[1], 300.0)
+        self.assertIsNone(row.values_by_offset[0])
 
     def test_forecast_revision_values_use_font_color_only(self) -> None:
         self.conn.executemany(
