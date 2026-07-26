@@ -21,6 +21,7 @@ from edinet_monitor.services.db_reflection_item_service import (  # noqa: E402
     get_db_reflection_item,
     import_db_reflection_items_from_txt,
     list_db_reflection_items,
+    update_db_reflection_item,
 )
 
 
@@ -94,6 +95,30 @@ DBスキーマ変更:
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "data_quality_report / schema_migrations 追加")
         self.assertEqual(items[0].related_migration_ids, ["003_add_db_reflection_items"])
+
+    def test_update_replaces_pending_item_metadata(self) -> None:
+        item = add_db_reflection_item(
+            self.conn,
+            title="Old title",
+            category="recalculation",
+            required_commands=["old command"],
+            verification_sql=["SELECT 1"],
+        )
+
+        updated = update_db_reflection_item(
+            self.conn,
+            item.item_id,
+            title="New title",
+            required_commands=["new command"],
+            verification_sql=["SELECT COUNT(*) AS target_count FROM derived_metrics"],
+            notes="target_count=1",
+        )
+
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated.title, "New title")
+        self.assertEqual(updated.required_commands, ["new command"])
+        self.assertEqual(updated.notes, "target_count=1")
 
 
 if __name__ == "__main__":

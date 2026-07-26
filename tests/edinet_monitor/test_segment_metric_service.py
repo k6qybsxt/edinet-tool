@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 
@@ -16,8 +17,12 @@ if str(SRC_DIR) not in sys.path:
 
 from edinet_monitor.db.schema import _create_segment_metrics_table  # noqa: E402
 from edinet_monitor.services.segment_metric_service import (  # noqa: E402
+    SegmentMetricBuildResult,
+    SegmentMetricRow,
     build_segment_metric_rows,
     replace_segment_metrics,
+    resolve_segment_fiscal_year_anchor,
+    save_segment_metrics,
 )
 
 
@@ -288,10 +293,10 @@ class SegmentMetricServiceTest(unittest.TestCase):
         row_by_base = {row.metric_base: row for row in result.rows}
         self.assertEqual(row_by_base["NetSales"].segment_kind, "region")
         self.assertEqual(row_by_base["NetSales"].value_num, 100000000.0)
-        self.assertEqual(row_by_base["SegmentProfit"].value_num, 30000000.0)
+        self.assertEqual(row_by_base["SegmentProfit"].calc_status, "review")
         self.assertEqual(row_by_base["SegmentProfit"].source_tag, "OrdinaryIncome")
 
-    def test_operating_income_fills_segment_profit_when_segment_profit_is_absent(self) -> None:
+    def test_operating_income_does_not_create_segment_profit_fallback(self) -> None:
         _insert_raw_fact(
             self.conn,
             tag_name="OperatingIncome",
@@ -304,9 +309,130 @@ class SegmentMetricServiceTest(unittest.TestCase):
 
         row_by_base = {row.metric_base: row for row in result.rows}
         self.assertEqual(row_by_base["OperatingIncome"].value_num, 30000000.0)
-        self.assertEqual(row_by_base["SegmentProfit"].value_num, 30000000.0)
+        self.assertNotIn("SegmentProfit", row_by_base)
+
+    def test_linkbase_label_overrides_profit_tag(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="OperatingIncome",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="30000000",
+        )
+        self.conn.commit()
+
+        structure = {
+            "jpcrp_cor:OperatingIncome": {"label": "\u30bb\u30b0\u30e1\u30f3\u30c8\u5229\u76ca\u53c8\u306f\u640d\u5931"},
+        }
+        with patch(
+            "edinet_monitor.services.segment_metric_service._linkbase_structure_for_filing",
+            return_value=structure,
+        ):
+            result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row_by_base = {row.metric_base: row for row in result.rows}
+        self.assertNotIn("OperatingIncome", row_by_base)
+        self.assertEqual(row_by_base["SegmentProfit"].calc_status, "review")
         detail = json.loads(row_by_base["SegmentProfit"].source_detail_json)
-        self.assertEqual(detail["source"], "operating_income_segment_profit_fallback")
+        self.assertEqual(detail["profit_metric_classification_source"], "linkbase_label")
+        self.assertEqual(detail["profit_metric_classification_status"], "confirmed")
+
+    def test_conflicting_profit_metrics_are_marked_review(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="OperatingIncome",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="30000000",
+        )
+        _insert_raw_fact(
+            self.conn,
+            tag_name="SegmentProfit",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="30000000",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        profit_rows = [row for row in result.rows if row.metric_base in {"OperatingIncome", "SegmentProfit"}]
+        self.assertEqual({row.calc_status for row in profit_rows}, {"review"})
+
+    def test_two_q_fiscal_year_uses_current_fiscal_year_end_dei(self) -> None:
+        self.conn.execute("UPDATE filings SET period_end = '2020-07-31' WHERE doc_id = 'doc1'")
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="100000000",
+            period_end="2020-07-31",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO raw_facts (
+                doc_id, tag_name, tag_qname, context_ref, unit_ref, decimals,
+                period_type, period_start, period_end, instant_date, is_nil,
+                context_dimensions_json, unit_measures_json, value_text
+            ) VALUES (
+                'doc1', 'CurrentFiscalYearEndDateDEI', 'jpdei_cor:CurrentFiscalYearEndDateDEI',
+                'FilingDateInstant', '', '', 'instant', NULL, NULL, '2020-09-11', 0,
+                '{}', '{}', '2021-01-31'
+            )
+            """
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row = next(item for item in result.rows if item.metric_base == "NetSales")
+        self.assertEqual(row.fiscal_year, 2021)
+        detail = json.loads(row.source_detail_json)
+        self.assertEqual(detail["fiscal_year_anchor_period_end"], "2021-01-31")
+        self.assertEqual(detail["fiscal_year_anchor_source"], "current_fiscal_year_end_dei")
+
+    def test_two_q_fiscal_year_falls_back_to_next_annual_period(self) -> None:
+        self.conn.execute("UPDATE filings SET period_end = '2020-09-30' WHERE doc_id = 'doc1'")
+        self.conn.execute(
+            """
+            INSERT INTO filings (
+                doc_id, edinet_code, security_code, form_type, period_end, zip_path, xbrl_path
+            ) VALUES ('annual1', 'E00893', '46130', '030000', '2021-03-31', '', '')
+            """
+        )
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:JAPANReportableSegmentMember",
+            value_text="100000000",
+            period_end="2020-09-30",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        row = next(item for item in result.rows if item.metric_base == "NetSales")
+        self.assertEqual(row.fiscal_year, 2021)
+        detail = json.loads(row.source_detail_json)
+        self.assertEqual(detail["fiscal_year_anchor_source"], "next_annual_period_end")
+
+    def test_two_q_fiscal_year_direct_dei_covers_january_march_and_december_year_ends(self) -> None:
+        filing = {"doc_id": "doc1", "edinet_code": "E00893", "form_type": "043A00"}
+        cases = [
+            ("2020-07-31", "2021-01-31", 2021),
+            ("2020-09-30", "2021-03-31", 2021),
+            ("2020-06-30", "2020-12-31", 2020),
+        ]
+
+        for period_end, fiscal_year_end, expected_year in cases:
+            with self.subTest(period_end=period_end):
+                anchor = resolve_segment_fiscal_year_anchor(
+                    filing=filing,
+                    fact_period_end=period_end,
+                    current_fiscal_year_ends={"doc1": fiscal_year_end},
+                    annual_period_ends_by_edinet_code={},
+                )
+                self.assertEqual(anchor.fiscal_year, expected_year)
+                self.assertEqual(anchor.fiscal_year_end, fiscal_year_end)
+                self.assertEqual(anchor.source, "current_fiscal_year_end_dei")
+                self.assertEqual(anchor.status, "ok")
 
     def test_geographical_area_textblock_matrix_table_extracts_current_region_values(self) -> None:
         _insert_geographical_textblock(
@@ -452,6 +578,77 @@ class SegmentMetricServiceTest(unittest.TestCase):
         self.assertEqual(saved_count_before, 1)
         self.assertEqual(deleted_insert_count, 0)
         self.assertEqual(saved_count_after, 0)
+
+    def test_save_segment_metrics_batches_large_doc_id_manifests(self) -> None:
+        doc_ids = [f"doc{index:03d}" for index in range(251)]
+
+        def build_for_batch(_conn, *, doc_ids, **_kwargs):
+            doc_id = doc_ids[0]
+            row = SegmentMetricRow(
+                doc_id=doc_id,
+                edinet_code="E00893",
+                security_code="4613",
+                form_type="043A00",
+                period_scope="quarter",
+                quarter_type="2Q",
+                fiscal_year=2026,
+                period_start="2025-04-01",
+                period_end="2025-09-30",
+                segment_kind="business",
+                segment_name="Paint",
+                axis_qname="axis",
+                member_qname="member",
+                metric_base="NetSales",
+                metric_key="SegmentNetSalesCurrent",
+                value_kind="total",
+                value_num=1.0,
+                value_unit="yen",
+                source_tag="NetSales",
+                tag_qname="tag",
+                context_ref="context",
+                decimals="-6",
+                calc_status="ok",
+                source_detail_json="{}",
+            )
+            return SegmentMetricBuildResult(rows=[row], candidates=[], warnings=[])
+
+        with (
+            patch(
+                "edinet_monitor.services.segment_metric_service.build_segment_metric_rows",
+                side_effect=build_for_batch,
+            ) as build,
+            patch(
+                "edinet_monitor.services.segment_metric_service.replace_segment_metrics",
+                side_effect=lambda _conn, rows, **_kwargs: len(rows),
+            ) as replace_rows,
+            patch(
+                "edinet_monitor.services.segment_metric_service.write_segment_metric_report",
+                return_value=Path("report.txt"),
+            ),
+        ):
+            result = save_segment_metrics(self.conn, doc_ids=doc_ids, apply=True)
+
+        self.assertEqual(build.call_count, 2)
+        self.assertEqual(replace_rows.call_count, 3)
+        self.assertEqual(result.built_row_count, 2)
+        self.assertEqual(result.saved_rows, 2)
+        self.assertEqual(result.replaced_doc_count, 251)
+
+    def test_save_segment_metrics_stops_without_deleting_when_all_requested_docs_are_empty(self) -> None:
+        empty_build = SegmentMetricBuildResult(rows=[], candidates=[], warnings=[])
+        with (
+            patch(
+                "edinet_monitor.services.segment_metric_service.build_segment_metric_rows",
+                return_value=empty_build,
+            ),
+            patch(
+                "edinet_monitor.services.segment_metric_service.replace_segment_metrics"
+            ) as replace_rows,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "No segment metrics were built"):
+                save_segment_metrics(self.conn, doc_ids=["S100EMPTY"], apply=True)
+
+        replace_rows.assert_not_called()
 
     def test_build_segment_metric_rows_excludes_prior_period_segment_fact(self) -> None:
         _insert_raw_fact(

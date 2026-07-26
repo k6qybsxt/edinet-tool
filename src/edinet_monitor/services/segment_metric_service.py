@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+import gc
 from pathlib import Path
 import json
 import re
@@ -18,7 +19,9 @@ from edinet_monitor.services.segment_name_normalize_service import (
 )
 
 
-SEGMENT_RULE_VERSION = "segment-metrics-2026-05-15-v1"
+SEGMENT_RULE_VERSION = "segment-metrics-2026-07-26-v2"
+SEGMENT_SAVE_DOC_ID_BATCH_SIZE = 250
+CURRENT_FISCAL_YEAR_END_DEI_TAG = "CurrentFiscalYearEndDateDEI"
 SEGMENT_FORM_CODES = ("030000", "043A00", "043000")
 SEGMENT_PERIOD_SCOPE_BY_FORM_TYPE = {
     "030000": ("annual", ""),
@@ -130,6 +133,10 @@ TEXTBLOCK_METRIC_INFO_BY_BASE: dict[str, tuple[str, str, str, int]] = {
     "ProfitLoss": ("ProfitLoss", "SegmentProfitLossCurrent", "profit_loss", 80),
     "SegmentProfit": ("SegmentProfit", "SegmentProfitCurrent", "segment_profit", 80),
 }
+PROFIT_METRIC_INFO_BY_BASE: dict[str, tuple[str, str, str, int]] = {
+    "OperatingIncome": ("OperatingIncome", "SegmentOperatingIncomeCurrent", "operating_profit", 10),
+    "SegmentProfit": ("SegmentProfit", "SegmentProfitCurrent", "segment_profit", 10),
+}
 
 SEGMENT_EXCEL_METRIC_LABELS = {
     "NetSales": "売上高",
@@ -206,6 +213,17 @@ class SegmentMetricSaveResult:
     saved_rows: int
     warnings: list[str]
     output_path: Path
+    built_row_count: int = 0
+    candidate_count: int = 0
+    replaced_doc_count: int = 0
+
+
+@dataclass(frozen=True)
+class SegmentFiscalYearAnchor:
+    fiscal_year: int | None
+    fiscal_year_end: str
+    source: str
+    status: str
 
 
 def segment_metrics_table_exists(conn: sqlite3.Connection) -> bool:
@@ -257,6 +275,138 @@ def _parse_year(value: Any) -> int | None:
         return int(text[:4])
     except ValueError:
         return None
+
+
+def _valid_date_text(value: Any) -> str:
+    text = str(value or "").strip()[:10]
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def _days_between(start: str, end: str) -> int | None:
+    try:
+        return (datetime.strptime(end, "%Y-%m-%d") - datetime.strptime(start, "%Y-%m-%d")).days
+    except ValueError:
+        return None
+
+
+def _shift_year(date_text: str) -> str:
+    text = _valid_date_text(date_text)
+    if not text:
+        return ""
+    year = int(text[:4]) + 1
+    suffix = text[4:]
+    if suffix == "-02-29":
+        suffix = "-02-28"
+    return f"{year}{suffix}"
+
+
+def _fetch_current_fiscal_year_ends(
+    conn: sqlite3.Connection,
+    doc_ids: list[str],
+) -> dict[str, str]:
+    values_by_doc: dict[str, set[str]] = {}
+    for chunk in _chunked(doc_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT doc_id, value_text
+            FROM raw_facts
+            WHERE doc_id IN ({placeholders})
+              AND tag_name = ?
+            """,
+            [*chunk, CURRENT_FISCAL_YEAR_END_DEI_TAG],
+        ).fetchall()
+        for row in rows:
+            value = _valid_date_text(row["value_text"])
+            if value:
+                values_by_doc.setdefault(str(row["doc_id"]), set()).add(value)
+    return {
+        doc_id: next(iter(values))
+        for doc_id, values in values_by_doc.items()
+        if len(values) == 1
+    }
+
+
+def _annual_period_ends_by_edinet_code(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    rows = conn.execute(
+        """
+        SELECT edinet_code, period_end
+        FROM filings
+        WHERE form_type = '030000'
+          AND period_end IS NOT NULL
+        ORDER BY edinet_code, period_end
+        """
+    ).fetchall()
+    result: dict[str, list[str]] = {}
+    for row in rows:
+        edinet_code = str(row["edinet_code"] or "")
+        period_end = _valid_date_text(row["period_end"])
+        if edinet_code and period_end:
+            result.setdefault(edinet_code, []).append(period_end)
+    return result
+
+
+def resolve_segment_fiscal_year_anchor(
+    *,
+    filing: sqlite3.Row,
+    fact_period_end: str,
+    current_fiscal_year_ends: dict[str, str],
+    annual_period_ends_by_edinet_code: dict[str, list[str]],
+) -> SegmentFiscalYearAnchor:
+    period_end = _valid_date_text(fact_period_end)
+    form_type = str(filing["form_type"] or "")
+    if form_type not in {"043000", "043A00"}:
+        return SegmentFiscalYearAnchor(
+            fiscal_year=_parse_year(period_end),
+            fiscal_year_end=period_end,
+            source="period_end",
+            status="ok" if period_end else "unresolved",
+        )
+
+    direct = current_fiscal_year_ends.get(str(filing["doc_id"] or ""), "")
+    direct_gap = _days_between(period_end, direct)
+    if direct and direct_gap is not None and 0 < direct_gap <= 260:
+        return SegmentFiscalYearAnchor(
+            fiscal_year=_parse_year(direct),
+            fiscal_year_end=direct,
+            source="current_fiscal_year_end_dei",
+            status="ok",
+        )
+
+    annual_periods = annual_period_ends_by_edinet_code.get(str(filing["edinet_code"] or ""), [])
+    future = [item for item in annual_periods if item > period_end]
+    if future:
+        candidate = min(future)
+        gap = _days_between(period_end, candidate)
+        if gap is not None and 0 < gap <= 260:
+            return SegmentFiscalYearAnchor(
+                fiscal_year=_parse_year(candidate),
+                fiscal_year_end=candidate,
+                source="next_annual_period_end",
+                status="ok",
+            )
+
+    past = [item for item in annual_periods if item <= period_end]
+    if past:
+        candidate = _shift_year(max(past))
+        gap = _days_between(period_end, candidate)
+        if candidate and gap is not None and 0 < gap <= 260:
+            return SegmentFiscalYearAnchor(
+                fiscal_year=_parse_year(candidate),
+                fiscal_year_end=candidate,
+                source="prior_annual_period_end_shifted",
+                status="ok",
+            )
+
+    return SegmentFiscalYearAnchor(
+        fiscal_year=None,
+        fiscal_year_end="",
+        source="",
+        status="unresolved",
+    )
 
 
 def _to_float(value: Any) -> float | None:
@@ -758,6 +908,102 @@ def _metric_info(tag_name: str) -> tuple[str, str, str, int] | None:
     return METRIC_INFO_BY_TAG.get(str(tag_name or ""))
 
 
+def _profit_metric_classification(
+    *,
+    tag_name: str,
+    line_item_label: str,
+) -> tuple[tuple[str, str, str, int] | None, str, str, str]:
+    label = _normalize_cell_text(line_item_label).lower()
+    if label:
+        if (
+            "セグメント利益" in label
+            or "セグメント損失" in label
+            or "segment profit" in label
+            or "segment loss" in label
+        ):
+            return PROFIT_METRIC_INFO_BY_BASE["SegmentProfit"], "segment_profit", "linkbase_label", "confirmed"
+        if "営業利益" in label or "operating profit" in label or "operating income" in label:
+            return PROFIT_METRIC_INFO_BY_BASE["OperatingIncome"], "operating_income", "linkbase_label", "confirmed"
+        return None, "", "linkbase_label", "review"
+
+    if tag_name in OPERATING_INCOME_TAGS:
+        return PROFIT_METRIC_INFO_BY_BASE["OperatingIncome"], "operating_income", "standard_tag", "confirmed"
+    if tag_name in SEGMENT_PROFIT_TAGS - {"OrdinaryIncome"}:
+        return PROFIT_METRIC_INFO_BY_BASE["SegmentProfit"], "segment_profit", "standard_tag", "confirmed"
+    return None, "", "", "review"
+
+
+def _profit_group_key(row: SegmentMetricRow) -> tuple[str, str, str, str, str]:
+    member_qname = "TOTAL" if row.segment_kind == "total" else row.member_qname
+    return row.doc_id, row.segment_kind, member_qname, row.period_start, row.period_end
+
+
+def _apply_profit_metric_conflicts(rows: list[SegmentMetricRow]) -> list[SegmentMetricRow]:
+    bases_by_group: dict[tuple[str, str, str, str, str], set[str]] = {}
+    for row in rows:
+        if row.calc_status != "ok" or row.metric_base not in PROFIT_METRIC_INFO_BY_BASE:
+            continue
+        bases_by_group.setdefault(_profit_group_key(row), set()).add(row.metric_base)
+
+    conflict_keys = {key for key, bases in bases_by_group.items() if len(bases) > 1}
+    if not conflict_keys:
+        return rows
+
+    out: list[SegmentMetricRow] = []
+    for row in rows:
+        if _profit_group_key(row) not in conflict_keys or row.metric_base not in PROFIT_METRIC_INFO_BY_BASE:
+            out.append(row)
+            continue
+        detail = _safe_json(row.source_detail_json)
+        detail["profit_metric_classification_status"] = "review"
+        detail["profit_metric_classification_reason"] = "conflicting_confirmed_profit_labels"
+        out.append(
+            replace(
+                row,
+                calc_status="review",
+                source_detail_json=json.dumps(detail, ensure_ascii=False, sort_keys=True),
+            )
+        )
+    return out
+
+
+def _apply_fiscal_year_anchors(
+    rows: list[SegmentMetricRow],
+    *,
+    filings_by_doc: dict[str, sqlite3.Row],
+    current_fiscal_year_ends: dict[str, str],
+    annual_period_ends_by_edinet_code: dict[str, list[str]],
+) -> list[SegmentMetricRow]:
+    out: list[SegmentMetricRow] = []
+    for row in rows:
+        filing = filings_by_doc.get(row.doc_id)
+        if filing is None:
+            out.append(row)
+            continue
+        anchor = resolve_segment_fiscal_year_anchor(
+            filing=filing,
+            fact_period_end=row.period_end,
+            current_fiscal_year_ends=current_fiscal_year_ends,
+            annual_period_ends_by_edinet_code=annual_period_ends_by_edinet_code,
+        )
+        detail = _safe_json(row.source_detail_json)
+        detail["fiscal_year_anchor_period_end"] = anchor.fiscal_year_end
+        detail["fiscal_year_anchor_source"] = anchor.source
+        detail["fiscal_year_anchor_status"] = anchor.status
+        calc_status = row.calc_status
+        if row.period_scope == "quarter" and row.quarter_type == "2Q" and anchor.status != "ok":
+            calc_status = "review"
+        out.append(
+            replace(
+                row,
+                fiscal_year=anchor.fiscal_year,
+                calc_status=calc_status,
+                source_detail_json=json.dumps(detail, ensure_ascii=False, sort_keys=True),
+            )
+        )
+    return out
+
+
 def _chunked(items: list[str], size: int = 500) -> list[list[str]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
@@ -947,6 +1193,8 @@ def build_segment_metric_rows(
     )
     filings_by_doc = {str(row["doc_id"]): row for row in filings}
     raw_facts = _fetch_raw_facts(conn, list(filings_by_doc))
+    current_fiscal_year_ends = _fetch_current_fiscal_year_ends(conn, list(filings_by_doc))
+    annual_period_ends_by_edinet_code = _annual_period_ends_by_edinet_code(conn)
     raw_doc_ids = {str(row["doc_id"] or "") for row in raw_facts}
     linkbase_by_doc = {
         doc_id: _linkbase_structure_for_filing(row)
@@ -1160,6 +1408,26 @@ def build_segment_metric_rows(
             continue
 
         metric_base, metric_key, value_kind, tag_priority = info
+        line_item_label = ""
+        profit_classification = ""
+        profit_classification_source = ""
+        profit_classification_status = ""
+        calc_status = "ok"
+        if metric_base in PROFIT_METRIC_INFO_BY_BASE:
+            line_item_label = _linkbase_label_for_qname(
+                str(raw["tag_qname"] or ""),
+                labels_by_doc.get(str(raw["doc_id"]), {}),
+            )
+            classified_info, profit_classification, profit_classification_source, profit_classification_status = (
+                _profit_metric_classification(
+                    tag_name=tag_name,
+                    line_item_label=line_item_label,
+                )
+            )
+            if classified_info is None:
+                calc_status = "review"
+            else:
+                metric_base, metric_key, value_kind, tag_priority = classified_info
         form_type = str(filing["form_type"] or "")
         period_scope, quarter_type = SEGMENT_PERIOD_SCOPE_BY_FORM_TYPE.get(form_type, (form_type, ""))
         row = SegmentMetricRow(
@@ -1185,7 +1453,7 @@ def build_segment_metric_rows(
             tag_qname=str(raw["tag_qname"] or ""),
             context_ref=str(raw["context_ref"] or ""),
             decimals=str(raw["decimals"] or ""),
-            calc_status="ok",
+            calc_status=calc_status,
             source_detail_json=json.dumps(
                 {
                     "axis_qname": axis_qname,
@@ -1195,6 +1463,16 @@ def build_segment_metric_rows(
                     "tag_priority": tag_priority,
                     "company_name": company_name,
                     "source": "raw_facts",
+                    **(
+                        {
+                            "line_item_label": line_item_label,
+                            "profit_metric_classification": profit_classification,
+                            "profit_metric_classification_source": profit_classification_source,
+                            "profit_metric_classification_status": profit_classification_status,
+                        }
+                        if info[0] in PROFIT_METRIC_INFO_BY_BASE
+                        else {}
+                    ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -1243,8 +1521,8 @@ def build_segment_metric_rows(
                     metric_base=metric_base,
                     value_kind=value_kind,
                     value_num=value_num,
-                    status="selected",
-                    reason="selected",
+                    status="selected" if calc_status == "ok" else "review",
+                    reason="selected" if calc_status == "ok" else "profit_metric_label_unclassified",
                 )
             )
         else:
@@ -1262,7 +1540,13 @@ def build_segment_metric_rows(
                 )
             )
 
-    rows = _add_segment_profit_fallback_rows([item[2] for item in selected.values()])
+    rows = _apply_profit_metric_conflicts([item[2] for item in selected.values()])
+    rows = _apply_fiscal_year_anchors(
+        rows,
+        filings_by_doc=filings_by_doc,
+        current_fiscal_year_ends=current_fiscal_year_ends,
+        annual_period_ends_by_edinet_code=annual_period_ends_by_edinet_code,
+    )
     rows = _apply_preferred_segment_names(rows)
     rows.sort(
         key=lambda row: (
@@ -1280,66 +1564,6 @@ def build_segment_metric_rows(
     if filings and not rows:
         warnings.append("segment_candidates_not_found")
     return SegmentMetricBuildResult(rows=rows, candidates=candidates, warnings=warnings)
-
-
-def _add_segment_profit_fallback_rows(rows: list[SegmentMetricRow]) -> list[SegmentMetricRow]:
-    existing_segment_profit_keys = {
-        (
-            row.doc_id,
-            row.segment_kind,
-            row.member_qname,
-            row.period_start,
-            row.period_end,
-        )
-        for row in rows
-        if row.metric_base == "SegmentProfit"
-    }
-    fallback_rows: list[SegmentMetricRow] = []
-    for row in rows:
-        if row.metric_base != "OperatingIncome":
-            continue
-        key = (
-            row.doc_id,
-            row.segment_kind,
-            row.member_qname,
-            row.period_start,
-            row.period_end,
-        )
-        if key in existing_segment_profit_keys:
-            continue
-        detail = _safe_json(row.source_detail_json)
-        detail["source"] = "operating_income_segment_profit_fallback"
-        detail["fallback_from_metric_base"] = row.metric_base
-        fallback_rows.append(
-            SegmentMetricRow(
-                doc_id=row.doc_id,
-                edinet_code=row.edinet_code,
-                security_code=row.security_code,
-                form_type=row.form_type,
-                period_scope=row.period_scope,
-                quarter_type=row.quarter_type,
-                fiscal_year=row.fiscal_year,
-                period_start=row.period_start,
-                period_end=row.period_end,
-                segment_kind=row.segment_kind,
-                segment_name=row.segment_name,
-                axis_qname=row.axis_qname,
-                member_qname=row.member_qname,
-                metric_base="SegmentProfit",
-                metric_key="SegmentProfitCurrent",
-                value_kind="segment_profit",
-                value_num=row.value_num,
-                value_unit=row.value_unit,
-                source_tag=row.source_tag,
-                tag_qname=row.tag_qname,
-                context_ref=row.context_ref,
-                decimals=row.decimals,
-                calc_status=row.calc_status,
-                source_detail_json=json.dumps(detail, ensure_ascii=False, sort_keys=True),
-                rule_version=row.rule_version,
-            )
-        )
-    return [*rows, *fallback_rows]
 
 
 def replace_segment_metrics(
@@ -1421,6 +1645,8 @@ def write_segment_metric_report(
     mode: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    selected_row_count: int | None = None,
+    candidate_count: int | None = None,
 ) -> Path:
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1444,8 +1670,8 @@ def write_segment_metric_report(
         f"mode: {mode}",
         f"date_from: {date_from or ''}",
         f"date_to: {date_to or ''}",
-        f"selected_rows: {len(result.rows)}",
-        f"candidates: {len(result.candidates)}",
+        f"selected_rows: {len(result.rows) if selected_row_count is None else selected_row_count}",
+        f"candidates: {len(result.candidates) if candidate_count is None else candidate_count}",
         f"warnings: {len(result.warnings)}",
         "",
         " | ".join(_pad_right(label, width) for _, label, width, _ in columns),
@@ -1481,30 +1707,87 @@ def save_segment_metrics(
     apply: bool = False,
     output_dir: str | Path = "logs/operation",
 ) -> SegmentMetricSaveResult:
-    build = build_segment_metric_rows(
-        conn,
-        doc_ids=doc_ids,
-        codes=codes,
-        date_from=date_from,
-        date_to=date_to,
-        form_codes=form_codes,
+    requested_doc_ids = [str(doc_id).strip() for doc_id in (doc_ids or []) if str(doc_id).strip()]
+    batch_doc_ids = (
+        _chunked(requested_doc_ids, SEGMENT_SAVE_DOC_ID_BATCH_SIZE)
+        if apply and len(requested_doc_ids) > SEGMENT_SAVE_DOC_ID_BATCH_SIZE
+        else [requested_doc_ids]
     )
-    saved_rows = (
-        replace_segment_metrics(conn, build.rows, replace_doc_ids=doc_ids)
-        if apply
-        else 0
+    aggregate_rows: list[SegmentMetricRow] = []
+    aggregate_candidates: list[SegmentCandidate] = []
+    aggregate_warnings: list[str] = []
+    built_row_count = 0
+    candidate_count = 0
+    saved_rows = 0
+    replaced_doc_count = 0
+    empty_doc_ids: list[str] = []
+
+    for batch in batch_doc_ids:
+        build = build_segment_metric_rows(
+            conn,
+            doc_ids=batch or None,
+            codes=codes,
+            date_from=date_from,
+            date_to=date_to,
+            form_codes=form_codes,
+        )
+        built_row_count += len(build.rows)
+        candidate_count += len(build.candidates)
+        aggregate_warnings.extend(build.warnings)
+        aggregate_candidates.extend(build.candidates[: max(500 - len(aggregate_candidates), 0)])
+
+        if batch:
+            built_doc_ids = sorted({row.doc_id for row in build.rows})
+            empty_doc_ids.extend(sorted(set(batch) - set(built_doc_ids)))
+            if apply and built_doc_ids:
+                saved_rows += replace_segment_metrics(
+                    conn,
+                    build.rows,
+                    replace_doc_ids=built_doc_ids,
+                )
+                replaced_doc_count += len(built_doc_ids)
+        elif apply:
+            saved_rows += replace_segment_metrics(conn, build.rows)
+            replaced_doc_count += len({row.doc_id for row in build.rows})
+
+        if len(batch_doc_ids) == 1:
+            aggregate_rows = build.rows
+        del build
+        gc.collect()
+
+    if apply and requested_doc_ids and built_row_count == 0:
+        raise RuntimeError("No segment metrics were built for the requested doc IDs.")
+    if apply and empty_doc_ids:
+        replace_segment_metrics(conn, [], replace_doc_ids=empty_doc_ids)
+        replaced_doc_count += len(set(empty_doc_ids))
+        aggregate_warnings.append(
+            f"removed_doc_ids_without_current_segment_rows={len(set(empty_doc_ids))}"
+        )
+    if empty_doc_ids and not apply:
+        aggregate_warnings.append(
+            f"requested_doc_ids_without_segment_rows={len(set(empty_doc_ids))}"
+        )
+    result = SegmentMetricBuildResult(
+        rows=aggregate_rows,
+        candidates=aggregate_candidates,
+        warnings=aggregate_warnings,
     )
     report_path = write_segment_metric_report(
-        result=build,
+        result=result,
         output_dir=output_dir,
         mode="apply" if apply else "dry_run",
         date_from=date_from,
         date_to=date_to,
+        selected_row_count=built_row_count,
+        candidate_count=candidate_count,
     )
     return SegmentMetricSaveResult(
-        rows=build.rows,
-        candidates=build.candidates,
+        rows=aggregate_rows,
+        candidates=aggregate_candidates,
         saved_rows=saved_rows,
-        warnings=build.warnings,
+        warnings=aggregate_warnings,
         output_path=report_path,
+        built_row_count=built_row_count,
+        candidate_count=candidate_count,
+        replaced_doc_count=replaced_doc_count,
     )

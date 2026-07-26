@@ -1726,7 +1726,9 @@ def _scale_value_for_document_unit(
 def _display_unit_for_metric(metric_base: str, document_display_unit: str | None) -> str:
     if metric_base == "NumberOfEmployees":
         return "\u4eba"
-    if metric_base in {"AverageAge", "AverageLengthOfService"}:
+    if metric_base == "AverageAge":
+        return "\u6b73"
+    if metric_base == "AverageLengthOfService":
         return "\u5e74"
     if metric_base == "AverageAnnualSalary":
         return "\u5186"
@@ -2138,6 +2140,7 @@ def _fetch_segment_metric_rows(
 
     where = [
         "sm.calc_status = 'ok'",
+        "coalesce(sm.source_detail_json, '') NOT LIKE '%operating_income_segment_profit_fallback%'",
         f"sm.metric_base IN ({','.join('?' for _ in metric_bases)})",
         f"sm.period_scope IN ({','.join('?' for _ in scope_filters)})",
     ]

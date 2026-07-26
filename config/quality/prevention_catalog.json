@@ -250,7 +250,7 @@
     {
       "id": "pcat_013_segment_classification_name_normalization",
       "title": "セグメント分類・セグメント名正規化の誤判定",
-      "status": "active",
+      "status": "triggered",
       "severity": "critical",
       "areas": [
         "segment_metrics"
@@ -557,7 +557,7 @@
     {
       "id": "pcat_028_domestic_uniqlo_segment_regional",
       "title": "国内ユニクロ事業を地域別に誤分類",
-      "status": "active",
+      "status": "triggered",
       "severity": "critical",
       "areas": [
         "segment_metrics"

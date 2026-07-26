@@ -143,6 +143,63 @@ def add_db_reflection_item(
     return item
 
 
+def update_db_reflection_item(
+    conn: sqlite3.Connection,
+    item_id: int,
+    *,
+    title: str | None = None,
+    category: str | None = None,
+    description: str | None = None,
+    required_commands: list[str] | tuple[str, ...] | None = None,
+    verification_sql: list[str] | tuple[str, ...] | None = None,
+    related_migration_ids: list[str] | tuple[str, ...] | None = None,
+    source_path: str | None = None,
+    source_key: str | None = None,
+    notes: str | None = None,
+) -> DbReflectionItem | None:
+    _ensure_ready(conn)
+    existing = get_db_reflection_item(conn, item_id)
+    if existing is None:
+        return None
+    values = {
+        "title": existing.title if title is None else str(title).strip(),
+        "category": existing.category if category is None else _validate_category(category),
+        "description": existing.description if description is None else str(description).strip(),
+        "required_commands_json": _json_dumps(existing.required_commands if required_commands is None else [str(item) for item in required_commands]),
+        "verification_sql_json": _json_dumps(existing.verification_sql if verification_sql is None else [str(item) for item in verification_sql]),
+        "related_migration_ids_json": _json_dumps(existing.related_migration_ids if related_migration_ids is None else [str(item) for item in related_migration_ids]),
+        "source_path": existing.source_path if source_path is None else str(source_path).strip(),
+        "source_key": existing.source_key if source_key is None else str(source_key).strip(),
+        "notes": existing.notes if notes is None else str(notes).strip(),
+    }
+    if not values["title"]:
+        raise ValueError("title is required")
+    conn.execute(
+        """
+        UPDATE db_reflection_items
+        SET title = ?, category = ?, description = ?, required_commands_json = ?,
+            verification_sql_json = ?, related_migration_ids_json = ?, source_path = ?,
+            source_key = ?, notes = ?, updated_at = ?
+        WHERE item_id = ?
+        """,
+        (
+            values["title"],
+            values["category"],
+            values["description"],
+            values["required_commands_json"],
+            values["verification_sql_json"],
+            values["related_migration_ids_json"],
+            values["source_path"],
+            values["source_key"] or None,
+            values["notes"],
+            _now(),
+            item_id,
+        ),
+    )
+    conn.commit()
+    return get_db_reflection_item(conn, item_id)
+
+
 def list_db_reflection_items(conn: sqlite3.Connection) -> list[DbReflectionItem]:
     _ensure_ready(conn)
     conn.row_factory = sqlite3.Row

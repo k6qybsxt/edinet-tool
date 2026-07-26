@@ -29,6 +29,8 @@ from edinet_monitor.services.metric_excel_export_service import (  # noqa: E402
     VALUE_KIND_CALCULATED,
     _build_jquants_lookup_indexes,
     _build_quarter_standalone_lookup_indexes,
+    _display_unit_for_metric,
+    _fetch_segment_metric_rows,
     _fetch_jquants_metric_rows,
     _jquants_local_code_candidates,
     _latest_forecast_value_as_of,
@@ -898,6 +900,54 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual([row.period_scope for row in segment_rows], ["quarter:2Q"])
         self.assertEqual(segment_rows[0].periods_by_offset[0], "2Q 2025-09-30")
         self.assertEqual(segment_rows[0].values_by_offset[0], 20.0)
+
+    def test_segment_rows_hide_legacy_profit_fallback_and_review_rows(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO segment_metrics (
+                doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
+                fiscal_year, period_start, period_end, segment_kind, segment_name,
+                axis_qname, member_qname, metric_base, metric_key, value_kind,
+                value_num, value_unit, source_tag, tag_qname, context_ref, decimals,
+                calc_status, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, 'E00001', '1111', '043A00', 'quarter', '2Q',
+                2026, '2025-04-01', '2025-09-30', 'business', 'Paint',
+                'axis', 'member', ?, ?, 'segment_profit',
+                20_000_000.0, 'yen', 'OperatingIncome', 'tag', 'context', '-6',
+                ?, ?, 'test', 'now', 'now'
+            )
+            """,
+            [
+                ("operating_ok", "OperatingIncome", "SegmentOperatingIncomeCurrent", "ok", "{}"),
+                (
+                    "legacy_fallback",
+                    "SegmentProfit",
+                    "SegmentProfitCurrent",
+                    "ok",
+                    '{"source":"operating_income_segment_profit_fallback"}',
+                ),
+                ("review", "SegmentProfit", "SegmentProfitCurrent", "review", "{}"),
+            ],
+        )
+        self.conn.commit()
+
+        rows = _fetch_segment_metric_rows(
+            self.conn,
+            MetricExcelCondition(
+                security_codes=["1111"],
+                period_scopes=["quarter"],
+                period_offsets=[0],
+                segment_mode="business",
+            ),
+            metric_bases=["OperatingIncome", "SegmentProfit"],
+        )
+
+        self.assertEqual([row["metric_base"] for row in rows], ["OperatingIncome"])
+
+    def test_employee_metric_display_units_distinguish_age_and_service_length(self) -> None:
+        self.assertEqual(_display_unit_for_metric("AverageAge", ""), "\u6b73")
+        self.assertEqual(_display_unit_for_metric("AverageLengthOfService", ""), "\u5e74")
 
     def test_segment_rows_merge_sony_renamed_entertainment_segment(self) -> None:
         current_name = (

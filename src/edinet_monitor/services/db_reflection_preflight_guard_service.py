@@ -38,6 +38,7 @@ CLI_PREVENTION_CATALOG_AREAS: dict[str, tuple[str, ...]] = {
     "import_tse_listing_master": ("issuer_master", "db_reflection"),
     "run_jquants_backfill": ("jquants", "market_data", "db_reflection"),
     "run_zip_backfill": ("edinet_download", "db_reflection"),
+    "save_segment_metrics": ("segment_metrics", "db_reflection"),
     "run_screening": ("screening", "db_reflection"),
     "run_xbrl_retention_cleanup": ("storage_retention", "db_reflection"),
 }

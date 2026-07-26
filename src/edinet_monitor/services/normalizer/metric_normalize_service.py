@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from edinet_monitor.config.settings import DEFAULT_RULE_VERSION
@@ -42,17 +42,20 @@ ISSUED_FILING_DATE_TAGS = {
     "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
     "NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
 }
-OMORI_KOGYO_EDINET_CODE = "E00239"
-OMORI_KOGYO_SECURITY_CODE = "1844"
-OMORI_BEGINNING_CASH_EXPLICIT_TAGS = (
+BEGINNING_CASH_EXPLICIT_TAGS = (
     "CashAndCashEquivalentsAtBeginningOfPeriod",
     "CashAndCashEquivalentsAtBeginningOfYear",
     "CashAndCashEquivalentsAtBeginningOfFiscalYear",
     "CashAndCashEquivalentsAtBeginningOfInterimPeriod",
 )
-OMORI_BEGINNING_CASH_PRIOR_YEAR_TAGS = (
+BEGINNING_CASH_PRIMARY_TAGS = (
     "CashAndCashEquivalents",
+    "CashAndCashEquivalentsIFRS",
+)
+BEGINNING_CASH_SUMMARY_TAGS = (
     "CashAndCashEquivalentsSummaryOfBusinessResults",
+    "CashAndCashEquivalentsIFRSSummaryOfBusinessResults",
+    "CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults",
 )
 
 
@@ -548,67 +551,128 @@ def _is_forbidden_candidate(
     return False
 
 
-def _is_omori_half_report(*, edinet_code: str, security_code: str, form_type: str | None) -> bool:
-    security_text = str(security_code or "").strip()
-    return (
-        is_half_form_type(form_type)
-        and (
-            str(edinet_code or "").strip() == OMORI_KOGYO_EDINET_CODE
-            or security_text[:4] == OMORI_KOGYO_SECURITY_CODE
-        )
+def _is_six_month_ytd_duration(row: dict[str, Any], filing_period_end: str | None) -> bool:
+    if not str(row.get("context_ref") or "").startswith("CurrentYTDDuration"):
+        return False
+    if str(row.get("period_type") or "").strip().lower() != "duration":
+        return False
+    period_start = _parse_iso_date(row.get("period_start"))
+    period_end = _parse_iso_date(row.get("period_end"))
+    filing_end = _parse_iso_date(filing_period_end)
+    if not period_start or not period_end or period_end != filing_end:
+        return False
+    next_day = period_end + timedelta(days=1)
+    months = (next_day.year - period_start.year) * 12 + (next_day.month - period_start.month)
+    return months == 6 and next_day.day == period_start.day
+
+
+def _is_six_month_from_prior_year_instant(row: dict[str, Any], filing_period_end: str | None) -> bool:
+    prior_year_end = _parse_iso_date(row.get("instant_date"))
+    filing_end = _parse_iso_date(filing_period_end)
+    if not prior_year_end or not filing_end:
+        return False
+    period_start = prior_year_end + timedelta(days=1)
+    next_day = filing_end + timedelta(days=1)
+    months = (next_day.year - period_start.year) * 12 + (next_day.month - period_start.month)
+    return months == 6 and next_day.day == period_start.day
+
+
+def _is_current_2q_filing(
+    raw_rows: list[dict[str, Any]],
+    *,
+    filing_period_end: str | None,
+    form_type: str | None,
+) -> bool:
+    if not is_half_form_type(form_type):
+        return False
+    if any(_is_six_month_ytd_duration(row, filing_period_end) for row in raw_rows):
+        return True
+    return any(
+        source_group != "explicit"
+        and _is_six_month_from_prior_year_instant(row, filing_period_end)
+        for _, source_group, row in _beginning_cash_source_rows(raw_rows)
     )
 
 
-def _omori_beginning_cash_row(
+def _beginning_cash_source_rows(
     raw_rows: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    for tag_name in OMORI_BEGINNING_CASH_EXPLICIT_TAGS:
-        for row in raw_rows:
-            if str(row.get("tag_name") or "") != tag_name:
-                continue
-            value_num = _to_number(row.get("value_text"))
-            if value_num is None:
-                continue
-            if row.get("unit_ref") and not _has_jpy_unit(row):
-                continue
-            return row
+) -> list[tuple[int, str, dict[str, Any]]]:
+    source_groups = (
+        ("explicit", BEGINNING_CASH_EXPLICIT_TAGS),
+        ("primary", BEGINNING_CASH_PRIMARY_TAGS),
+        ("summary", BEGINNING_CASH_SUMMARY_TAGS),
+    )
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+    for group_index, (source_group, tag_names) in enumerate(source_groups):
+        for tag_index, tag_name in enumerate(tag_names):
+            source_priority = group_index * 100 + tag_index
+            for row in raw_rows:
+                if str(row.get("tag_name") or "") != tag_name:
+                    continue
+                context_ref = str(row.get("context_ref") or "")
+                if source_group == "explicit":
+                    if not context_ref.startswith("Current"):
+                        continue
+                elif (
+                    "Prior1YearInstant" not in context_ref
+                    or str(row.get("period_type") or "").strip().lower() != "instant"
+                ):
+                    continue
+                if _to_number(row.get("value_text")) is None:
+                    continue
+                if row.get("unit_ref") and not _has_jpy_unit(row):
+                    continue
+                if _has_detail_dimension(row):
+                    continue
+                ranked.append((source_priority, source_group, row))
+    return ranked
 
-    for tag_name in OMORI_BEGINNING_CASH_PRIOR_YEAR_TAGS:
-        for row in raw_rows:
-            if str(row.get("tag_name") or "") != tag_name:
-                continue
-            if "Prior1YearInstant" not in str(row.get("context_ref") or ""):
-                continue
-            if str(row.get("period_type") or "").strip().lower() != "instant":
-                continue
-            value_num = _to_number(row.get("value_text"))
-            if value_num is None:
-                continue
-            if row.get("unit_ref") and not _has_jpy_unit(row):
-                continue
-            return row
 
-    return None
+def select_beginning_cash_source(
+    raw_rows: list[dict[str, Any]],
+) -> tuple[int, str, dict[str, Any]] | None:
+    ranked_rows = _beginning_cash_source_rows(raw_rows)
+    if not ranked_rows:
+        return None
+    return min(
+        ranked_rows,
+        key=lambda item: (
+            _consolidation_rank(item[2].get("consolidation")),
+            item[0],
+            str(item[2].get("source_tag") or item[2].get("tag_name") or ""),
+        ),
+    )
 
 
-def _build_omori_beginning_cash_candidate(
+def select_2q_beginning_cash_source(
     raw_rows: list[dict[str, Any]],
     *,
-    edinet_code: str,
-    security_code: str,
     filing_period_end: str | None,
     form_type: str | None,
-) -> dict[str, Any] | None:
-    if not _is_omori_half_report(
-        edinet_code=edinet_code,
-        security_code=security_code,
+) -> tuple[int, str, dict[str, Any]] | None:
+    if not _is_current_2q_filing(
+        raw_rows,
+        filing_period_end=filing_period_end,
         form_type=form_type,
     ):
         return None
-    row = _omori_beginning_cash_row(raw_rows)
-    if row is None:
-        return None
+    return select_beginning_cash_source(raw_rows)
 
+
+def _build_2q_beginning_cash_candidate(
+    raw_rows: list[dict[str, Any]],
+    *,
+    filing_period_end: str | None,
+    form_type: str | None,
+) -> dict[str, Any] | None:
+    selected = select_2q_beginning_cash_source(
+        raw_rows,
+        filing_period_end=filing_period_end,
+        form_type=form_type,
+    )
+    if selected is None:
+        return None
+    source_priority, source_group, row = selected
     value_num = _to_number(row.get("value_text"))
     if value_num is None:
         return None
@@ -616,8 +680,8 @@ def _build_omori_beginning_cash_candidate(
     tag_name = str(row.get("tag_name") or "")
     return {
         "doc_id": row["doc_id"],
-        "edinet_code": edinet_code,
-        "security_code": security_code,
+        "edinet_code": row.get("edinet_code"),
+        "security_code": row.get("security_code"),
         "metric_key": _build_metric_key("BeginningCashBalance", "Current"),
         "fiscal_year": _extract_fiscal_year(period_end),
         "period_end": period_end,
@@ -626,11 +690,11 @@ def _build_omori_beginning_cash_candidate(
         "consolidation": row.get("consolidation"),
         "rule_version": DEFAULT_RULE_VERSION,
         "_metric_base": "BeginningCashBalance",
-        "_tag_priority": 0,
+        "_tag_priority": source_priority,
         "_structure_priority": 0,
         "_manual_override_priority": 0,
         "_consolidation_rank": _consolidation_rank(row.get("consolidation")),
-        "_period_source": "omori_half_beginning_cash",
+        "_period_source": f"2q_beginning_cash_{source_group}",
         "_period_fallback_used": 0,
         "_candidate_validation_status": CANDIDATE_VALIDATION_STATUS_OK,
         "_candidate_validation_issues": "OK",
@@ -768,7 +832,9 @@ def normalize_raw_fact_row(
         return None
 
     suffix, expected_period_type = suffix_info
-    if period_scope == "half":
+    # Issued-share facts in FilingDateInstant contexts are current-period facts
+    # whose raw instant is the filing date, not the half-year end date.
+    if period_scope == "half" and period_source != "filing_date_context":
         half_suffix = _half_suffix_from_dates(
             row,
             filing_period_end=filing_period_end,
@@ -995,15 +1061,15 @@ def build_normalization_candidates(
         candidates,
         structure_map=structure_map,
     )
-    omori_beginning_cash_candidate = _build_omori_beginning_cash_candidate(
+    beginning_cash_candidate = _build_2q_beginning_cash_candidate(
         raw_rows,
-        edinet_code=edinet_code,
-        security_code=security_code,
         filing_period_end=effective_filing_period_end,
         form_type=form_type,
     )
-    if omori_beginning_cash_candidate is not None:
-        candidates.append(omori_beginning_cash_candidate)
+    if beginning_cash_candidate is not None:
+        beginning_cash_candidate["edinet_code"] = edinet_code
+        beginning_cash_candidate["security_code"] = security_code
+        candidates.append(beginning_cash_candidate)
 
     enriched: list[dict[str, Any]] = []
     for candidate in candidates:

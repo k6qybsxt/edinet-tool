@@ -206,6 +206,30 @@ class DbReflectionPreflightGuardCliIntegrationTest(unittest.TestCase):
                 self.assertIn("body", order)
                 self.assertEqual(order[-1], "mark")
 
+    def test_save_segment_metrics_does_not_mark_guard_when_target_has_no_saved_rows(self) -> None:
+        guard_result = object()
+        with (
+            mock.patch.object(sys, "argv", ["save_segment_metrics", "--doc-id", "S100EMPTY", "--apply"]),
+            mock.patch(
+                "edinet_monitor.cli.save_segment_metrics.run_db_reflection_preflight_guard",
+                return_value=guard_result,
+            ),
+            mock.patch("edinet_monitor.cli.save_segment_metrics.create_tables"),
+            mock.patch("edinet_monitor.cli.save_segment_metrics.get_connection", return_value=_FakeConnection()),
+            mock.patch(
+                "edinet_monitor.cli.save_segment_metrics.save_segment_metrics",
+                return_value=_segment_result(),
+            ),
+            mock.patch(
+                "edinet_monitor.cli.save_segment_metrics.mark_db_reflection_preflight_guard_success"
+            ) as mark,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "No segment metrics were saved"):
+                save_segment_metrics.main()
+
+        mark.assert_not_called()
+
     def test_cleanup_apply_clis_run_guard_before_delete_and_mark_success(self) -> None:
         cases = [
             (

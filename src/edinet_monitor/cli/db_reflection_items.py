@@ -13,6 +13,7 @@ from edinet_monitor.services.db_reflection_item_service import (
     get_db_reflection_item,
     import_db_reflection_items_from_txt,
     list_db_reflection_items,
+    update_db_reflection_item,
 )
 
 
@@ -42,6 +43,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     show_parser = subparsers.add_parser("show", parents=[parent])
     show_parser.add_argument("--item-id", type=int, required=True)
+
+    update_parser = subparsers.add_parser("update", parents=[parent])
+    update_parser.add_argument("--item-id", type=int, required=True)
+    update_parser.add_argument("--title", default=None)
+    update_parser.add_argument("--category", choices=sorted(ALLOWED_CATEGORIES), default=None)
+    update_parser.add_argument("--description", default=None)
+    update_parser.add_argument("--required-command", action="append", default=None)
+    update_parser.add_argument("--verification-sql", action="append", default=None)
+    update_parser.add_argument("--related-migration-id", action="append", default=None)
+    update_parser.add_argument("--source-path", default=None)
+    update_parser.add_argument("--source-key", default=None)
+    update_parser.add_argument("--notes", default=None)
 
     complete_parser = subparsers.add_parser("complete", parents=[parent])
     complete_parser.add_argument("--item-id", type=int, required=True)
@@ -115,6 +128,26 @@ def main() -> None:
                 print(f"not_found={args.item_id}")
             else:
                 _print_item_detail(item)
+        elif args.command == "update":
+            item = update_db_reflection_item(
+                conn,
+                args.item_id,
+                title=args.title,
+                category=args.category,
+                description=args.description,
+                required_commands=args.required_command,
+                verification_sql=args.verification_sql,
+                related_migration_ids=args.related_migration_id,
+                source_path=args.source_path,
+                source_key=args.source_key,
+                notes=args.notes,
+            )
+            if item is None:
+                print(f"not_found={args.item_id}")
+            else:
+                print(f"updated_item_id={item.item_id}")
+                print(f"title={item.title}")
+                print(f"category={item.category}")
         elif args.command == "complete":
             completed = complete_db_reflection_item(conn, args.item_id)
             if completed:

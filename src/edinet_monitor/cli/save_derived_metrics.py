@@ -37,6 +37,10 @@ from edinet_monitor.services.db_reflection_preflight_guard_service import (
     mark_db_reflection_preflight_guard_success,
     run_db_reflection_preflight_guard,
 )
+from edinet_monitor.services.doc_id_file_service import (
+    load_doc_ids_file,
+    normalize_doc_ids as _normalize_shared_doc_ids,
+)
 
 
 RUN_ALL_TARGET_FETCH_LIMIT = 1_000_000
@@ -53,21 +57,15 @@ def _chunk_count(total: int, chunk_size: int) -> int:
 
 
 def _normalize_doc_ids(doc_ids: list[str] | tuple[str, ...] | str | None) -> tuple[str, ...]:
-    if doc_ids is None:
-        return ()
-    if isinstance(doc_ids, str):
-        values = doc_ids.split(",")
-    else:
-        values = list(doc_ids)
-    seen: set[str] = set()
-    out: list[str] = []
-    for value in values:
-        doc_id = str(value or "").strip()
-        if not doc_id or doc_id in seen:
-            continue
-        seen.add(doc_id)
-        out.append(doc_id)
-    return tuple(out)
+    return _normalize_shared_doc_ids(doc_ids)
+
+
+def _resolve_doc_ids(
+    doc_ids: list[str] | tuple[str, ...] | str | None,
+    doc_ids_file: str | None,
+) -> tuple[str, ...]:
+    file_doc_ids = load_doc_ids_file(doc_ids_file) if doc_ids_file else ()
+    return _normalize_shared_doc_ids(doc_ids, file_doc_ids)
 
 
 def _form_code_filter_sql(form_codes: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
@@ -617,6 +615,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-all", action="store_true")
     parser.add_argument("--form-codes", default="", help="Comma-separated form codes. Example: 043A00")
     parser.add_argument("--doc-ids", default="", help="Comma-separated doc IDs to reprocess regardless of parse_status.")
+    parser.add_argument("--doc-ids-file", default="", help="UTF-8 text file with one doc ID per line.")
     parser.add_argument("--db-insert-chunk-size", type=int, default=50000)
     parser.add_argument("--db-doc-id-chunk-size", type=int, default=500)
     return parser
@@ -625,7 +624,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     guard_result = run_db_reflection_preflight_guard(cli_name="save_derived_metrics")
-    target_doc_ids = _normalize_doc_ids(args.doc_ids or None)
+    target_doc_ids = _resolve_doc_ids(args.doc_ids or None, args.doc_ids_file or None)
     run_save_derived_metrics(
         batch_size=args.batch_size,
         run_all=args.run_all,

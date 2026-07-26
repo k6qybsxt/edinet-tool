@@ -204,6 +204,88 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         )
         self.assertEqual(issued[0]["period_end"], "2024-03-31")
 
+    def test_half_filing_date_issued_shares_uses_filing_period_end_for_both_half_forms(self) -> None:
+        for form_type, filing_period_end, filing_date in (
+            ("043000", "2020-07-31", "2020-10-20"),
+            ("043A00", "2025-09-30", "2025-11-12"),
+        ):
+            with self.subTest(form_type=form_type):
+                rows = normalize_raw_fact_rows(
+                    [
+                        build_raw_fact(
+                            tag_name="NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+                            value_text="1000000",
+                            context_ref="FilingDateInstant",
+                            period_type="instant",
+                            period_start=None,
+                            period_end=None,
+                            instant_date=filing_date,
+                            consolidation="NonConsolidated",
+                            unit_ref="shares",
+                        )
+                    ],
+                    edinet_code="E00000",
+                    security_code="1111",
+                    filing_period_end=filing_period_end,
+                    form_type=form_type,
+                    enforce_candidate_validation=True,
+                )
+
+                issued = [row for row in rows if row["metric_key"] == "IssuedSharesCurrent"]
+                self.assertEqual(len(issued), 1)
+                self.assertEqual(issued[0]["value_num"], 1_000_000.0)
+                self.assertEqual(issued[0]["period_end"], filing_period_end)
+                self.assertEqual(issued[0]["rule_version"], "v12")
+
+    def test_half_filing_date_issued_shares_keeps_candidate_guards(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NumberOfSharesIssuedSharesVotingRights",
+                value_text="1000000",
+                context_ref="FilingDateInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-11-12",
+                unit_ref="shares",
+            ),
+            build_raw_fact(
+                tag_name="NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+                value_text="1000000",
+                context_ref="FilingDateInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-11-12",
+                unit_ref="JPY",
+            ),
+            build_raw_fact(
+                tag_name="NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+                value_text="1000000",
+                context_ref="FilingDateInstant_Row1Member",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2025-11-12",
+                unit_ref="shares",
+                context_dimensions_json='{"explicit_members":[{"member":"jpcrp_cor:Row1Member"}]}',
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="1111",
+            filing_period_end="2025-09-30",
+            form_type="043A00",
+            enforce_candidate_validation=True,
+        )
+
+        self.assertNotIn(
+            "IssuedSharesCurrent",
+            {row["metric_key"] for row in normalized_rows},
+        )
+
     def test_operating_cost_maps_to_cost_of_sales(self) -> None:
         row = build_raw_fact(tag_name="OperatingCost")
 
@@ -995,21 +1077,39 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(by_key["NetSalesCurrent"]["value_num"], 3175691000.0)
         self.assertEqual(by_key["CashAndCashEquivalentsCurrent"]["value_num"], 1661581000.0)
 
-    def test_omori_half_prior_year_cash_instant_is_saved_as_beginning_cash_balance(self) -> None:
-        row = build_raw_fact(
-            tag_name="CashAndCashEquivalents",
-            value_text="3353204000",
-            context_ref="Prior1YearInstant",
-            period_type="instant",
-            period_start=None,
-            period_end=None,
-            instant_date="2024-07-31",
-        )
+    def test_2q_prior_year_cash_instant_is_saved_as_beginning_cash_balance(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NetSales",
+                value_text="3175691000",
+                context_ref="CurrentYTDDuration",
+                period_start="2024-08-01",
+                period_end="2025-01-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalents",
+                value_text="2132832000",
+                context_ref="Prior1QuarterInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-01-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalents",
+                value_text="3353204000",
+                context_ref="Prior1YearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-07-31",
+            ),
+        ]
 
         normalized_rows = normalize_raw_fact_rows(
-            [row],
-            edinet_code="E00239",
-            security_code="18440",
+            rows,
+            edinet_code="E09999",
+            security_code="99990",
             filing_period_end="2025-01-31",
             form_type="043A00",
             enable_period_fallback=True,
@@ -1020,23 +1120,125 @@ class MetricNormalizeServiceTest(unittest.TestCase):
         self.assertEqual(by_key["BeginningCashBalanceCurrent"]["period_end"], "2025-01-31")
         self.assertEqual(by_key["BeginningCashBalanceCurrent"]["source_tag"], "CashAndCashEquivalents")
 
-    def test_omori_beginning_cash_balance_special_case_does_not_apply_to_other_companies(self) -> None:
-        row = build_raw_fact(
-            tag_name="CashAndCashEquivalents",
-            value_text="3353204000",
-            context_ref="Prior1YearInstant",
-            period_type="instant",
-            period_start=None,
-            period_end=None,
-            instant_date="2024-07-31",
-        )
+    def test_2q_explicit_beginning_cash_has_priority_over_primary_and_summary_tags(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NetSales",
+                context_ref="CurrentYTDDuration",
+                period_start="2024-08-01",
+                period_end="2025-01-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalentsAtBeginningOfPeriod",
+                value_text="100",
+                context_ref="CurrentYTDDuration",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalents",
+                value_text="200",
+                context_ref="Prior1YearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-07-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalentsSummaryOfBusinessResults",
+                value_text="300",
+                context_ref="Prior1YearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-07-31",
+            ),
+        ]
 
         normalized_rows = normalize_raw_fact_rows(
-            [row],
-            edinet_code="E09999",
-            security_code="9999",
+            rows,
+            edinet_code="E00000",
+            security_code="99990",
             filing_period_end="2025-01-31",
             form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        by_key = {row["metric_key"]: row for row in normalized_rows}
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["value_num"], 100.0)
+        self.assertEqual(
+            by_key["BeginningCashBalanceCurrent"]["source_tag"],
+            "CashAndCashEquivalentsAtBeginningOfPeriod",
+        )
+
+    def test_2q_ifrs_summary_tag_is_used_when_primary_tag_is_invalid(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NetSales",
+                context_ref="CurrentYTDDuration",
+                period_start="2024-08-01",
+                period_end="2025-01-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalentsIFRS",
+                value_text="200",
+                context_ref="Prior1YearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-07-31",
+                unit_ref="USD",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalentsIFRSSummaryOfBusinessResults",
+                value_text="300",
+                context_ref="Prior1YearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-07-31",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="99990",
+            filing_period_end="2025-01-31",
+            form_type="043A00",
+            enable_period_fallback=True,
+        )
+
+        by_key = {row["metric_key"]: row for row in normalized_rows}
+        self.assertEqual(by_key["BeginningCashBalanceCurrent"]["value_num"], 300.0)
+        self.assertEqual(
+            by_key["BeginningCashBalanceCurrent"]["source_tag"],
+            "CashAndCashEquivalentsIFRSSummaryOfBusinessResults",
+        )
+
+    def test_1q_does_not_create_beginning_cash_balance_candidate(self) -> None:
+        rows = [
+            build_raw_fact(
+                tag_name="NetSales",
+                context_ref="CurrentYTDDuration",
+                period_start="2024-08-01",
+                period_end="2024-10-31",
+            ),
+            build_raw_fact(
+                tag_name="CashAndCashEquivalents",
+                value_text="200",
+                context_ref="Prior1YearInstant",
+                period_type="instant",
+                period_start=None,
+                period_end=None,
+                instant_date="2024-07-31",
+            ),
+        ]
+
+        normalized_rows = normalize_raw_fact_rows(
+            rows,
+            edinet_code="E00000",
+            security_code="99990",
+            filing_period_end="2024-10-31",
+            form_type="043000",
             enable_period_fallback=True,
         )
 
