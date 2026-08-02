@@ -2066,12 +2066,48 @@ def _segment_order_from_row(row: sqlite3.Row) -> int | None:
         return None
 
 
-def _segment_scale_value(value: float | None, value_unit: str) -> tuple[float | None, str]:
+def _segment_scale_value(
+    value: float | None,
+    value_unit: str,
+    *,
+    document_display_unit: str | None = None,
+) -> tuple[float | None, str]:
     if value is None:
         return None, ""
     if str(value_unit or "").lower() == "yen":
+        if str(document_display_unit or "").strip() == "千円":
+            return value / 1_000, "千円"
         return value / 1_000_000, "百万円"
     return value, str(value_unit or "")
+
+
+def _segment_profit_display_key(row: sqlite3.Row) -> tuple[str, str, str, str, str]:
+    member_qname = str(row["member_qname"] or "")
+    if str(row["segment_kind"] or "") == "total":
+        member_qname = "TOTAL"
+    return (
+        str(row["doc_id"] or ""),
+        str(row["segment_kind"] or ""),
+        member_qname,
+        str(row["period_start"] or ""),
+        str(row["period_end"] or ""),
+    )
+
+
+def _hide_redundant_segment_profit_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    operating_income_keys = {
+        _segment_profit_display_key(row)
+        for row in rows
+        if str(row["metric_base"] or "") == "OperatingIncome"
+    }
+    return [
+        row
+        for row in rows
+        if not (
+            str(row["metric_base"] or "") == "SegmentProfit"
+            and _segment_profit_display_key(row) in operating_income_keys
+        )
+    ]
 
 
 def _segment_period_display(row: sqlite3.Row) -> str:
@@ -2175,14 +2211,17 @@ def _fetch_segment_metric_rows(
         if condition.security_codes and _index_exists(conn, "idx_segment_metrics_code_period")
         else ""
     )
-    return conn.execute(
+    rows = conn.execute(
         f"""
         SELECT
           sm.*,
+          f.document_display_unit AS filing_document_display_unit,
           im.company_name,
           im.industry_33,
           im.market
         FROM segment_metrics AS sm{index_hint}
+        LEFT JOIN filings f
+          ON f.doc_id = sm.doc_id
         LEFT JOIN issuer_master im
           ON im.edinet_code = sm.edinet_code
         WHERE {' AND '.join(where)}
@@ -2191,6 +2230,7 @@ def _fetch_segment_metric_rows(
         """,
         params,
     ).fetchall()
+    return _hide_redundant_segment_profit_rows(rows)
 
 
 def _build_segment_metric_excel_rows(
@@ -2324,7 +2364,11 @@ def _build_segment_metric_excel_rows(
                 raw_values_by_offset[offset] = None
                 continue
             raw_value = raw["value_num"]
-            scaled_value, unit = _segment_scale_value(raw_value, str(raw["value_unit"] or ""))
+            scaled_value, unit = _segment_scale_value(
+                raw_value,
+                str(raw["value_unit"] or ""),
+                document_display_unit=str(raw["filing_document_display_unit"] or ""),
+            )
             periods_by_offset[offset] = _segment_period_display(raw)
             values_by_offset[offset] = scaled_value
             units_by_offset[offset] = unit

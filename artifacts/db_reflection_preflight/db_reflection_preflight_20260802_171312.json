@@ -1,0 +1,469 @@
+{
+  "preflight_id": "db_reflection_preflight_20260802_171312",
+  "generated_at": "2026-08-02T17:13:12",
+  "status": "ok",
+  "summary": {
+    "preflight_id": "db_reflection_preflight_20260802_171312",
+    "generated_at": "2026-08-02T17:13:12",
+    "status": "ok",
+    "pipeline_failure_policy": "report_only",
+    "db_reflection_blocked": false,
+    "guard_cli_name": "",
+    "command_names": [],
+    "catalog_areas": [],
+    "catalog_triggers": [],
+    "db_path": "E:\\EDINET_Data\\edinet_monitor\\db\\edinet_monitor.db",
+    "db_size_bytes": 175041847296,
+    "db_size_gb": 163.02,
+    "heavy_db_size_warning_threshold_gb": 100,
+    "long_date_range_warning_days": 1825,
+    "catalog_path": "C:\\Users\\silve\\EDINET_Pipeline\\config\\quality\\prevention_catalog.json",
+    "item_id": 20,
+    "pending_count": 1,
+    "matched_pending_count": 1,
+    "catalog_item_count": 20,
+    "critical": 0,
+    "warning": 0,
+    "info": 0
+  },
+  "issues": [],
+  "pending_items": [
+    {
+      "item_id": 20,
+      "title": "セグメント注記の表意味誤判定とクラスター表未取得を是正",
+      "category": "recalculation",
+      "status": "pending",
+      "description": "初回45844件とFootnotes追加1643件の再構築後、通常ビルダーを使う厳密監査で1640件中1639件が一致。残るtarget_count=1（S100LNU4）だけを再構築し、同じ厳密監査で収束を確認する。",
+      "notes": "最終対象マニフェスト=C:\\Users\\silve\\EDINET_Pipeline\\artifacts\\segment_note_semantics\\segment_note_semantics_20260802_171236\\rebuild_doc_ids.txt。PowerShellでは先頭ゼロを保持するため --form-codes 030000,043A00,043000 と引用する。再構築後は --exact でtarget_count=1の厳密比較を行いrebuild=0、資産表誤採用=0、review行はExcel非表示を確認する。",
+      "required_commands": [
+        "python -m edinet_monitor.cli.save_segment_metrics --doc-ids-file C:\\Users\\silve\\EDINET_Pipeline\\artifacts\\segment_note_semantics\\segment_note_semantics_20260802_171236\\rebuild_doc_ids.txt --form-codes 030000,043A00,043000 --apply"
+      ],
+      "verification_sql": [
+        "SELECT COUNT(DISTINCT doc_id) AS rebuilt_doc_count, SUM(CASE WHEN calc_status='ok' AND value_num IS NOT NULL THEN 1 ELSE 0 END) AS valid_row_count, SUM(CASE WHEN calc_status='review' THEN 1 ELSE 0 END) AS review_row_count FROM segment_metrics WHERE rule_version='segment-metrics-2026-08-02-v3';"
+      ],
+      "source_key": "segment-note-semantics-cluster-and-profit-precedence-20260802",
+      "created_at": "2026-08-02T12:27:29",
+      "updated_at": "2026-08-02T17:13:01"
+    }
+  ],
+  "catalog_items": [
+    {
+      "id": "pcat_004_manifest_name_mismatch",
+      "title": "manifest名の取り違え",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "edinet_download",
+        "cli"
+      ],
+      "triggers": [
+        "cli_execution",
+        "pre_db_reflection"
+      ],
+      "problem": "document_manifest_{date} と document_manifest_{form_codes}_{date} の命名差で対象を間違えるリスクがあった。",
+      "prevention": "実行前に Get-ChildItem で実ファイル名を確認してからループを組む。",
+      "review_points": [
+        "実ファイル名を列挙したか",
+        "manifest粒度とform_codes有無が一致しているか",
+        "対象外manifestを誤って処理していないか"
+      ]
+    },
+    {
+      "id": "pcat_005_jquants_heavy_view_n_plus_one",
+      "title": "J-Quants品質確認で重いVIEWをN+1検索",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "jquants",
+        "db_performance"
+      ],
+      "triggers": [
+        "pre_implementation_review",
+        "pre_db_reflection"
+      ],
+      "problem": "EquityRatio異常件数の詳細取得で重いVIEWを1件ずつ検索し長時間化した。",
+      "prevention": "一括JOIN、対象期間分割、件数確認、LIMIT付き試走を行う。",
+      "review_points": [
+        "N+1検索になっていないか",
+        "LIMIT付き試走があるか",
+        "対象期間分割と件数確認があるか"
+      ]
+    },
+    {
+      "id": "pcat_006_large_db_full_scan",
+      "title": "巨大DBへの全件走査を見積もらず実行",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_performance",
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "cli_execution"
+      ],
+      "problem": "約130GiB DBに対する全件走査の重さを見積もらずに実行した。",
+      "prevention": "年度分割、読み取り専用接続、並列数制限、件数確認を先に行う。",
+      "review_points": [
+        "全件処理の有無を確認したか",
+        "対象件数を事前確認したか",
+        "読み取り専用接続や分割実行になっているか"
+      ]
+    },
+    {
+      "id": "pcat_007_save_derived_metrics_b9_slowdown",
+      "title": "save_derived_metrics初回B9対応で遅くなった",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "derived_metrics",
+        "db_performance"
+      ],
+      "triggers": [
+        "pre_implementation_review",
+        "pre_db_reflection"
+      ],
+      "problem": "batchごとに重い対象filings取得を繰り返していた。",
+      "prevention": "全体対象取得は1回だけにし、batch内で繰り返すSQLは軽いものだけにする。",
+      "review_points": [
+        "重い対象取得がbatch外にあるか",
+        "batch内SQLの実行回数を確認したか",
+        "performance logで前回条件と比較できるか"
+      ]
+    },
+    {
+      "id": "pcat_008_digest_diff_old_logic",
+      "title": "digest差分確認で古いロジック由来の差分",
+      "status": "triggered",
+      "severity": "warning",
+      "areas": [
+        "derived_metrics",
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "post_db_reflection"
+      ],
+      "problem": "IFRS / US GAAP の利益ベース変更前の古いderived結果がDBに残っていた。",
+      "prevention": "指標ロジック変更時は既存DBに古い意味の値が残る可能性をDB反映待ちへ登録する。",
+      "review_points": [
+        "ロジック変更が既存保存値に影響するか",
+        "DB反映待ちに再計算を登録したか",
+        "差分の由来が旧ロジックか新不具合か切り分けたか"
+      ]
+    },
+    {
+      "id": "pcat_010_zip_backfill_completion_check",
+      "title": "run_zip_backfill後のDL完了判定不足",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "edinet_download",
+        "db_reflection"
+      ],
+      "triggers": [
+        "post_cli_execution",
+        "pre_db_reflection"
+      ],
+      "problem": "run_zip_backfill後のDL完了確認の仕組みが不足していた。",
+      "prevention": "run_zip_backfill 後に check_edinet_download_progress と manifest確認を必ず実行する。",
+      "review_points": [
+        "DL完了確認コマンドを実行する計画があるか",
+        "manifest件数と実ファイルを確認したか",
+        "後続DB反映前に未DLを検出できるか"
+      ]
+    },
+    {
+      "id": "pcat_016_performance_comparison_condition_mismatch",
+      "title": "DB反映・再計算時の測定条件不一致",
+      "status": "triggered",
+      "severity": "warning",
+      "areas": [
+        "db_reflection",
+        "db_performance"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "post_db_reflection"
+      ],
+      "problem": "form_codes、batch_size、rule_version、target_total が違う状態で性能比較した。",
+      "prevention": "前回run条件をperformance logから取得し、同一条件でしか比較しない。",
+      "review_points": [
+        "前回run条件を取得したか",
+        "form_codes/batch_size/rule_version/target_totalが一致しているか",
+        "比較不能な条件差を明示したか"
+      ]
+    },
+    {
+      "id": "pcat_017_saved_rule_version_target_zero",
+      "title": "保存済みrule_versionによりtarget=0",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_reflection",
+        "derived_metrics"
+      ],
+      "triggers": [
+        "pre_db_reflection"
+      ],
+      "problem": "保存済みrule_versionにより再計算対象が0件になった。",
+      "prevention": "run前に target count をpreflightで確認する。",
+      "review_points": [
+        "target countが0でないことを確認したか",
+        "rule_version条件を確認したか",
+        "0件なら反映成功扱いにしていないか"
+      ]
+    },
+    {
+      "id": "pcat_018_large_db_backup_timeout",
+      "title": "本番DBバックアップのタイムアウトと破損バックアップ",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_backup",
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "backup"
+      ],
+      "problem": "170GB級DBのバックアップを短いタイムアウトで実行し、中断によりSQLiteとして破損した。",
+      "prevention": "DBサイズ確認、十分なtimeout、バックアップ後のSQLite読取確認を必須化する。",
+      "review_points": [
+        "DBサイズに見合うtimeoutか",
+        "バックアップ後のSQLite読取確認があるか",
+        "中断時に破損バックアップを採用しないか"
+      ]
+    },
+    {
+      "id": "pcat_019_cli_db_write_side_effect",
+      "title": "CLIがDBへ書き込むことの見落とし",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "cli",
+        "db_reflection"
+      ],
+      "triggers": [
+        "cli_execution",
+        "pre_db_reflection"
+      ],
+      "problem": "読み取り系に見えるCLIでも create_tables() や performance log 保存でDB書込が発生する。",
+      "prevention": "CLI実行前にDB書込有無を確認する。",
+      "review_points": [
+        "create_tables()やcommitが呼ばれないか",
+        "performance log保存がないか",
+        "読み取り専用接続で実行できるか"
+      ]
+    },
+    {
+      "id": "pcat_022_rebuild_metrics_count_verification",
+      "title": "rebuild_metrics_for_scope結果を件数で検証せず進行",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_reflection",
+        "derived_metrics"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "post_db_reflection"
+      ],
+      "problem": "target_docs や normalized_saved_rows=0 / derived_saved_rows=0 が出ていた時点で止めるべきだった。",
+      "prevention": "終了コードだけで成功扱いにしない。",
+      "review_points": [
+        "target_docsが0でないか",
+        "保存件数が0でないか",
+        "終了コード以外の件数を成功条件に含めたか"
+      ]
+    },
+    {
+      "id": "pcat_023_enable_period_fallback_missing",
+      "title": "--enable-period-fallback 未指定",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_reflection",
+        "derived_metrics"
+      ],
+      "triggers": [
+        "pre_db_reflection"
+      ],
+      "problem": "必要な再計算で --enable-period-fallback が未指定だった。",
+      "prevention": "反映コマンドを db_reflection_items に登録する前にdry-run相当で件数確認する。",
+      "review_points": [
+        "必要オプションが反映コマンドに含まれているか",
+        "dry-run相当の件数確認があるか",
+        "db_reflection_items登録前に妥当性を確認したか"
+      ]
+    },
+    {
+      "id": "pcat_024_cleanup_deleted_new_2q_metrics",
+      "title": "必要な2Q 1株資産/負債をcleanupで削除",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "derived_metrics",
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_implementation_review",
+        "pre_db_reflection"
+      ],
+      "problem": "新しく必要になった 2Q 1株資産 / 2Q 1株負債 をcleanup処理で削除した。",
+      "prevention": "追加要件と削除対象リストの矛盾を実装差分レビューで確認する。",
+      "review_points": [
+        "追加対象と削除対象リストが矛盾していないか",
+        "cleanupの対象条件を差分レビューしたか",
+        "必要指標の回帰テストがあるか"
+      ]
+    },
+    {
+      "id": "pcat_025_verification_sql_too_weak",
+      "title": "確認SQLが行の存在だけを見ていた",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "post_db_reflection"
+      ],
+      "problem": "確認SQLが行があるかだけを見ており、calc_status='ok'、value_num IS NOT NULL、異常値でないことまで確認していなかった。",
+      "prevention": "verification SQLの最低条件を標準化する。",
+      "review_points": [
+        "calc_status='ok'を確認しているか",
+        "value_num IS NOT NULLを確認しているか",
+        "件数だけでなく値の妥当性を確認しているか"
+      ]
+    },
+    {
+      "id": "pcat_029_sony_english_segment_scope_leak",
+      "title": "ソニー英語セグメント名統合の反映漏れ",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "segment_metrics",
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_db_reflection",
+        "post_db_reflection"
+      ],
+      "problem": "ソニーの英語セグメント名統合が反映範囲から漏れた。",
+      "prevention": "対象doc_id・対象年度を明示し、反映後に重複ラベル確認SQLを走らせる。",
+      "review_points": [
+        "対象doc_idと対象年度が明示されているか",
+        "反映後の重複ラベル確認SQLがあるか",
+        "反映範囲漏れを確認したか"
+      ]
+    },
+    {
+      "id": "pcat_030_save_segment_metrics_cli_zero",
+      "title": "save_segment_metrics CLIが0件でも進行",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "segment_metrics",
+        "cli",
+        "db_reflection"
+      ],
+      "triggers": [
+        "cli_execution",
+        "pre_db_reflection"
+      ],
+      "problem": "save_segment_metrics --doc-id ... が0件だったのにCLI結果だけで進みかけた。",
+      "prevention": "CLI出力件数0を停止条件にする。",
+      "review_points": [
+        "CLI出力件数が0なら止めるか",
+        "サービス直呼びとの差を切り分けたか",
+        "対象抽出条件を確認したか"
+      ]
+    },
+    {
+      "id": "pcat_031_db_reflection_complete_arg_order",
+      "title": "db_reflection_items complete のCLI引数順誤り",
+      "status": "triggered",
+      "severity": "warning",
+      "areas": [
+        "db_reflection",
+        "cli"
+      ],
+      "triggers": [
+        "cli_execution",
+        "post_db_reflection"
+      ],
+      "problem": "db_reflection_items complete のCLI引数順を誤った。",
+      "prevention": "CLI usageを確認してから complete --db-path ... --item-id ... を実行する。",
+      "review_points": [
+        "CLI usageを確認したか",
+        "complete --db-path ... --item-id ... の順で実行するか",
+        "誤った引数順を使っていないか"
+      ]
+    },
+    {
+      "id": "pcat_032_db_reflection_list_write_side_effect",
+      "title": "db_reflection_items list がDB書き込みを要求",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_reflection",
+        "cli"
+      ],
+      "triggers": [
+        "cli_execution",
+        "pre_db_reflection"
+      ],
+      "problem": "db_reflection_items list 実行時にテーブル・ビュー作成が走り、読み取り専用操作に見えてDB書き込みを要求した。",
+      "prevention": "CLIの副作用として明記し、DB書込権限の有無を確認する。",
+      "review_points": [
+        "読み取り系CLIがcreate_tablesを呼ばないか",
+        "DB書込権限が必要か確認したか",
+        "preflightでは読み取り専用接続を使うか"
+      ]
+    },
+    {
+      "id": "pcat_033_unsafe_db_reflection_command",
+      "title": "db_reflection_items登録コマンドの品質不足",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "db_reflection"
+      ],
+      "triggers": [
+        "pre_db_reflection"
+      ],
+      "problem": "db_reflection_items に登録した反映コマンドに、必要オプション、対象件数、確認SQL、成功条件が不足していた。",
+      "prevention": "pending登録前にコマンド妥当性チェックを行う。",
+      "review_points": [
+        "required commandがあるか",
+        "verification SQLがあるか",
+        "対象件数と成功条件が明示されているか"
+      ]
+    },
+    {
+      "id": "pcat_034_cli_failure_bypassed_by_service_call",
+      "title": "CLI失敗をサービス直呼びで回避してCLI不具合を隠す",
+      "status": "triggered",
+      "severity": "critical",
+      "areas": [
+        "cli",
+        "db_reflection"
+      ],
+      "triggers": [
+        "cli_execution",
+        "pre_db_reflection"
+      ],
+      "problem": "DB反映や確認作業でCLI実行が失敗したとき、サービス関数を直接呼んで作業だけ進めると、CLI引数・初期化・権限・出力件数などの不具合が未修正のまま残る。",
+      "prevention": "CLI実行失敗時は、サービス直呼びで回避する前にCLI側の失敗原因を切り分け、必要ならCLI不具合として修正またはカタログ登録する。",
+      "review_points": [
+        "CLI失敗後にサービス直呼びだけで完了扱いにしていないか",
+        "CLI引数・初期化・DB接続・出力件数のどこで失敗したかを切り分けたか",
+        "CLI経由の再実行またはCLIテストで修正を確認したか"
+      ]
+    }
+  ],
+  "json_path": "C:\\Users\\silve\\EDINET_Pipeline\\artifacts\\db_reflection_preflight\\db_reflection_preflight_20260802_171312.json",
+  "excel_path": "C:\\Users\\silve\\EDINET_Pipeline\\artifacts\\db_reflection_preflight\\db_reflection_preflight_20260802_171312.xlsx"
+}

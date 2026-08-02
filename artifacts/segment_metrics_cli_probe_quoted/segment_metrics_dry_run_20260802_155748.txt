@@ -1,0 +1,55 @@
+﻿generated_at: 2026-08-02T15:57:48
+mode: dry_run
+date_from: 
+date_to: 
+selected_rows: 12
+candidates: 45
+warnings: 0
+
+status     | code     | company                | period_end | kind     | segment                  | metric           | value_kind         | value            | source_tag                       | reason                      
+-----------+----------+------------------------+------------+----------+--------------------------+------------------+--------------------+------------------+----------------------------------+-----------------------------
+excluded   | 4966     | 上村工業               | 2015-03-31 | total    | 合計                     | NetSales         | total              |   46,851,465,000 | NetSales                         | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | business | その他                   | NetSales         | total              |        6,880,000 | NetSales                         | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | total    | 合計                     | NetSales         | total              |   46,858,345,000 | NetSales                         | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | excluded | Reconciling Items        |                  |                    |     -603,713,000 | NetSales                         | excluded_adjustment_or_elimination_member
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | NetSales         | total              |   47,829,285,000 | NetSales                         | selected                    
+selected   | 4966     | 上村工業               | 2016-03-31 | business | その他                   | NetSales         | total              |        6,909,000 | NetSales                         | selected                    
+excluded   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | NetSales         | total              |   47,829,285,000 | NetSales                         | lower_priority_duplicate    
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | NetSales         | total              |   47,836,195,000 | NetSales                         | selected                    
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded | Reconciling Items        |                  |                    |     -267,685,000 | NetSales                         | excluded_adjustment_or_elimination_member
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_2:excluded_no_supported_metric
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_3:excluded_asset_table
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_4:excluded_no_supported_metric
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_5:excluded_asset_table
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_6:excluded_no_supported_metric
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_7:excluded_no_supported_metric
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded |                          |                  |                    |             None | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | table_8:excluded_no_supported_metric
+selected   | 4966     | 上村工業               | 2016-03-31 | business | 表面処理用 資材事業      | NetSales         | total              |   37,403,150,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | 表面処理用 機械事業      | NetSales         | total              |    4,168,008,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | めっき加工 事業          | NetSales         | total              |    3,970,793,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | 不動産賃貸 事業          | NetSales         | total              |      705,798,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | その他 （注)１           | NetSales         | total              |        6,880,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | 表面処理用 資材事業      | SegmentProfit    | segment_profit     |    6,605,274,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | 表面処理用 機械事業      | SegmentProfit    | segment_profit     |     -404,481,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | めっき加工 事業          | SegmentProfit    | segment_profit     |      -68,781,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | 不動産賃貸 事業          | SegmentProfit    | segment_profit     |      373,296,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | SegmentProfit    | segment_profit     |    6,505,308,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+selected   | 4966     | 上村工業               | 2016-03-31 | business | その他 （注)１           | SegmentProfit    | segment_profit     |        5,651,000 | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock | selected_semantic_segment_note_table
+excluded   | 4966     | 上村工業               | 2015-03-31 | total    | 合計                     | OperatingIncome  | operating_profit   |    6,505,308,000 | OperatingIncome                  | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | business | その他                   | OperatingIncome  | operating_profit   |        5,651,000 | OperatingIncome                  | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | total    | 合計                     | OperatingIncome  | operating_profit   |    6,510,960,000 | OperatingIncome                  | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | excluded | Reconciling Items        |                  |                    |      -50,769,000 | OperatingIncome                  | excluded_adjustment_or_elimination_member
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | OperatingIncome  | operating_profit   |    6,693,003,000 | OperatingIncome                  | selected                    
+selected   | 4966     | 上村工業               | 2016-03-31 | business | その他                   | OperatingIncome  | operating_profit   |        5,492,000 | OperatingIncome                  | selected                    
+excluded   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | OperatingIncome  | operating_profit   |    6,693,003,000 | OperatingIncome                  | lower_priority_duplicate    
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | OperatingIncome  | operating_profit   |    6,698,495,000 | OperatingIncome                  | selected                    
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded | Reconciling Items        |                  |                    |             None | OperatingIncome                  | excluded_adjustment_or_elimination_member
+excluded   | 4966     | 上村工業               | 2015-03-31 | total    | 合計                     | NetSales         | external           |   46,247,751,000 | RevenuesFromExternalCustomers    | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | business | その他                   | NetSales         | external           |        6,880,000 | RevenuesFromExternalCustomers    | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | total    | 合計                     | NetSales         | external           |   46,254,631,000 | RevenuesFromExternalCustomers    | period_end_mismatch         
+excluded   | 4966     | 上村工業               | 2015-03-31 | excluded | Reconciling Items        |                  |                    |             None | RevenuesFromExternalCustomers    | excluded_adjustment_or_elimination_member
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | NetSales         | external           |   47,561,600,000 | RevenuesFromExternalCustomers    | selected                    
+selected   | 4966     | 上村工業               | 2016-03-31 | business | その他                   | NetSales         | external           |        6,909,000 | RevenuesFromExternalCustomers    | selected                    
+excluded   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | NetSales         | external           |   47,561,600,000 | RevenuesFromExternalCustomers    | lower_priority_duplicate    
+selected   | 4966     | 上村工業               | 2016-03-31 | total    | 合計                     | NetSales         | external           |   47,568,509,000 | RevenuesFromExternalCustomers    | selected                    
+excluded   | 4966     | 上村工業               | 2016-03-31 | excluded | Reconciling Items        |                  |                    |             None | RevenuesFromExternalCustomers    | excluded_adjustment_or_elimination_member

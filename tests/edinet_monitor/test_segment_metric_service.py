@@ -130,7 +130,12 @@ def _insert_raw_fact_context_ref(
     )
 
 
-def _insert_geographical_textblock(conn: sqlite3.Connection, value_text: str, period_end: str = "2025-09-30") -> None:
+def _insert_geographical_textblock(
+    conn: sqlite3.Connection,
+    value_text: str,
+    period_end: str = "2025-09-30",
+    tag_name: str = "InformationAboutGeographicalAreasIFRSTextBlock",
+) -> None:
     conn.execute(
         """
         INSERT INTO raw_facts (
@@ -138,14 +143,13 @@ def _insert_geographical_textblock(conn: sqlite3.Connection, value_text: str, pe
             period_type, period_start, period_end, instant_date, is_nil,
             context_dimensions_json, unit_measures_json, value_text
         ) VALUES (
-            'doc1', 'InformationAboutGeographicalAreasIFRSTextBlock',
-            'jpcrp_cor:InformationAboutGeographicalAreasIFRSTextBlock',
+            'doc1', ?, ?,
             'InterimDuration', '', '',
             'duration', '2025-04-01', ?, NULL, 0,
             '{}', '{}', ?
         )
         """,
-        (period_end, value_text),
+        (tag_name, f"jpcrp_cor:{tag_name}", period_end, value_text),
     )
 
 
@@ -479,6 +483,128 @@ class SegmentMetricServiceTest(unittest.TestCase):
         self.assertEqual(row_by_name["日本"].value_num, 11_000_000.0)
         self.assertEqual(row_by_name["米国"].value_num, 22_000_000.0)
         self.assertEqual(row_by_name["その他地域"].value_num, 6_000_000.0)
+
+    def test_segment_note_textblock_rejects_assets_and_extracts_cluster_metrics(self) -> None:
+        _insert_geographical_textblock(
+            self.conn,
+            """
+            <p>地域別に関する情報</p>
+            <table>
+              <tr><td></td><td>日本</td><td>海外</td></tr>
+              <tr><td>非流動資産</td><td>100</td><td>200</td></tr>
+            </table>
+            <p>クラスター別</p>
+            <table>
+              <tr><td></td><td>Asia</td><td>Western Europe</td><td>EMA</td></tr>
+              <tr><td>自社たばこ製品売上収益</td><td>10</td><td>20</td><td>30</td></tr>
+              <tr><td>調整後営業利益</td><td>1</td><td>2</td><td>3</td></tr>
+            </table>
+            """,
+            tag_name="NotesSegmentInformationConsolidatedFinancialStatementsIFRSTextBlock",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        rows_by_name_base = {(row.segment_name, row.metric_base): row for row in result.rows}
+        self.assertNotIn(("日本", "NetSales"), rows_by_name_base)
+        self.assertEqual(rows_by_name_base[("Asia", "NetSales")].value_num, 10.0)
+        self.assertEqual(rows_by_name_base[("Western Europe", "NetSales")].segment_kind, "region")
+        self.assertEqual(rows_by_name_base[("EMA", "SegmentProfit")].value_num, 3.0)
+        detail = json.loads(rows_by_name_base[("Asia", "NetSales")].source_detail_json)
+        self.assertEqual(detail["table_kind"], "region")
+        self.assertEqual(detail["source"], "segment_note_textblock")
+        self.assertTrue(any(item.reason.endswith("excluded_asset_table") for item in result.candidates))
+
+    def test_segment_note_textblock_uses_current_cluster_table_and_ignores_unit_headers(self) -> None:
+        _insert_geographical_textblock(
+            self.conn,
+            """
+            <p>前年度 (自 2024年4月1日 至 2025年3月31日)</p>
+            <table><tr><td></td><td>報告セグメント</td></tr>
+              <tr><td></td><td>たばこ</td></tr>
+              <tr><td></td><td>百万円</td></tr>
+              <tr><td>売上収益</td><td>100</td></tr></table>
+            <p>クラスター別</p>
+            <table><tr><td></td><td>Asia</td><td>EMA</td></tr>
+              <tr><td></td><td>百万円</td><td>百万円</td></tr>
+              <tr><td>売上収益</td><td>10</td><td>20</td></tr></table>
+            <p>当年度 (自 2025年4月1日 至 2025年9月30日)</p>
+            <table><tr><td></td><td>報告セグメント</td></tr>
+              <tr><td></td><td>たばこ</td></tr>
+              <tr><td></td><td>百万円</td></tr>
+              <tr><td>売上収益</td><td>200</td></tr></table>
+            <p>クラスター別</p>
+            <table><tr><td></td><td>Asia</td><td>EMA</td></tr>
+              <tr><td></td><td>百万円</td><td>百万円</td></tr>
+              <tr><td>売上収益</td><td>11</td><td>22</td></tr></table>
+            """,
+            tag_name="NotesSegmentInformationConsolidatedFinancialStatementsIFRSTextBlock",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        rows_by_name = {
+            row.segment_name: row
+            for row in result.rows
+            if row.segment_kind == "region" and row.metric_base == "NetSales"
+        }
+        self.assertEqual(rows_by_name["Asia"].value_num, 11_000_000.0)
+        self.assertEqual(rows_by_name["EMA"].value_num, 22_000_000.0)
+        self.assertNotIn("百万円", rows_by_name)
+
+    def test_segment_note_textblock_expands_reportable_segment_header_spans(self) -> None:
+        _insert_geographical_textblock(
+            self.conn,
+            """
+            <p>当年度 (自 2025年4月1日 至 2025年9月30日)</p>
+            <table>
+              <tr><td></td><td colspan="2">報告セグメント</td><td>その他</td><td>連結</td></tr>
+              <tr><td></td><td>事業A</td><td>事業B</td><td>その他事業</td><td>連結財務諸表計上額</td></tr>
+              <tr><td>売上高</td><td></td><td></td><td></td><td></td></tr>
+              <tr><td>外部顧客への売上高</td><td>10</td><td>20</td><td>3</td><td>33</td></tr>
+              <tr><td>セグメント利益又は損失</td><td>1</td><td>2</td><td>0</td><td>3</td></tr>
+            </table>
+            """,
+            tag_name="NotesSegmentInformationConsolidatedFinancialStatementsIFRSTextBlock",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        rows_by_name_base = {(row.segment_name, row.metric_base): row for row in result.rows}
+        self.assertEqual(rows_by_name_base[("事業A", "NetSales")].value_num, 10.0)
+        self.assertEqual(rows_by_name_base[("事業B", "SegmentProfit")].value_num, 2.0)
+        self.assertNotIn(("連結財務諸表計上額", "NetSales"), rows_by_name_base)
+
+    def test_segment_note_textblock_conflicting_dimensioned_value_is_review(self) -> None:
+        _insert_raw_fact(
+            self.conn,
+            tag_name="NetSales",
+            member_qname="jpcrp_cor:AsiaMember",
+            value_text="999",
+            axis_qname="jpcrp_cor:GeographicalAreasAxis",
+        )
+        _insert_geographical_textblock(
+            self.conn,
+            """
+            <p>クラスター別</p>
+            <table><tr><td></td><td>アジア</td></tr>
+            <tr><td>売上高</td><td>10</td></tr></table>
+            """,
+            tag_name="NotesSegmentInformationConsolidatedFinancialStatementsIFRSTextBlock",
+        )
+        self.conn.commit()
+
+        result = build_segment_metric_rows(self.conn, codes=["4613"], form_codes=["043A00"])
+
+        raw_row = next(row for row in result.rows if row.source_tag == "NetSales")
+        text_row = next(row for row in result.rows if row.source_tag.startswith("NotesSegmentInformation"))
+        self.assertEqual(raw_row.value_num, 999.0)
+        self.assertEqual(text_row.calc_status, "review")
+        detail = json.loads(text_row.source_detail_json)
+        self.assertEqual(detail["semantic_conflict_reason"], "conflicting_dimensioned_xbrl_value")
 
     def test_operating_segments_not_included_label_is_other(self) -> None:
         _insert_raw_fact(

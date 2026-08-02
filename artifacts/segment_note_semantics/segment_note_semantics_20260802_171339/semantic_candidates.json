@@ -1,0 +1,16 @@
+[
+  {
+    "doc_id": "S100LNU4",
+    "security_code": "95050",
+    "form_type": "030000",
+    "period_end": "2021-03-31",
+    "source_tags": "FootnotesRegardingSegmentInformationTableTextBlock | NotesSegmentInformationEtcConsolidatedFinancialStatementsTextBlock",
+    "existing_row_count": 23,
+    "proposed_row_count": 11,
+    "selected_candidate_count": 28,
+    "excluded_candidate_count": 19,
+    "review_row_count": 0,
+    "excel_suppressed_segment_profit_count": 0,
+    "status": "match"
+  }
+]

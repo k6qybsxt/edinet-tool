@@ -1,0 +1,13 @@
+﻿generated_at: 2026-08-02T15:57:35
+mode: dry_run
+date_from: 
+date_to: 
+selected_rows: 0
+candidates: 0
+warnings: 1
+
+status     | code     | company                | period_end | kind     | segment                  | metric           | value_kind         | value            | source_tag                       | reason                      
+-----------+----------+------------------------+------------+----------+--------------------------+------------------+--------------------+------------------+----------------------------------+-----------------------------
+
+warnings:
+- requested_doc_ids_without_segment_rows=1

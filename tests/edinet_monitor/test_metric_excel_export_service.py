@@ -859,6 +859,51 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(segment_row.periods_by_offset[1], "2Q 2024-09-30")
         self.assertEqual(segment_row.values_by_offset[1], 10.0)
 
+    def test_segment_monetary_rows_use_each_filing_display_unit(self) -> None:
+        self.conn.execute(
+            "UPDATE filings SET document_display_unit = ? WHERE doc_id = 'E00001_0'",
+            ("\u5343\u5186",),
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO segment_metrics (
+                doc_id, edinet_code, security_code, form_type, period_scope, quarter_type,
+                fiscal_year, period_start, period_end, segment_kind, segment_name,
+                axis_qname, member_qname, metric_base, metric_key, value_kind,
+                value_num, value_unit, source_tag, tag_qname, context_ref, decimals,
+                calc_status, source_detail_json, rule_version, created_at, updated_at
+            ) VALUES (
+                ?, 'E00001', '1111', '030000', 'annual', '',
+                ?, '2025-04-01', ?, 'business', 'Paint',
+                'axis', 'member', 'NetSales', 'NetSalesCurrent', 'external',
+                ?, 'yen', 'RevenuesFromExternalCustomers', 'tag', 'context', '-3',
+                'ok', '{}', 'test', 'now', 'now'
+            )
+            """,
+            [
+                ('E00001_0', 2026, '2026-03-31', 3_175_691_000.0),
+                ('E00001_1', 2025, '2025-03-31', 3_175_691_000.0),
+            ],
+        )
+        self.conn.commit()
+
+        rows, errors, _warnings, _preview, _target = build_metric_excel_rows(
+            self.conn,
+            MetricExcelCondition(
+                security_codes=['1111'],
+                period_scopes=['annual'],
+                period_offsets=[2, 1],
+                segment_mode='business',
+            ),
+        )
+
+        self.assertEqual(errors, [])
+        segment_row = next(row for row in _detail_rows(rows) if row.segment_kind)
+        self.assertEqual(segment_row.values_by_offset[1], 3_175_691.0)
+        self.assertEqual(segment_row.units_by_offset[1], "\u5343\u5186")
+        self.assertEqual(segment_row.values_by_offset[2], 3_175.691)
+        self.assertEqual(segment_row.units_by_offset[2], "\u767e\u4e07\u5186")
+
     def test_segment_rows_exclude_1q_and_3q_saved_rows(self) -> None:
         self.conn.executemany(
             """
@@ -919,7 +964,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
             )
             """,
             [
-                ("operating_ok", "OperatingIncome", "SegmentOperatingIncomeCurrent", "ok", "{}"),
+                ("profit_doc", "OperatingIncome", "SegmentOperatingIncomeCurrent", "ok", "{}"),
                 (
                     "legacy_fallback",
                     "SegmentProfit",
@@ -927,6 +972,7 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                     "ok",
                     '{"source":"operating_income_segment_profit_fallback"}',
                 ),
+                ("profit_doc", "SegmentProfit", "SegmentProfitCurrent", "ok", "{}"),
                 ("review", "SegmentProfit", "SegmentProfitCurrent", "review", "{}"),
             ],
         )
