@@ -2607,12 +2607,12 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertIsNotNone(ratio_cell.comment)
         self.assertEqual(ratio_cell.fill.fgColor.rgb, "00FFF2CC")
 
-    def test_jquants_monetary_rows_use_latest_edinet_document_display_unit(self) -> None:
+    def test_jquants_monetary_rows_use_matching_fiscal_year_edinet_display_unit(self) -> None:
         self.conn.execute(
             """
             UPDATE filings
             SET document_display_unit = ?
-            WHERE edinet_code = 'E00001'
+            WHERE doc_id = 'E00001_1'
             """,
             ("\u5343\u5186",),
         )
@@ -2625,19 +2625,31 @@ class MetricExcelExportServiceTest(unittest.TestCase):
                 metric_base, metric_group, value_num, value_unit, calc_status,
                 source_field, source_detail_json, rule_version, created_at, updated_at
             ) VALUES ('actual1', '11110', '1111', 'E00001', 'actual',
-                      'quarter', 'actual:1Q', '1Q', NULL, 2026,
-                      '2025-04-01', '2025-06-30', '2025-08-01', '15:00',
+                      'quarter', 'actual:1Q', '1Q', NULL, 2025,
+                      '2024-04-01', '2024-06-30', '2024-08-01', '15:00',
                       'NetSalesCurrent', 'NetSales', 'sales', 100000000.0,
                       'yen', 'ok', 'field', '{}', 'v1',
                       '2026-05-06', '2026-05-06')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO quarter_standalone_metrics (
+                security_code, edinet_code, fiscal_year, quarter_type, period_end,
+                metric_key, metric_base, metric_group, value_num, value_unit,
+                calc_status, formula_name, source_detail_json, rule_version,
+                created_at, updated_at
+            ) VALUES ('1111', 'E00001', 2025, '3Q', '2024-12-31',
+                      'NetSalesCurrent', 'NetSales', 'sales', 100000000.0, 'yen',
+                      'ok', 'fixture', '{}', 'test', 'now', 'now')
             """
         )
         self.conn.commit()
         condition = MetricExcelCondition(
             security_codes=["1111"],
             metric_labels=["NetSales"],
-            period_scopes=["quarter"],
-            period_offsets=[0],
+            period_scopes=["quarter", "quarter_standalone"],
+            period_offsets=[1, 0],
         )
 
         rows, errors, warnings, _preview, target = build_metric_excel_rows(self.conn, condition)
@@ -2646,8 +2658,15 @@ class MetricExcelExportServiceTest(unittest.TestCase):
         self.assertEqual(target, 1)
         self.assertNotIn("jquants_metrics_not_found", warnings)
         row = next(row for row in _detail_rows(rows) if row.period_scope == "quarter:1Q")
-        self.assertEqual(row.values_by_offset[0], 100000.0)
-        self.assertEqual(row.units_by_offset[0], "\u5343\u5186")
+        self.assertEqual(row.values_by_offset[1], 100000.0)
+        self.assertEqual(row.units_by_offset[1], "\u5343\u5186")
+        standalone_row = next(
+            row
+            for row in _detail_rows(rows)
+            if row.period_scope == "quarter_standalone:3Q"
+        )
+        self.assertEqual(standalone_row.values_by_offset[1], 100000.0)
+        self.assertEqual(standalone_row.units_by_offset[1], "\u5343\u5186")
 
     def test_jquants_quarter_rows_use_edinet_fiscal_year_anchor_without_sliding(self) -> None:
         self.conn.execute(

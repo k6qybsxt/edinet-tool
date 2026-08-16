@@ -931,6 +931,13 @@ class _JQuantsLookupIndexes:
 
 
 @dataclass(frozen=True)
+class _JQuantsEdinetUnitLookup:
+    exact_unit_by_security_period_end: dict[tuple[str, str], str]
+    quarter_unit_by_security_fiscal_year: dict[tuple[str, int], str]
+    annual_unit_by_security_fiscal_year: dict[tuple[str, int], str]
+
+
+@dataclass(frozen=True)
 class _QuarterStandaloneLookupIndexes:
     max_fiscal_year_by_code: dict[str, int]
     period_end_by_code_year_quarter: dict[tuple[str, int, str], str]
@@ -2996,6 +3003,137 @@ def _fetch_jquants_companies(
     return rows
 
 
+def _fiscal_year_for_edinet_display_unit(filing: sqlite3.Row) -> int | None:
+    period_end = _date_text(filing["period_end"])
+    if not period_end:
+        return None
+    if str(filing["form_type"] or "") in FORM_TYPES_BY_PERIOD_SCOPE["quarter"]:
+        period_end = _add_months_to_period_end(period_end, 6)
+    return _calendar_year_bucket(period_end)
+
+
+def _set_latest_edinet_display_unit(
+    target: dict[Any, tuple[str, str]],
+    key: Any,
+    unit: str,
+    submit_date: str,
+) -> None:
+    existing = target.get(key)
+    if existing is None or submit_date >= existing[1]:
+        target[key] = (unit, submit_date)
+
+
+def _fetch_jquants_edinet_unit_lookup(
+    conn: sqlite3.Connection,
+    companies: list[sqlite3.Row],
+) -> _JQuantsEdinetUnitLookup:
+    edinet_codes = sorted({str(company["edinet_code"] or "") for company in companies if company["edinet_code"]})
+    if not edinet_codes:
+        return _JQuantsEdinetUnitLookup({}, {}, {})
+    placeholders = ",".join("?" for _ in edinet_codes)
+    form_types = [*FORM_TYPES_BY_PERIOD_SCOPE["annual"], *FORM_TYPES_BY_PERIOD_SCOPE["quarter"]]
+    form_type_placeholders = ",".join("?" for _ in form_types)
+    rows = conn.execute(
+        f"""
+        SELECT
+          f.edinet_code,
+          f.security_code,
+          im.security_code AS issuer_security_code,
+          f.form_type,
+          f.period_end,
+          f.submit_date,
+          f.document_display_unit
+        FROM filings AS f
+        JOIN issuer_master AS im
+          ON im.edinet_code = f.edinet_code
+        WHERE f.edinet_code IN ({placeholders})
+          AND f.form_type IN ({form_type_placeholders})
+          AND f.parse_status = 'derived_metrics_saved'
+          AND f.document_display_unit IN ('円', '千円', '百万円')
+        ORDER BY f.edinet_code, f.period_end, f.submit_date
+        """,
+        [*edinet_codes, *form_types],
+    ).fetchall()
+    exact_candidates: dict[tuple[str, str], tuple[str, str]] = {}
+    quarter_candidates: dict[tuple[str, int], tuple[str, str]] = {}
+    annual_candidates: dict[tuple[str, int], tuple[str, str]] = {}
+    for filing in rows:
+        security_code = _normalize_security_code(
+            filing["issuer_security_code"] or filing["security_code"] or ""
+        )
+        period_end = _date_text(filing["period_end"])
+        unit = str(filing["document_display_unit"] or "").strip()
+        if not security_code or not period_end or not unit:
+            continue
+        submit_date = str(filing["submit_date"] or "")
+        _set_latest_edinet_display_unit(
+            exact_candidates,
+            (security_code, period_end),
+            unit,
+            submit_date,
+        )
+        fiscal_year = _fiscal_year_for_edinet_display_unit(filing)
+        if fiscal_year is None:
+            continue
+        target = (
+            annual_candidates
+            if str(filing["form_type"] or "") in FORM_TYPES_BY_PERIOD_SCOPE["annual"]
+            else quarter_candidates
+        )
+        _set_latest_edinet_display_unit(
+            target,
+            (security_code, fiscal_year),
+            unit,
+            submit_date,
+        )
+    return _JQuantsEdinetUnitLookup(
+        exact_unit_by_security_period_end={key: value[0] for key, value in exact_candidates.items()},
+        quarter_unit_by_security_fiscal_year={key: value[0] for key, value in quarter_candidates.items()},
+        annual_unit_by_security_fiscal_year={key: value[0] for key, value in annual_candidates.items()},
+    )
+
+
+def _jquants_edinet_display_unit(
+    lookup: _JQuantsEdinetUnitLookup,
+    *,
+    security_code: str,
+    fiscal_year: int,
+    period_end: str | None,
+    fallback_unit: str | None,
+) -> str:
+    normalized_security_code = _normalize_security_code(security_code)
+    exact_unit = lookup.exact_unit_by_security_period_end.get(
+        (normalized_security_code, _date_text(period_end)),
+    )
+    if exact_unit:
+        return exact_unit
+    fiscal_key = (normalized_security_code, fiscal_year)
+    for units in (
+        lookup.quarter_unit_by_security_fiscal_year,
+        lookup.annual_unit_by_security_fiscal_year,
+    ):
+        unit = units.get(fiscal_key)
+        if unit:
+            return unit
+    prior_years = sorted(
+        year
+        for code, year in {
+            *lookup.quarter_unit_by_security_fiscal_year,
+            *lookup.annual_unit_by_security_fiscal_year,
+        }
+        if code == normalized_security_code and year < fiscal_year
+    )
+    for prior_year in reversed(prior_years):
+        prior_key = (normalized_security_code, prior_year)
+        unit = (
+            lookup.quarter_unit_by_security_fiscal_year.get(prior_key)
+            or lookup.annual_unit_by_security_fiscal_year.get(prior_key)
+        )
+        if unit:
+            return unit
+    return str(fallback_unit or "").strip()
+
+
 def _security_code_for_jquants(row: sqlite3.Row) -> str:
     return _normalize_security_code(str(row["security_code"] or ""))
 
@@ -3417,7 +3555,10 @@ def _scale_jquants_value(
     if metric_base == "OutstandingShares":
         return _round_half_up(value / 1_000), "\u5343\u682a"
     if metric_base in MONETARY_BASES:
-        if str(document_display_unit or "").strip() == "\u5343\u5186":
+        display_unit = str(document_display_unit or "").strip()
+        if display_unit == "\u5186":
+            return value, "\u5186"
+        if display_unit == "\u5343\u5186":
             return value / 1_000, "\u5343\u5186"
         return value / 1_000_000, "\u767e\u4e07\u5186"
     if metric_base in {"IssuedShares", "TreasuryShares"}:
@@ -3727,6 +3868,7 @@ def _append_jquants_rows(
     companies = _fetch_jquants_companies(conn, condition)
     if not companies:
         return {}
+    edinet_unit_lookup = _fetch_jquants_edinet_unit_lookup(conn, companies)
     security_codes = sorted({_security_code_for_jquants(company) for company in companies if _security_code_for_jquants(company)})
     requested_bases = sorted(
         {
@@ -3827,6 +3969,7 @@ def _append_jquants_rows(
                     latest=latest,
                     all_rows=all_metric_rows,
                     lookup_indexes=lookup_indexes,
+                    edinet_unit_lookup=edinet_unit_lookup,
                     detail_rows_by_key=detail_rows_by_key,
                     period_offsets=condition.period_offsets,
                     max_offset=max_offset,
@@ -3842,6 +3985,7 @@ def _append_jquants_rows(
                 latest=standalone_latest,
                 all_rows=standalone_metric_rows,
                 lookup_indexes=standalone_lookup_indexes,
+                edinet_unit_lookup=edinet_unit_lookup,
                 period_offsets=condition.period_offsets,
                 max_offset=max_offset,
                 anchor_fiscal_year=anchor_fiscal_year,
@@ -3859,6 +4003,7 @@ def _append_jquants_rows(
                     latest=latest,
                     all_rows=all_metric_rows,
                     lookup_indexes=lookup_indexes,
+                    edinet_unit_lookup=edinet_unit_lookup,
                     detail_rows_by_key=detail_rows_by_key,
                     period_offsets=condition.period_offsets,
                     max_offset=max_offset,
@@ -3892,6 +4037,7 @@ def _append_quarter_standalone_period_rows(
     latest: dict[tuple[str, str, str, int], sqlite3.Row],
     all_rows: list[sqlite3.Row],
     lookup_indexes: _QuarterStandaloneLookupIndexes | None,
+    edinet_unit_lookup: _JQuantsEdinetUnitLookup,
     period_offsets: list[int],
     max_offset: int,
     anchor_fiscal_year: int | None = None,
@@ -3947,7 +4093,13 @@ def _append_quarter_standalone_period_rows(
                 display_value, display_unit = _scale_jquants_value(
                     base,
                     raw_value,
-                    document_display_unit=str(company["document_display_unit"] or ""),
+                    document_display_unit=_jquants_edinet_display_unit(
+                        edinet_unit_lookup,
+                        security_code=security_code,
+                        fiscal_year=fiscal_year,
+                        period_end=str(row["period_end"] or "") if row is not None else "",
+                        fallback_unit=str(company["document_display_unit"] or ""),
+                    ),
                 )
                 periods_by_offset[offset] = _quarter_standalone_period_display(
                     all_rows,
@@ -4003,6 +4155,7 @@ def _append_jquants_period_rows(
     latest: dict[tuple[str, str, str, int, str, str], sqlite3.Row],
     all_rows: list[sqlite3.Row],
     lookup_indexes: _JQuantsLookupIndexes | None,
+    edinet_unit_lookup: _JQuantsEdinetUnitLookup,
     detail_rows_by_key: dict[tuple[str, str, str], MetricExcelRow],
     period_offsets: list[int],
     max_offset: int,
@@ -4050,7 +4203,13 @@ def _append_jquants_period_rows(
             display_value, display_unit = _scale_jquants_value(
                 base,
                 raw_value,
-                document_display_unit=str(company["document_display_unit"] or ""),
+                document_display_unit=_jquants_edinet_display_unit(
+                    edinet_unit_lookup,
+                    security_code=security_code,
+                    fiscal_year=fiscal_year,
+                    period_end=str(row["period_end"] or "") if row is not None else "",
+                    fallback_unit=str(company["document_display_unit"] or ""),
+                ),
             )
             periods_by_offset[offset] = _jquants_period_display(row, period_scope, base)
             if offset == 0 and row is not None:
